@@ -123,13 +123,14 @@ final class MassTest: ObservableObject {
             let file = s.queue[s.index]
             var outcome = "Husk closed without a record (iOS memory limit, or swiped away)"
             var diagnosis = ""
-            var lines = Self.tail(of: CrashReport.previousLogURL, 80)
+            var lines = Self.crashBlock(of: CrashReport.previousLogURL) + ["--- end of that run's log ---"] + Self.tail(of: CrashReport.previousLogURL, 60)
             if let r = crash.pending {
                 outcome = "Husk crashed: \(r.cause.title)"
                 diagnosis = r.cause.detail
                 if !r.excerpt.isEmpty { lines = r.excerpt }
             }
-            lines += ["--- native log ---"] + Self.tail(of: Self.docs.appendingPathComponent("husk-native-prev.log"), 120)
+            let native = Self.docs.appendingPathComponent("husk-native-prev.log")
+            lines += ["--- native log ---"] + Self.crashBlock(of: native) + ["--- end of the native log ---"] + Self.tail(of: native, 80)
             let app = s.appIDs[file].flatMap { id in TranslationLayerStore.shared.apps.first { $0.id == id } }
             s.results.append(Result(file: file, label: app?.label ?? file, package: app?.packageName ?? "", engine: Self.engineName(app),
                                     outcome: outcome, frames: 0, seconds: 0, diagnosis: diagnosis, log: lines))
@@ -249,6 +250,14 @@ final class MassTest: ObservableObject {
         guard let app else { return "" }
         if let w = app.report?.webKind { return "web (\(w))" }
         return app.report?.nativeEngine.map { "\($0)" } ?? "classic"
+    }
+
+    /// The crash report in a log: from the fatal signal line, its backtrace and registers (the tail alone cut them off).
+    private static func crashBlock(of url: URL) -> [String] {
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        let lines = text.components(separatedBy: "\n")
+        guard let i = lines.lastIndex(where: { $0.contains("FATAL SIGNAL") || $0.contains("=== FATAL") || $0.contains("=== CRASH") }) else { return [] }
+        return lines[max(0, i - 10)..<min(lines.count, i + 70)].map { String($0) }
     }
 
     private static func tail(of url: URL, _ n: Int) -> [String] {

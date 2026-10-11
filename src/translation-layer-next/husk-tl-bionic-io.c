@@ -1534,7 +1534,38 @@ static long linux_syscall_impl(long a0, long a1, long a2, long a3, long a4, long
     case 226: { int r = b_mprotect((void *)a0, (size_t)a1, (int)a2); return r < 0 ? -*tl_guest_errno_ptr() : 0; }
     case 79:  { int r = b_fstatat((int)a0, (const char *)a1, (guest_stat *)a2, (int)a3); return r < 0 ? -*tl_guest_errno_ptr() : 0; }
     case 80:  { int r = b_fstat((int)a0, (guest_stat *)a1); return r < 0 ? -*tl_guest_errno_ptr() : 0; }
+    case 96: { uint64_t t = 0; pthread_threadid_np(NULL, &t); return (long)t; }        /* set_tid_address */
+    case 99: return 0;                                                                  /* set_robust_list */
+    case 117: return -1;                                                                /* ptrace: EPERM */
     default: break;
+    }
+    /* the rest, by the libc function bionic would have made the call through: called as the guest calls it (arguments in
+       registers), -1 and errno turned into -errno as the kernel answers */
+    {
+        static const struct { short nr; const char *fn; } calls[] = {
+            { 19, "eventfd" }, { 20, "epoll_create1" }, { 21, "epoll_ctl" }, { 22, "epoll_pwait" }, { 23, "dup" }, { 24, "dup3" },
+            { 25, "fcntl" }, { 29, "ioctl" }, { 32, "flock" }, { 34, "mkdirat" }, { 35, "unlinkat" }, { 37, "linkat" }, { 38, "renameat" },
+            { 43, "fstatfs" }, { 46, "ftruncate" }, { 49, "chdir" }, { 50, "fchdir" }, { 52, "fchmod" }, { 53, "fchmodat" }, { 55, "fchown" },
+            { 59, "pipe2" }, { 61, "getdents64" }, { 65, "readv" }, { 66, "writev" }, { 67, "pread64" }, { 68, "pwrite64" },
+            { 71, "sendfile" }, { 73, "ppoll" }, { 78, "readlinkat" }, { 82, "fsync" }, { 83, "fdatasync" },
+            { 85, "timerfd_create" }, { 86, "timerfd_settime" }, { 87, "timerfd_gettime" }, { 88, "utimensat" },
+            { 114, "clock_getres" }, { 115, "clock_nanosleep" }, { 163, "getrlimit" }, { 164, "setrlimit" }, { 165, "getrusage" },
+            { 166, "umask" }, { 179, "sysinfo" }, { 198, "socket" }, { 199, "socketpair" }, { 200, "bind" }, { 201, "listen" },
+            { 202, "accept" }, { 203, "connect" }, { 204, "getsockname" }, { 205, "getpeername" }, { 206, "sendto" }, { 207, "recvfrom" },
+            { 208, "setsockopt" }, { 209, "getsockopt" }, { 210, "shutdown" }, { 211, "sendmsg" }, { 212, "recvmsg" }, { 242, "accept4" },
+            { 261, "prlimit64" }, { 281, "execveat" },
+        };
+        for (size_t i = 0; i < sizeof(calls) / sizeof(calls[0]); i++) {
+            if (calls[i].nr != nr) continue;
+            void *tl_bionic_find(const char *name);
+            long (*f)(long, long, long, long, long, long) = (long (*)(long, long, long, long, long, long))tl_bionic_find(calls[i].fn);
+            if (!f && nr == 261) f = (long (*)(long, long, long, long, long, long))tl_bionic_find("prlimit");
+            if (!f) break;
+            *tl_guest_errno_ptr() = 0;
+            long r = f(a0, a1, a2, a3, a4, a5);
+            if (nr == 166) return r;                                                    /* umask's answer is never an error */
+            return r == -1 ? -(*tl_guest_errno_ptr() ? *tl_guest_errno_ptr() : 38) : r;
+        }
     }
     char what[96];
     snprintf(what, sizeof(what), "raw system call %ld is not provided (ENOSYS)", nr);
