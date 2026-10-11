@@ -844,10 +844,38 @@ static int b_ioctl(int fd, unsigned long req, long arg)
 /* ------------------------------------------------------------ directories */
 
 typedef struct { uint64_t d_ino; int64_t d_off; uint16_t d_reclen; uint8_t d_type; char d_name[256]; } guest_dirent;
-typedef struct { DIR *dir; guest_dirent ent; } guest_dir;
+typedef struct { DIR *dir; guest_dirent ent; char **names; uint8_t *types; size_t n, pos; } guest_dir;
+
+/* A folder inside an APK ("jar:file:///.../base.apk!/assets"), listed from the zip: what is directly in it, files and folders.
+ * Unity 6 lists its StreamingAssets this way through System.IO (Wordscapes boots from it). */
+static guest_dir *jar_opendir(const char *p)
+{
+    jar_entry j;
+    if (!jar_lookup(p, &j) || !j.found || !j.dir) return NULL;
+    guest_dir *g = calloc(1, sizeof(*g));
+    size_t cap = 0, len = strlen(j.entry);
+    pthread_mutex_lock(&g_jar_lock);
+    for (size_t i = 0; i < g_jar_zip.count; i++) {
+        const char *name = g_jar_zip.entries[i].name;
+        if (strncmp(name, j.entry, len) || name[len] != '/' || !name[len + 1]) continue;
+        const char *rest = name + len + 1, *slash = strchr(rest, '/');
+        size_t nl = slash ? (size_t)(slash - rest) : strlen(rest);
+        if (!nl) continue;
+        bool seen = false;
+        for (size_t k = 0; k < g->n && !seen; k++) seen = strlen(g->names[k]) == nl && !strncmp(g->names[k], rest, nl);
+        if (seen) continue;
+        if (g->n == cap) { cap = cap ? cap * 2 : 32; g->names = realloc(g->names, cap * sizeof(char *)); g->types = realloc(g->types, cap); }
+        g->names[g->n] = strndup(rest, nl);
+        g->types[g->n] = slash ? DT_DIR : DT_REG;
+        g->n++;
+    }
+    pthread_mutex_unlock(&g_jar_lock);
+    return g;
+}
 
 static void *b_opendir(const char *p)
 {
+    if (p && strstr(p, "jar:file:")) { guest_dir *jd = jar_opendir(p); ftrace("opendir", p, jd ? 0 : -1, jd ? 0 : ENOENT); if (!jd) tl_set_guest_errno(2); return jd; }
     char b[1024];
     TL_ERRNO_BEGIN(); DIR *d = opendir(tl_path_resolve(p, b, sizeof(b))); int e = errno; TL_ERRNO_END();
     ftrace("opendir", p, d ? 0 : -1, e);
@@ -865,18 +893,25 @@ static void *b_fdopendir(int fd)
     g->dir = d;
     return g;
 }
-static int b_dirfd(void *dp) { return dirfd(((guest_dir *)dp)->dir); }
-static void b_rewinddir(void *dp) { rewinddir(((guest_dir *)dp)->dir); }
+static int b_dirfd(void *dp) { guest_dir *g = dp; if (!g->dir) { tl_set_guest_errno(95); return -1; } return dirfd(g->dir); }
+static void b_rewinddir(void *dp) { guest_dir *g = dp; if (g->dir) rewinddir(g->dir); else g->pos = 0; }
 static void *b_readdir(void *dp)
 {
     guest_dir *g = dp;
+    if (!g->dir) {
+        if (g->pos >= g->n) return NULL;
+        g->ent.d_ino = g->pos + 1; g->ent.d_off = (int64_t)g->pos + 1; g->ent.d_reclen = sizeof(guest_dirent); g->ent.d_type = g->types[g->pos];
+        snprintf(g->ent.d_name, sizeof(g->ent.d_name), "%s", g->names[g->pos]);
+        g->pos++;
+        return &g->ent;
+    }
     TL_ERRNO_BEGIN(); struct dirent *e = readdir(g->dir); TL_ERRNO_END();
     if (!e) return NULL;
     g->ent.d_ino = e->d_ino; g->ent.d_off = 0; g->ent.d_reclen = sizeof(guest_dirent); g->ent.d_type = e->d_type;
     snprintf(g->ent.d_name, sizeof(g->ent.d_name), "%s", e->d_name);
     return &g->ent;
 }
-static int b_closedir(void *dp) { guest_dir *g = dp; int r = closedir(g->dir); free(g); return r; }
+static int b_closedir(void *dp) { guest_dir *g = dp; int r = g->dir ? closedir(g->dir) : 0; for (size_t i = 0; i < g->n; i++) free(g->names[i]); free(g->names); free(g->types); free(g); return r; }
 
 /* scandir: the entries of a directory, optionally filtered and sorted by functions of the guest's own (the same ISA, so they are called directly). */
 static int b_alphasort(const guest_dirent **a, const guest_dirent **b) { return strcoll((*a)->d_name, (*b)->d_name); }
