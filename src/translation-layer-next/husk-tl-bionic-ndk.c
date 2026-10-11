@@ -574,6 +574,27 @@ static uint32_t b_xaQueryNumSupportedEngineInterfaces(uint32_t *n) { if (n) *n =
 static uint32_t b_xaQuerySupportedEngineInterfaces(uint32_t i, const void **id) { (void)i; (void)id; return 2; }   /* XA_RESULT_PARAMETER_INVALID */
 
 /* ASharedMemory: an unnamed file of the size asked, as a descriptor to map (Android's is ashmem / memfd) */
+/* ---- thermal state and performance hints (libandroid, API 30-35): a device that is never hot, and hint sessions that accept every
+ * report. Unity's Adaptive Performance asks both; weak imports it calls without checking must not be left at zero. */
+static int g_thermal_mgr, g_hint_mgr;
+static void *b_AThermal_acquireManager(void) { return &g_thermal_mgr; }
+static void b_AThermal_releaseManager(void *m) { (void)m; }
+static int b_AThermal_getCurrentThermalStatus(void *m) { (void)m; return 0; }      /* ATHERMAL_STATUS_NONE */
+static int b_AThermal_registerThermalStatusListener(void *m, void *cb, void *data) { (void)m; (void)cb; (void)data; return 0; }
+static int b_AThermal_unregisterThermalStatusListener(void *m, void *cb, void *data) { (void)m; (void)cb; (void)data; return 0; }
+static float b_AThermal_getThermalHeadroom(void *m, int forecastSeconds) { (void)m; (void)forecastSeconds; return 0.25f; }
+static int b_AThermal_getThermalHeadroomThresholds(void *m, const void **out, size_t *n) { (void)m; if (out) *out = NULL; if (n) *n = 0; return 0; }
+static void *b_APerformanceHint_getManager(void) { return &g_hint_mgr; }
+static void *b_APerformanceHint_createSession(void *m, const int32_t *tids, size_t n, int64_t target) { (void)m; (void)tids; (void)n; (void)target; return calloc(1, 16); }
+static int64_t b_APerformanceHint_getPreferredUpdateRateNanos(void *m) { (void)m; return 16666666; }
+static int b_APerformanceHint_ok(void *s, int64_t v) { (void)s; (void)v; return 0; }
+static void b_APerformanceHint_closeSession(void *s) { free(s); }
+static int b_APerformanceHint_setThreads(void *s, const int32_t *tids, size_t n) { (void)s; (void)tids; (void)n; return 0; }
+static int b_APerformanceHint_reportActualWorkDuration2(void *s, void *w) { (void)s; (void)w; return 0; }
+static void *b_AWorkDuration_create(void) { return calloc(1, 32); }
+static void b_AWorkDuration_release(void *w) { free(w); }
+static void b_AWorkDuration_set(void *w, int64_t v) { (void)w; (void)v; }
+
 static int b_ASharedMemory_create(const char *name, size_t size)
 {
     (void)name;
@@ -935,6 +956,20 @@ const tl_bionic_entry tl_tab_ndk[] = {
     TL_WRAP("AAsset_seek", b_AAsset_seek), TL_WRAP("AAsset_seek64", b_AAsset_seek), TL_WRAP("AAsset_isAllocated", b_AAsset_isAllocated),
     TL_WRAP("xaCreateEngine", b_xaCreateEngine), TL_WRAP("xaQueryNumSupportedEngineInterfaces", b_xaQueryNumSupportedEngineInterfaces),
     TL_WRAP("xaQuerySupportedEngineInterfaces", b_xaQuerySupportedEngineInterfaces),
+    TL_WRAP("AThermal_acquireManager", b_AThermal_acquireManager), TL_WRAP("AThermal_releaseManager", b_AThermal_releaseManager),
+    TL_WRAP("AThermal_getCurrentThermalStatus", b_AThermal_getCurrentThermalStatus), TL_WRAP("AThermal_getThermalHeadroom", b_AThermal_getThermalHeadroom),
+    TL_WRAP("AThermal_registerThermalStatusListener", b_AThermal_registerThermalStatusListener),
+    TL_WRAP("AThermal_unregisterThermalStatusListener", b_AThermal_unregisterThermalStatusListener),
+    TL_WRAP("AThermal_getThermalHeadroomThresholds", b_AThermal_getThermalHeadroomThresholds),
+    TL_WRAP("APerformanceHint_getManager", b_APerformanceHint_getManager), TL_WRAP("APerformanceHint_createSession", b_APerformanceHint_createSession),
+    TL_WRAP("APerformanceHint_getPreferredUpdateRateNanos", b_APerformanceHint_getPreferredUpdateRateNanos),
+    TL_WRAP("APerformanceHint_updateTargetWorkDuration", b_APerformanceHint_ok), TL_WRAP("APerformanceHint_reportActualWorkDuration", b_APerformanceHint_ok),
+    TL_WRAP("APerformanceHint_sendHint", b_APerformanceHint_ok), TL_WRAP("APerformanceHint_setPreferPowerEfficiency", b_APerformanceHint_ok),
+    TL_WRAP("APerformanceHint_closeSession", b_APerformanceHint_closeSession), TL_WRAP("APerformanceHint_setThreads", b_APerformanceHint_setThreads),
+    TL_WRAP("APerformanceHint_reportActualWorkDuration2", b_APerformanceHint_reportActualWorkDuration2),
+    TL_WRAP("AWorkDuration_create", b_AWorkDuration_create), TL_WRAP("AWorkDuration_release", b_AWorkDuration_release),
+    TL_WRAP("AWorkDuration_setWorkPeriodStartTimestampNanos", b_AWorkDuration_set), TL_WRAP("AWorkDuration_setActualTotalDurationNanos", b_AWorkDuration_set),
+    TL_WRAP("AWorkDuration_setActualCpuDurationNanos", b_AWorkDuration_set), TL_WRAP("AWorkDuration_setActualGpuDurationNanos", b_AWorkDuration_set),
     TL_WRAP("ASharedMemory_create", b_ASharedMemory_create), TL_WRAP("ASharedMemory_getSize", b_ASharedMemory_getSize),
     TL_WRAP("ASharedMemory_setProt", b_ASharedMemory_setProt), TL_WRAP("ASharedMemory_dupFromJava", b_ASharedMemory_dupFromJava),
     TL_WRAP("AAsset_openFileDescriptor", b_AAsset_openFileDescriptor), TL_WRAP("AAsset_openFileDescriptor64", b_AAsset_openFileDescriptor64),
