@@ -147,6 +147,7 @@ public abstract class Context {
     public Context createDeviceProtectedStorageContext() { return this; }
     public Context createDisplayContext(android.view.Display d) { return this; }
     public Context createWindowContext(int type, Bundle options) { return this; }
+    public Context createWindowContext(android.view.Display display, int type, Bundle options) { return this; }
     public Context createAttributionContext(String tag) { return this; }
     public Context createContextForSplit(String split) { return this; }
     public android.view.Display getDisplay() { return ((android.view.WindowManager) getSystemService(WINDOW_SERVICE)).getDefaultDisplay(); }

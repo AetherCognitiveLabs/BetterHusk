@@ -37,15 +37,20 @@ public class PackageManager {
     private static PackageManager sSelf;
     public static synchronized PackageManager self() { if (sSelf == null) sSelf = new PackageManager(); return sSelf; }
     private static boolean mine(String pkg) { return pkg != null && pkg.equals(husk.Native.packageName()); }
+    /* the process a component names (android:process: ":x" is the app's own "<package>:x"), the app's process when it names none */
+    private static String process(husk.Manifest.Component c) {
+        String pkg = husk.Native.packageName();
+        return c.process == null || c.process.isEmpty() ? pkg : c.process.startsWith(":") ? pkg + c.process : c.process;
+    }
     private static ActivityInfo activity(husk.Manifest.Component c) {
         ActivityInfo a = new ActivityInfo();
         a.name = c.name; a.packageName = husk.Native.packageName(); a.theme = c.theme; a.labelRes = c.label; a.icon = c.icon; a.screenOrientation = c.screenOrientation;
         a.configChanges = c.configChanges; a.launchMode = c.launchMode; a.exported = c.exported; a.enabled = c.enabled; a.metaData = c.metaData; a.parentActivityName = c.parentActivity;
-        a.softInputMode = c.windowSoftInputMode; a.processName = a.packageName; a.taskAffinity = a.packageName;
+        a.softInputMode = c.windowSoftInputMode; a.processName = process(c); a.taskAffinity = a.packageName;
         return a;
     }
-    private static ServiceInfo service(husk.Manifest.Component c) { ServiceInfo s = new ServiceInfo(); s.name = c.name; s.packageName = husk.Native.packageName(); s.exported = c.exported; s.enabled = c.enabled; s.metaData = c.metaData; s.permission = c.permission; return s; }
-    private static ProviderInfo provider(husk.Manifest.Component c) { ProviderInfo p = new ProviderInfo(); p.name = c.name; p.packageName = husk.Native.packageName(); p.authority = c.authorities; p.exported = c.exported; p.metaData = c.metaData; return p; }
+    private static ServiceInfo service(husk.Manifest.Component c) { ServiceInfo s = new ServiceInfo(); s.name = c.name; s.packageName = husk.Native.packageName(); s.exported = c.exported; s.enabled = c.enabled; s.metaData = c.metaData; s.permission = c.permission; s.processName = process(c); return s; }
+    private static ProviderInfo provider(husk.Manifest.Component c) { ProviderInfo p = new ProviderInfo(); p.name = c.name; p.packageName = husk.Native.packageName(); p.authority = c.authorities; p.exported = c.exported; p.metaData = c.metaData; p.processName = process(c); return p; }
     public PackageInfo getPackageInfo(String pkg, int flags) throws NameNotFoundException {
         if ("android".equals(pkg)) {
             // the platform itself (okhttp, Play libraries and WebView checks read its version)

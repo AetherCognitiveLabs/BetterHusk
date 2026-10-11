@@ -1084,15 +1084,13 @@ static void *b_mmap(void *addr, size_t len, int prot, int flags, int fd, long of
             : mmap(addr, len, prot_filter(prot, "mmap"), df, (flags & 0x20) ? -1 : fd, off);
     if (r == MAP_FAILED && (errno == ENOMEM || force_phantom) && prot == 0 && (flags & 0x20) && !(flags & 0x10)) { r = phantom_reserve(len); if (r != MAP_FAILED) errno = 0; }
     TL_ERRNO_END();
-    /* a file mapped executable (libffi's closures: a temporary file mapped twice, once to write and once to run): that view made
-       read+execute for real where the system allows it (never writable and executable at once), else the mapping fails so the
-       library can take another way, rather than seeming to work and faulting on the first call */
+    /* a file mapped executable (libffi's trampolines: its own library's code page, or a temporary file holding a copy): a phone
+       can not make file pages executable, and a library's file offsets are not where the loader put its code, so the mapping
+       fails here as it would there, and libffi takes anonymous executable memory instead (a piece of the JIT region) */
     if (r != MAP_FAILED && (prot & PROT_EXEC) && !(flags & 0x20)) {
-        TL_ERRNO_BEGIN();
-        int pr = mprotect(r, len, (prot & PROT_READ) | PROT_EXEC);
-        TL_ERRNO_END();
-        if (pr == 0) { sys_icache_invalidate(r, len); tl_note_once("a file was mapped executable (libffi closures)"); }
-        else { munmap(r, len); tl_set_guest_errno(13); r = MAP_FAILED; }
+        tl_note_once("a file was mapped executable (libffi trampolines): refused, so anonymous executable memory is used");
+        TL_ERRNO_BEGIN(); munmap(r, len); TL_ERRNO_END();
+        tl_set_guest_errno(13); r = MAP_FAILED;
     }
     if (r != MAP_FAILED && (flags & 0x20)) anon_add(r, len);
     mm_trace("mmap", r, len, prot, flags);
