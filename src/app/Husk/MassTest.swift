@@ -17,8 +17,8 @@ final class MassTest: ObservableObject {
     private static var stateURL: URL { docs.appendingPathComponent(".husk-masstest.json") }
 
     /// How long a started app is watched before it counts as running, and how long one that never starts is waited for.
-    private static let watchSeconds = 45.0
-    private static let startTimeout = 120.0
+    private static let watchSeconds = 15.0
+    private static let startTimeout = 60.0
     /// After JIT is on: a few seconds for the rest of Husk to settle before the app is played.
     private static let settleSeconds = 5.0
 
@@ -182,7 +182,7 @@ final class MassTest: ObservableObject {
             }
             if startedAt != nil, ran >= Self.watchSeconds {
                 let outcome = st == Int32(HUSK_UNITY_RUNNING)
-                    ? (frames >= 300 ? "Runs" : frames > 0 ? "Runs, but drew few frames (\(frames))" : "Runs, but drew nothing")
+                    ? (frames >= 60 ? "Runs" : frames > 0 ? "Runs, but drew few frames (\(frames))" : "Runs, but drew nothing")
                     : st == Int32(HUSK_UNITY_STARTING) ? "Still loading after \(Int(ran)) s" : "Running (no frame count for this kind of app)"
                 record(file: file, app: app, outcome: outcome, frames: frames, seconds: ran)
                 return
@@ -283,7 +283,7 @@ struct MassTestView: View {
                 }
                 if !test.status.isEmpty { Text(test.status).font(.caption).foregroundStyle(.secondary) }
             } footer: {
-                Text("Each app is played once JIT is on, watched for 45 seconds, and written down; then Husk closes. Open Husk again for the next one. At the end the results file is offered to share.")
+                Text("Each app is played once JIT is on, watched for 15 seconds, and written down; then Husk closes. Open Husk again for the next one. At the end the results file is offered to share.")
             }
             Section {
                 if test.active {
