@@ -97,6 +97,7 @@ public class WebView extends AbsoluteLayout implements android.view.ViewTreeObse
         setFocusableInTouchMode(true);
         synchronized (sViews) { mId = sNextId++; sViews.put(mId, this); }
         mSettings = new HuskWebSettings(this::settingsChanged);
+        husk.Web.ensureApp();
         husk.Web.create(mId);
         pushSettings();
     }
@@ -188,7 +189,7 @@ public class WebView extends AbsoluteLayout implements android.view.ViewTreeObse
                 WebResourceResponse r = intercept(target, "GET", true, additionalHttpHeaders);
                 Log.d(TAG, target + (r != null ? ": the app serves this origin" : ": from the network"));
                 synchronized (this) {
-                    if (r != null) { Uri u = Uri.parse(target); mLocalSchemes.put(u.getHost(), u.getScheme()); mPrimed.put(toHost(target), r); }
+                    if (r != null && !NETWORK_ONLY) { Uri u = Uri.parse(target); mLocalSchemes.put(u.getHost(), u.getScheme()); mPrimed.put(toHost(target), r); }
                 }
                 husk.Web.load(mId, toHost(target), headers, null);
             });
@@ -696,6 +697,8 @@ public class WebView extends AbsoluteLayout implements android.view.ViewTreeObse
     }
     /** TL_WEB_CONSOLE: every console message in the log, also those the app's chrome client takes (debugging a page that fails quietly) */
     private static final boolean CONSOLE_ALL = System.getenv("TL_WEB_CONSOLE") != null;
+    /** TL_WEB_NETWORK: http(s) pages always from the network, never an origin the app serves (comparing the two) */
+    private static final boolean NETWORK_ONLY = System.getenv("TL_WEB_NETWORK") != null;
     private void console(int level, String message, String source, int line) {
         ConsoleMessage.MessageLevel l = level == 4 ? ConsoleMessage.MessageLevel.ERROR : level == 3 ? ConsoleMessage.MessageLevel.WARNING
                                       : level == 1 ? ConsoleMessage.MessageLevel.DEBUG : level == 2 ? ConsoleMessage.MessageLevel.LOG : ConsoleMessage.MessageLevel.LOG;
