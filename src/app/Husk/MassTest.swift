@@ -53,10 +53,24 @@ final class MassTest: ObservableObject {
 
     var active: Bool { state.map { $0.index < $0.queue.count } ?? false }
 
-    /// The APKs (and app bundles) in the folder, in name order; nil if the folder is not there.
+    private static let appExtensions = ["apk", "xapk", "apks", "apkm"]
+    /// The apps in the folder, in name order: each APK or bundle, and each sub-folder holding an app as Google Play delivers it (a
+    /// base APK and its splits). Nil if the folder is not there.
     static func apks() -> [String]? {
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: folder.path) else { return nil }
-        return names.filter { ["apk", "xapk", "apks", "apkm"].contains(($0 as NSString).pathExtension.lowercased()) }.sorted()
+        return names.filter { name in
+            if appExtensions.contains((name as NSString).pathExtension.lowercased()) { return true }
+            return !files(of: name).isEmpty
+        }.sorted()
+    }
+    /// The files that make up one entry: the APK itself, or the APKs in its sub-folder.
+    static func files(of entry: String) -> [URL] {
+        let url = folder.appendingPathComponent(entry)
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) else { return [] }
+        if !isDir.boolValue { return [url] }
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: url.path)) ?? []
+        return names.filter { appExtensions.contains(($0 as NSString).pathExtension.lowercased()) }.sorted().map { url.appendingPathComponent($0) }
     }
 
     // MARK: - Starting and stopping
@@ -103,6 +117,7 @@ final class MassTest: ObservableObject {
             state = s
             save()
             crash.pending = nil
+            Self.discard(s.appIDs[file])
             HuskLog.log("masstest", "\(file): \(outcome)")
         }
         if active { runCurrent() } else { writeReport(); shareResults = true }
@@ -117,8 +132,8 @@ final class MassTest: ObservableObject {
             // Taken into the library once; a later launch for the same APK (after a crash) finds it there.
             var id = s.appIDs[file]
             if id == nil || !FileManager.default.fileExists(atPath: TranslationLayer.root.appendingPathComponent(id!).path) {
-                let url = Self.folder.appendingPathComponent(file)
-                id = await Task.detached(priority: .userInitiated) { TranslationLayerStore.importCopy(url) }.value
+                let urls = Self.files(of: file)
+                id = await Task.detached(priority: .userInitiated) { TranslationLayerStore.importCopy(urls) }.value
             }
             guard let appID = id else { record(file: file, app: nil, outcome: "Could not be imported (not an APK Husk can read)", frames: 0, seconds: 0); return }
             s.appIDs[file] = appID
@@ -192,6 +207,7 @@ final class MassTest: ObservableObject {
         state = s
         save()
         writeReport()
+        Self.discard(s.appIDs[file])
         HuskLog.log("masstest", "\(file): \(outcome)")
         HuskLog.flushNow()
         CrashReport.gameEnded()
@@ -200,6 +216,13 @@ final class MassTest: ObservableObject {
     }
 
     // MARK: - Files
+
+    /// The tested app's copy in the library, removed once its result is written: the APKs stay in DeveloperTesting, and a
+    /// hundred apps imported twice over would fill the phone.
+    private static func discard(_ id: String?) {
+        guard let id, !id.isEmpty else { return }
+        try? FileManager.default.removeItem(at: TranslationLayer.root.appendingPathComponent(id))
+    }
 
     private static func engineName(_ app: TLApp?) -> String {
         guard let app else { return "" }
@@ -250,9 +273,9 @@ struct MassTestView: View {
         List {
             Section {
                 if let files {
-                    Text(files.isEmpty ? "The DeveloperTesting folder is empty." : "\(files.count) APKs in DeveloperTesting.")
+                    Text(files.isEmpty ? "The DeveloperTesting folder is empty." : "\(files.count) apps in DeveloperTesting.")
                 } else {
-                    Text("Make a folder named DeveloperTesting in Husk's folder (Files > On My iPhone > Husk) and put the APKs to test in it.")
+                    Text("Make a folder named DeveloperTesting in Husk's folder (Files > On My iPhone > Husk) and put the APKs to test in it: an APK each, or a folder per app with its base and split APKs.")
                         .foregroundStyle(.secondary)
                 }
                 if let s = test.state {
