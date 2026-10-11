@@ -12,7 +12,7 @@ import argparse, glob, json, os, re, subprocess, sys
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 BIN = '/Volumes/GTAV/husk2/bin'
-JAVA = '/Volumes/GTAV/husk2/java/javaapp-test'
+JAVA = os.environ.get('HUSK_JAVAAPP', '/Volumes/GTAV/husk2/java/javaapp-test')
 SCAN = '/Volumes/GTAV/husk2/tl-scan'
 # the harness of the driver the app picks for each engine (TranslationLayer.swift's nativeEngine)
 NATIVE = {'Unity (IL2CPP)': 'unity-test', 'Unity': 'unity-test', 'Unity (Mono)': 'unity-test', 'Flutter': 'flutter-test',

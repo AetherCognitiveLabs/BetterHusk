@@ -300,10 +300,22 @@ public class WebView extends AbsoluteLayout implements android.view.ViewTreeObse
     public android.view.textclassifier.TextClassifier getTextClassifier() { return null; }
     public Looper getWebViewLooper() { return Looper.getMainLooper(); }
     public void postVisualStateCallback(long requestId, VisualStateCallback callback) { mHandler.post(() -> callback.onComplete(requestId)); }
-    public WebMessagePort[] createWebMessageChannel() { return new WebMessagePort[0]; }
+    public WebMessagePort[] createWebMessageChannel() { return HuskWebMessagePort.channel(this); }
+    /** A 'message' event at the page's window; ports in the message become the page's MessagePorts (HuskWebMessagePort). */
     public void postWebMessage(WebMessage message, Uri targetOrigin) {
-        eval("window.dispatchEvent(new MessageEvent('message',{data:" + JSONObject.quote(message.getData()) + "}))", null);
+        StringBuilder ids = new StringBuilder();
+        WebMessagePort[] ports = message.getPorts();
+        if (ports != null) for (WebMessagePort p : ports) if (p instanceof HuskWebMessagePort) ids.append(ids.length() > 0 ? "," : "").append(((HuskWebMessagePort) p).transfer());
+        String data = message.getData() == null ? "null" : JSONObject.quote(message.getData());
+        eval("(function(){var ps=[],R=window.__huskPorts=window.__huskPorts||{};[" + ids + "].forEach(function(id){var c=new MessageChannel();R[id]=c.port1;"
+             + "c.port1.onmessage=function(e){window.__husk.call('\\u0001port',String(id),[e.data==null?null:String(e.data)])};ps.push(c.port2);});"
+             + "window.dispatchEvent(new MessageEvent('message',{data:" + data + ",origin:'',ports:ps}));})()", null);
     }
+    void huskPortToPage(int id, String data) {
+        eval("(function(){var p=(window.__huskPorts||{})[" + id + "];if(p)p.postMessage(" + (data == null ? "null" : JSONObject.quote(data)) + ")})()", null);
+    }
+    void huskPortClose(int id) { eval("(function(){var R=window.__huskPorts||{};if(R[" + id + "]){R[" + id + "].close();delete R[" + id + "]}})()", null); }
+    Handler huskHandler() { return mHandler; }
     public WebBackForwardList copyBackForwardList() {
         final String url = mUrl;
         return new WebBackForwardList() {
@@ -368,10 +380,80 @@ public class WebView extends AbsoluteLayout implements android.view.ViewTreeObse
         for (Method m : c.getMethods()) if (bridged(m) && seen.add(m.getName())) out.add(m.getName());
         return out;
     }
+    // ---- androidx.webkit's web message listeners and document-start scripts (HuskSupportLib serves the androidx side)
+    private final Map<String, Object[]> mMessageListeners = new LinkedHashMap<>();   // object name -> { origin rules, listener }
+    private final Map<Integer, String[]> mStartScripts = new HashMap<>();             // script id -> origin rules, while not removed
+    private static int sNextStartScript = 1;
+
+    /** window[name] in every page whose origin the rules allow: postMessage reaches the listener, replies reach onmessage and
+     *  'message' listeners. The page asks (synchronously, as it starts) whether the object is for it. */
+    void huskAddWebMessageListener(String name, String[] rules, java.lang.reflect.InvocationHandler listener) {
+        if (name == null || listener == null || mDestroyed) return;
+        synchronized (mMessageListeners) { mMessageListeners.put(name, new Object[] { rules, listener }); }
+        husk.Web.userScript(mId, "(function(){var n=" + JSONObject.quote(name) + ";if(!window.__husk||!window.__husk.call('\u0001wmlok',n,[location.href]))return;"
+            + "var ls=[],o={onmessage:null,"
+            + "postMessage:function(m){window.__husk.call('\u0001wml',n,[String(m),location.href,window===window.top]);},"
+            + "addEventListener:function(t,f){if(t==='message'&&typeof f==='function'&&ls.indexOf(f)<0)ls.push(f);},"
+            + "removeEventListener:function(t,f){var i=ls.indexOf(f);if(i>=0)ls.splice(i,1);},"
+            + "__deliver:function(d){var e={data:d,type:'message',target:o};"
+            + "if(typeof o.onmessage==='function'){try{o.onmessage(e)}catch(x){setTimeout(function(){throw x})}}"
+            + "ls.slice().forEach(function(f){try{f(e)}catch(x){setTimeout(function(){throw x})}});}};"
+            + "try{Object.defineProperty(window,n,{value:o,configurable:true,writable:true})}catch(e){window[n]=o}})();");
+    }
+    void huskRemoveWebMessageListener(String name) {
+        synchronized (mMessageListeners) { mMessageListeners.remove(name); }
+        eval("try{delete window[" + JSONObject.quote(name) + "]}catch(e){}", null);
+    }
+    /** A reply through a listener's JavaScriptReplyProxy: to the page's object of that name. */
+    void huskReplyMessage(String name, String data) {
+        eval("(function(){var o=window[" + JSONObject.quote(name) + "];if(o&&o.__deliver)o.__deliver(" + (data == null ? "null" : JSONObject.quote(data)) + ")})()", null);
+    }
+    /** Runs at the start of every page whose origin the rules allow, until removed. A page it is not for stops it with an error at
+     *  its first line, so its top-level declarations stay global where it does run. */
+    Runnable huskAddDocumentStartScript(String script, String[] rules) {
+        final int id;
+        synchronized (WebView.class) { id = sNextStartScript++; }
+        synchronized (mStartScripts) { mStartScripts.put(id, rules); }
+        husk.Web.userScript(mId, "if(!(window.__husk&&window.__husk.call('\u0001ds','" + id + "',[location.href])))throw new Error('husk: a document-start script not for this page');\n" + script);
+        return () -> { synchronized (mStartScripts) { mStartScripts.remove(id); } };
+    }
+    private String supportCall(String kind, String name, JSONArray a) {
+        switch (kind) {
+        case "\u0001wmlok": {
+            Object[] l; synchronized (mMessageListeners) { l = mMessageListeners.get(name); }
+            return "{\"v\":" + (l != null && HuskSupportLib.originAllowed((String[]) l[0], originOf(a.optString(0, "")))) + "}";
+        }
+        case "\u0001ds": {
+            String[] rules; synchronized (mStartScripts) { rules = mStartScripts.get(Integer.valueOf(name)); }
+            return "{\"v\":" + (rules != null && HuskSupportLib.originAllowed(rules, originOf(a.optString(0, "")))) + "}";
+        }
+        case "\u0001port": HuskWebMessagePort.fromPage(Integer.parseInt(name), a.isNull(0) ? null : a.optString(0)); return "{}";
+        case "\u0001wml": {
+            Object[] l; synchronized (mMessageListeners) { l = mMessageListeners.get(name); }
+            if (l == null) return "{}";
+            final String data = a.optString(0, "");
+            final Uri origin = originOf(a.optString(1, ""));
+            final boolean main = a.optBoolean(2, true);
+            final java.lang.reflect.InvocationHandler listener = (java.lang.reflect.InvocationHandler) l[1];
+            mHandler.post(() -> { if (!mDestroyed) HuskSupportLib.deliver(this, name, listener, data, origin, main); });
+            return "{}";
+        }
+        }
+        return "{}";
+    }
+    /** scheme://host[:port] of a page, as the app knows the page's address. */
+    private Uri originOf(String href) {
+        Uri u = Uri.parse(fromHost(href));
+        if (u.getScheme() == null || u.getHost() == null) return u;
+        return Uri.parse(u.getScheme() + "://" + u.getHost() + (u.getPort() >= 0 ? ":" + u.getPort() : ""));
+    }
+
     private void bridgeCall(int call, String json) {
         String result;
         try {
             JSONObject req = new JSONObject(json);
+            String kind = req.getString("o");
+            if (kind.startsWith("\u0001")) { husk.Web.reply(call, supportCall(kind, req.getString("m"), req.optJSONArray("a") != null ? req.optJSONArray("a") : new JSONArray())); return; }
             Object target;
             synchronized (mInterfaces) { target = mInterfaces.get(req.getString("o")); }
             String name = req.getString("m");
@@ -612,11 +694,13 @@ public class WebView extends AbsoluteLayout implements android.view.ViewTreeObse
         if (!override && !web) Log.w(TAG, "nothing handles " + url);
         husk.Web.reply(call, override || !web ? "\u0001nav-cancel" : "\u0001nav-allow");
     }
+    /** TL_WEB_CONSOLE: every console message in the log, also those the app's chrome client takes (debugging a page that fails quietly) */
+    private static final boolean CONSOLE_ALL = System.getenv("TL_WEB_CONSOLE") != null;
     private void console(int level, String message, String source, int line) {
         ConsoleMessage.MessageLevel l = level == 4 ? ConsoleMessage.MessageLevel.ERROR : level == 3 ? ConsoleMessage.MessageLevel.WARNING
                                       : level == 1 ? ConsoleMessage.MessageLevel.DEBUG : level == 2 ? ConsoleMessage.MessageLevel.LOG : ConsoleMessage.MessageLevel.LOG;
         boolean handled = mChrome != null && mChrome.onConsoleMessage(new ConsoleMessage(message, fromHost(source), line, l));
-        if (!handled) Log.println(level >= 4 ? Log.ERROR : level == 3 ? Log.WARN : Log.INFO, "chromium", "[INFO:CONSOLE(" + line + ")] \"" + message + "\", source: " + fromHost(source) + " (" + line + ")");
+        if (!handled || CONSOLE_ALL) Log.println(level >= 4 ? Log.ERROR : level == 3 ? Log.WARN : Log.INFO, "chromium", "[INFO:CONSOLE(" + line + ")] \"" + message + "\", source: " + fromHost(source) + " (" + line + ")");
     }
     private void dialog(String kind, int call, String url, String message, String def) {
         final boolean[] answered = new boolean[1];

@@ -126,7 +126,7 @@ static NSString *bridge_js(void)
             "window.__husk={call:function(o,m,a){var r=prompt('husk:'+JSON.stringify({o:o,m:m,a:Array.prototype.slice.call(a)}));"
             "if(r===null||r===undefined)return undefined;var v=JSON.parse(r);if(v&&v.e)throw new Error(v.e);return v.v;}};"
             "var lv=['log','debug','info','warn','error'];lv.forEach(function(k,i){var o=console[k];console[k]=function(){try{var s=Array.prototype.map.call(arguments,function(x){"
-            "try{return typeof x==='object'?JSON.stringify(x):String(x)}catch(e){return String(x)}}).join(' ');"
+            "try{return x instanceof Error?(x.name+': '+x.message+(x.stack?' | '+String(x.stack).slice(0,600):'')):typeof x==='object'?JSON.stringify(x,function(k,v){return v instanceof Error?{name:v.name,message:v.message,stack:String(v.stack||'').slice(0,600)}:v}):String(x)}catch(e){return String(x)}}).join(' ');"
             "window.webkit.messageHandlers.huskConsole.postMessage({l:i,m:s,s:(document.currentScript&&document.currentScript.src)||location.href});}catch(e){}"
             "if(o)o.apply(console,arguments);};});"
             "window.addEventListener('error',function(e){try{window.webkit.messageHandlers.huskConsole.postMessage({l:4,m:'Uncaught '+e.message+(e.error&&e.error.stack?' | '+String(e.error.stack).slice(0,600):''),s:e.filename||'',n:e.lineno||0});}catch(x){}});})();";
