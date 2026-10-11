@@ -130,7 +130,14 @@ static EGLDisplay w_eglGetDisplay(void *native)
 
 #define PASS_BOOL(name, params, args) static EGLBoolean w_##name params { return a_##name args; }
 PASS_BOOL(eglInitialize, (EGLDisplay d, EGLint *a, EGLint *b), (d, a, b))
-PASS_BOOL(eglTerminate, (EGLDisplay d), (d))
+/* eglTerminate of the display everything here shares (the app's GL, Husk's own render thread): Android's counts initializations and
+ * tears down at the last; here Husk holds one for as long as it runs, so a library terminating its own use (Castle's GPU probe in X)
+ * leaves the display, and everyone else's surfaces, standing */
+static EGLBoolean w_eglTerminate(EGLDisplay d)
+{
+    if (d && d == E.display) { if (getenv("TL_EGL_TRACE")) tl_log_line("egl: eglTerminate of the shared display: kept"); return EGL_TRUE; }
+    return a_eglTerminate(d);
+}
 PASS_BOOL(eglGetConfigs, (EGLDisplay d, EGLConfig *c, EGLint n, EGLint *r), (d, c, n, r))
 /* ANGLE's configs with depth and stencil all have alpha. Android's also come without (RGBX), and an engine that asks for no alpha
  * picks one of those (King's): such a request also gets each 8-bit RGBA config again as a "no alpha" alias -- its handle with the
