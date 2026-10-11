@@ -44,6 +44,7 @@
 		240D4917EC7FC510B753EB4E /* husk-tl-jni-cocos.c in Sources */ = {isa = PBXBuildFile; fileRef = B76CE6F39722749AA0027959 /* husk-tl-jni-cocos.c */; };
 		2472A0B862A3BC5106DBAEBC /* husk-tl-load.c in Sources */ = {isa = PBXBuildFile; fileRef = 5BE31DC5ACA28C0133F828FA /* husk-tl-load.c */; };
 		29B4497EDC1E890D82BDF969 /* GuestManifest.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A0490485F9BA884A0554EAD /* GuestManifest.swift */; };
+		29CF21D2D0395FE19CC8D95D /* Holiday.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB613D9704124AC887763433 /* Holiday.swift */; };
 		2A3E4ED499EAA7EDDFCB3EE2 /* husk-tl-bionic-ldbl.c in Sources */ = {isa = PBXBuildFile; fileRef = 39B1A738A583D4E01CB15C60 /* husk-tl-bionic-ldbl.c */; };
 		2A70738EC7BE5ABEA7509E8B /* husk-tl-blit.c in Sources */ = {isa = PBXBuildFile; fileRef = CB3F6E9B90C81C37AAABE363 /* husk-tl-blit.c */; };
 		2B545A13904F3C3CA391F5E5 /* FAQTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BF5756DFAA31BA30063664B /* FAQTab.swift */; };
@@ -412,6 +413,7 @@
 		C575FDA8867C3A75AB2392E3 /* husk-tl-jni-fmod.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "husk-tl-jni-fmod.c"; sourceTree = "<group>"; };
 		C6541CC4432CA2CE74901320 /* HuskLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HuskLog.swift; sourceTree = "<group>"; };
 		CB3F6E9B90C81C37AAABE363 /* husk-tl-blit.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "husk-tl-blit.c"; sourceTree = "<group>"; };
+		CB613D9704124AC887763433 /* Holiday.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Holiday.swift; sourceTree = "<group>"; };
 		CC60CF82D64B2CBA61196F88 /* husk-tl-gamepad.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "husk-tl-gamepad.h"; sourceTree = "<group>"; };
 		CC860BD7A5AF9DC83B015219 /* fishhook.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = fishhook.c; sourceTree = "<group>"; };
 		CD10D68F646D92E86A28E5A6 /* husk-tl-dvm-android.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "husk-tl-dvm-android.c"; sourceTree = "<group>"; };
@@ -511,6 +513,7 @@
 				9736391C1BCE43667293DB7B /* Geode.swift */,
 				771B4FD56CABC214FEED6DFE /* GuestImage.swift */,
 				4A0490485F9BA884A0554EAD /* GuestManifest.swift */,
+				CB613D9704124AC887763433 /* Holiday.swift */,
 				619394B1069242D8750E7F33 /* Husk.entitlements */,
 				85AAFB3E92FE2AE4A2FA4DD8 /* HuskApp.swift */,
 				5236C5746D2CDE06C5D438BB /* HuskAppIcon.swift */,
@@ -1030,6 +1033,7 @@
 				E71E7F636CCD7BBC696B4619 /* GoogleSignInSheet.swift in Sources */,
 				79606C9B3D5AF0CEADE3482D /* GuestImage.swift in Sources */,
 				29B4497EDC1E890D82BDF969 /* GuestManifest.swift in Sources */,
+				29CF21D2D0395FE19CC8D95D /* Holiday.swift in Sources */,
 				581DC803F723FFB10DDA759F /* HuskApp.swift in Sources */,
 				161096C4354197AC83569ECB /* HuskAppIcon.swift in Sources */,
 				BBA9636793435EF7679E62F1 /* HuskAudio.swift in Sources */,
