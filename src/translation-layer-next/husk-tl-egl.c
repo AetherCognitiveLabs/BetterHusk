@@ -267,6 +267,42 @@ static void *tex_window_of(EGLSurface s)
     pthread_mutex_unlock(&g_tex_lock);
     return w;
 }
+/* The Java runtime's compositor (husk-tl-dvm-android.c), where it is linked: it holds the screen's surface, so an app that makes
+ * an EGL window of its own (SDL, Unity on a SurfaceView) draws off screen and each swap hands the frame to it, to be put on the
+ * screen under the app's views. Two window surfaces on one layer is what a phone refuses (EGL_BAD_ALLOC). */
+__attribute__((weak)) bool tl_javaapp_compositing(void);
+__attribute__((weak)) void tl_javaapp_app_pixels(const void *px, int w, int h);
+#define MAX_COMP_SURFACES 8
+static EGLSurface g_comp_surf[MAX_COMP_SURFACES];
+static bool comp_surface(EGLSurface s)
+{
+    bool r = false;
+    pthread_mutex_lock(&g_tex_lock);
+    for (int i = 0; i < MAX_COMP_SURFACES && s; i++) if (g_comp_surf[i] == s) r = true;
+    pthread_mutex_unlock(&g_tex_lock);
+    return r;
+}
+/* The current frame of a surface, read back (bottom-up RGBA, in a buffer of this thread's). */
+static const uint8_t *read_back(EGLDisplay d, EGLSurface s, EGLint *pw, EGLint *ph)
+{
+    EGLint w = 0, h = 0;
+    a_eglQuerySurface(d, s, EGL_WIDTH, &w); a_eglQuerySurface(d, s, EGL_HEIGHT, &h);
+    if (w <= 0 || h <= 0 || !a_glReadPixels) return NULL;
+    static __thread uint8_t *buf; static __thread size_t cap;
+    size_t need = (size_t)w * h * 4;
+    if (need > cap) { free(buf); buf = malloc(need); cap = buf ? need : 0; }
+    if (!buf) return NULL;
+    int old_fb = 0, old_pack = 0;
+    a_glGetIntegerv(0x8CAA /* GL_READ_FRAMEBUFFER_BINDING */, &old_fb);
+    a_glGetIntegerv(0x0D05 /* GL_PACK_ALIGNMENT */, &old_pack);
+    a_glBindFramebuffer(0x8CA8 /* GL_READ_FRAMEBUFFER */, 0);
+    a_glPixelStorei(0x0D05, 1);
+    a_glReadPixels(0, 0, w, h, 0x1908 /* GL_RGBA */, 0x1401 /* GL_UNSIGNED_BYTE */, buf);
+    a_glPixelStorei(0x0D05, old_pack);
+    a_glBindFramebuffer(0x8CA8, (unsigned)old_fb);
+    *pw = w; *ph = h;
+    return buf;
+}
 static EGLSurface w_eglCreateWindowSurface(EGLDisplay d, EGLConfig cfg, void *win, const EGLint *at)
 {
     cfg = cfg_real(cfg);
@@ -279,6 +315,17 @@ static EGLSurface w_eglCreateWindowSurface(EGLDisplay d, EGLConfig cfg, void *wi
             pthread_mutex_unlock(&g_tex_lock);
         }
         tl_log_line("egl: TextureView window %dx%d -> off-screen surface %p", pb[1], pb[3], s);
+        return s;
+    }
+    if (tl_javaapp_compositing && tl_javaapp_compositing()) {
+        EGLint pb[] = { EGL_WIDTH, tl_nwindow_width(win), EGL_HEIGHT, tl_nwindow_height(win), EGL_NONE };
+        EGLSurface s = a_eglCreatePbufferSurface(d, cfg, pb);
+        if (s) {
+            pthread_mutex_lock(&g_tex_lock);
+            for (int i = 0; i < MAX_COMP_SURFACES; i++) if (!g_comp_surf[i]) { g_comp_surf[i] = s; break; }
+            pthread_mutex_unlock(&g_tex_lock);
+        }
+        tl_log_line("egl: window %dx%d -> surface %p, composited under the app's views", pb[1], pb[3], s);
         return s;
     }
     if (E.frame_dir[0] || g_offscreen_windows) {
@@ -304,7 +351,10 @@ static EGLBoolean w_eglDestroySurface(EGLDisplay d, EGLSurface s)
 {
     pthread_mutex_lock(&g_tex_lock);
     for (int i = 0; i < MAX_TEX_SURFACES; i++) if (g_tex_surf[i].s == s) g_tex_surf[i].s = NULL;
+    bool comp = false;
+    for (int i = 0; i < MAX_COMP_SURFACES && s; i++) if (g_comp_surf[i] == s) { g_comp_surf[i] = NULL; comp = true; }
     pthread_mutex_unlock(&g_tex_lock);
+    if (comp && tl_javaapp_app_pixels) tl_javaapp_app_pixels(NULL, 0, 0);
     return a_eglDestroySurface(d, s);
 }
 static EGLSurface w_eglCreatePbufferSurface(EGLDisplay d, EGLConfig c, const EGLint *at) { return a_eglCreatePbufferSurface(d, cfg_real(c), at); }
@@ -380,6 +430,13 @@ static EGLBoolean w_eglSwapBuffers(EGLDisplay d, EGLSurface s)
     void *texwin = tex_window_of(s);
     if (texwin) { tex_swap(d, s, texwin); return EGL_TRUE; }
     unsigned long n = atomic_fetch_add(&E.presented, 1) + 1;
+    if (comp_surface(s)) {
+        EGLint w = 0, h = 0;
+        const uint8_t *px = read_back(d, s, &w, &h);
+        if (px && tl_javaapp_app_pixels) tl_javaapp_app_pixels(px, w, h);
+        if (n <= 3 || n % 600 == 0) tl_log_line("egl: swap #%lu (composited)", n);
+        return EGL_TRUE;
+    }
     if (n <= 3 || n % 600 == 0) {
         if (getenv("TL_GL_TRACE")) tl_log_line("egl: swap #%lu (%lu GL calls, %lu draws, %lu uploads so far)", n, (unsigned long)atomic_load(&g_glt_n), (unsigned long)atomic_load(&g_glt_draws), (unsigned long)atomic_load(&g_glt_uploads));
         else tl_log_line("egl: swap #%lu", n);

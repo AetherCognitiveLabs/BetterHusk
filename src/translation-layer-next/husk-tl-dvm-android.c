@@ -841,6 +841,20 @@ static void app_frame_draw(overlay *o, overlay *up, int vw, int vh)
     draw(0x0005, 0, 4);
     viewport(0, 0, vw, vh);
 }
+/* For EGL: whether this runtime's compositor holds the screen, and an app's own EGL window's frame for it (NULL: no longer shown) */
+bool tl_javaapp_compositing(void) { pthread_mutex_lock(&E2.lk); bool r = E2.ready; pthread_mutex_unlock(&E2.lk); return r; }
+void tl_javaapp_app_pixels(const void *px, int w, int h)
+{
+    pthread_mutex_lock(&E2.lk);
+    if (!px) { E2.on = false; E2.seq++; pthread_mutex_unlock(&E2.lk); return; }
+    size_t n = (size_t)w * h * 4;
+    if (E2.pw != w || E2.ph != h || !E2.px) E2.px = realloc(E2.px, n);
+    if (E2.px) memcpy(E2.px, px, n);
+    E2.pw = w; E2.ph = h; E2.tex = 0;
+    E2.x = 0; E2.y = 0; E2.w = A.cfg.width; E2.h = A.cfg.height;
+    E2.on = true; E2.seq++;
+    pthread_mutex_unlock(&E2.lk);
+}
 static uint64_t app_frame_seq(void) { pthread_mutex_lock(&E2.lk); uint64_t q = E2.seq; pthread_mutex_unlock(&E2.lk); return q; }
 static bool app_frame_on(void) { pthread_mutex_lock(&E2.lk); bool q = E2.on; pthread_mutex_unlock(&E2.lk); return q; }
 
