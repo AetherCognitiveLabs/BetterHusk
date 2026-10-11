@@ -79,7 +79,7 @@ def main():
             open(ctl, 'w').write('wait %d\nshot %s\nwait 3000\nquit\n' % (a.secs * 1000, shot))
             env['TL_CTL'] = ctl
         try:
-            r = subprocess.run(cmd, env=env, capture_output=True, text=True, errors='replace', timeout=a.secs + 90, cwd='/Volumes/GTAV/husk2/java')
+            r = subprocess.run(cmd, env=env, capture_output=True, text=True, errors='replace', timeout=a.secs + 90, cwd='/')   # an app's working directory is / on a phone (Unity builds paths from it)
             text = r.stdout + r.stderr; rc = r.returncode
         except subprocess.TimeoutExpired as e:
             text = (e.stdout or b'').decode('utf-8', 'replace') if isinstance(e.stdout, bytes) else (e.stdout or ''); rc = 'timeout'
