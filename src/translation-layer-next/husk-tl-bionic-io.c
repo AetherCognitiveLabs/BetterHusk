@@ -317,6 +317,9 @@ static bool jar_lookup(const char *p, jar_entry *out);
 static bool lib_standin(const char *p, jar_entry *out)
 {
     const char *dd = tl_data_dir();
+    /* iOS names the app's container both /var/mobile/... and /private/var/mobile/... (realpath, Qt's plugin scan): either is it */
+    if (dd && !strncmp(p, "/private/var/", 13) && !strncmp(dd, "/var/", 5)) p += 8;
+    else if (dd && !strncmp(p, "/var/", 5) && !strncmp(dd, "/private/var/", 13)) dd += 8;
     size_t dl = dd ? strlen(dd) : 0;
     if (!dl || strncmp(p, dd, dl) || strncmp(p + dl, "/lib/", 5) || strchr(p + dl + 5, '/')) return false;
     const char *name = p + dl + 5;
