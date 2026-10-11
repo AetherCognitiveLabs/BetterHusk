@@ -171,7 +171,9 @@ done
 [ $rc -eq 0 ] || { echo "==> bundle is not installable; refusing to package" >&2; exit 1; }
 
 echo "==> packaging"
-STAGE="$(mktemp -d)"
+# staged next to the build (DD), not in the system temp folder: a full startup disk made codesign fail with "internal error"
+STAGE="$(mktemp -d "$DD/stage.XXXXXX")"
+trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "$STAGE/Payload"
 cp -R "$APP" "$STAGE/Payload/"
 
