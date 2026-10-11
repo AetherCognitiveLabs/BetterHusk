@@ -85,7 +85,7 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
         TypedArray ta = c.obtainStyledAttributes(attrs, husk.S.TextView, defStyleAttr, defStyleRes);
         int appearance = ta.getResourceId(husk.S.TextView_textAppearance, -1);
         if (appearance == -1) { TypedValue v = new TypedValue(); if (c.getTheme().resolveAttribute(android.R.attr.textAppearance, v, true) && v.resourceId != 0) appearance = v.resourceId; }
-        if (appearance != -1 && appearance != 0) setTextAppearance(appearance);
+        if (appearance != -1 && appearance != 0) applyTextAppearance(getContext(), appearance);   // not the overridable setter: a subclass is not constructed yet
         CharSequence text = "", hint = null;
         int inputType = EditorInfo.TYPE_NULL, ellipsize = -1, lines = -1, maxLines = -1, minLines = -1, ems = -1, maxEms = -1, minEms = -1, maxLength = -1;
         boolean singleLine = false, password = false, editable = false, phone = false, hasNumeric = false;
@@ -223,7 +223,8 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
 
     // ---- appearance
     public void setTextAppearance(int resId) { setTextAppearance(getContext(), resId); }
-    @Deprecated public void setTextAppearance(Context c, int resId) {
+    @Deprecated public void setTextAppearance(Context c, int resId) { applyTextAppearance(c, resId); }
+    private void applyTextAppearance(Context c, int resId) {
         TypedArray a = c.obtainStyledAttributes(resId, husk.S.TextAppearance);
         ColorStateList col = a.getColorStateList(husk.S.TextAppearance_textColor);
         if (col != null) mTextColor = col;

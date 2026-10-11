@@ -157,7 +157,8 @@ public final class AppRunner {
                         Activity t = top();
                         if (t != null && !t.isFinishing() && startedAs(t).equals(intent.getComponent().getClassName())) { t.huskNewIntent(intent); return; }
                     }
-                    launch(c.name, intent, caller, request, c);
+                    // an <activity-alias> starts the activity it names; the intent keeps the alias as its component, as on Android
+                    launch("activity-alias".equals(c.kind) && c.parentActivity != null ? c.parentActivity : c.name, intent, caller, request, c);
                 } catch (Throwable t) {
                     android.util.Log.e("Husk", "starting " + c.name + " failed", t);
                     if (t instanceof RuntimeException) throw (RuntimeException) t;
