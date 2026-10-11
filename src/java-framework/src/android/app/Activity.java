@@ -99,6 +99,7 @@ public class Activity extends ContextThemeWrapper implements Window.Callback, Ke
         each(c -> c.onActivityPrePaused(this));
         mResumed = false; onPause();
         each(c -> c.onActivityPostPaused(this));
+        android.content.HuskSharedPreferences.flushAll();      /* as QueuedWork after onPause */
     }
     public final void huskStop() {
         if (mStarted) {                                  /* one that finished in onCreate never started, and does not stop */
