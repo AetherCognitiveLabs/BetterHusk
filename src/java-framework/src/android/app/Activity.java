@@ -78,6 +78,7 @@ public class Activity extends ContextThemeWrapper implements Window.Callback, Ke
     public final void huskStart() {
         each(c -> c.onActivityPreStarted(this));
         mCalled = false; onStart(); mStarted = true;
+        if (mLoaders != null) mLoaders.doStart();
         each(c -> c.onActivityPostStarted(this));
     }
     public final void huskRestart() { onRestart(); }
@@ -99,6 +100,7 @@ public class Activity extends ContextThemeWrapper implements Window.Callback, Ke
         if (mStarted) {                                  /* one that finished in onCreate never started, and does not stop */
             each(c -> c.onActivityPreStopped(this));
             mStarted = false; onStop();
+            if (mLoaders != null) mLoaders.doStop();
             each(c -> c.onActivityPostStopped(this));
         }
         if (mWindow != null && mWindow.peekDecorView() != null) { husk.ViewRoot r = husk.ViewRoot.of(mWindow.peekDecorView()); if (r != null) r.remove(); }
@@ -106,6 +108,7 @@ public class Activity extends ContextThemeWrapper implements Window.Callback, Ke
     public final void huskDestroy() {
         each(c -> c.onActivityPreDestroyed(this));
         mDestroyed = true; onDestroy();
+        if (mLoaders != null) mLoaders.doDestroy();
         each(c -> c.onActivityPostDestroyed(this));
         if (mWindow != null) mWindow.huskDestroy();
     }
@@ -326,7 +329,8 @@ public class Activity extends ContextThemeWrapper implements Window.Callback, Ke
     interface Cursor_ {}
     public FragmentManager getFragmentManager() { if (mFragments == null) mFragments = new FragmentManager(this); return mFragments; }
     public void onAttachFragment(Fragment f) {}
-    public LoaderManager getLoaderManager() { return null; }
+    private LoaderManagerImpl mLoaders;
+    public LoaderManager getLoaderManager() { if (mLoaders == null) mLoaders = new LoaderManagerImpl(mStarted); return mLoaders; }
     public void showDialog(int id) {}
     public final boolean showDialog(int id, Bundle args) { return false; }
     public void dismissDialog(int id) {}
