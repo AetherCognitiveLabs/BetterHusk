@@ -32,6 +32,7 @@ struct ContentView: View {
     @ObservedObject private var showcase = ShowcaseStore.shared
     @ObservedObject private var tlStore = TranslationLayerStore.shared
     @ObservedObject private var crash = CrashReport.shared
+    @ObservedObject private var massTest = MassTest.shared
     @ObservedObject private var updates = AppUpdates.shared
     @State private var showWhatsNew = false
 
@@ -190,9 +191,12 @@ struct ContentView: View {
         } message: {
             Text(guest.update.detail)
         }
+        .sheet(isPresented: $massTest.shareResults) { ShareSheet(items: [MassTest.resultsURL]) }
         .onAppear {
             crash.checkPreviousRun()
-            if crash.pending == nil { router.resumeSwitch() }
+            // the developer mass test: the last app's fate, then the next app (it clears a crash report it has written down)
+            massTest.resume(crash: crash)
+            if crash.pending == nil, !massTest.active { router.resumeSwitch() }
             if crash.pending == nil, WhatsNew.due { showWhatsNew = true }
             router.openGuest = { showGuestScreen = true }
             router.startAndroid = { startFromLibrary() }

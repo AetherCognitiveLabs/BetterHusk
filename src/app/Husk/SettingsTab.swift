@@ -808,6 +808,9 @@ struct AboutSettings: View {
                     NavigationLink { TLChecksView() } label: {
                         Label("Device Checks", systemImage: "stethoscope")
                     }
+                    NavigationLink { MassTestView() } label: {
+                        Label("Mass Test", systemImage: "square.stack.3d.down.forward")
+                    }
                 }
                 Button { showLogs = true } label: {
                     Label("Open Console", systemImage: "terminal")

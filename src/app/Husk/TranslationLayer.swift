@@ -263,6 +263,16 @@ final class TranslationLayerStore: ObservableObject {
 
     /// Keep a copy of one app -- one APK, or a base APK and its splits,
     /// picked together -- and report on it.
+    /// One APK copied in (the original stays where it is), and the new app's folder name: the developer mass test takes its APKs
+    /// from a folder of the user's this way, one per launch of Husk.
+    nonisolated static func importCopy(_ url: URL) -> String? {
+        let fm = FileManager.default
+        let before = Set((try? fm.contentsOfDirectory(atPath: TranslationLayer.root.path)) ?? [])
+        guard ingest([url], move: false) == nil else { return nil }
+        let after = Set((try? fm.contentsOfDirectory(atPath: TranslationLayer.root.path)) ?? [])
+        return after.subtracting(before).first
+    }
+
     func add(_ urls: [URL], move: Bool = false) {
         guard !urls.isEmpty, busy == nil else { return }
         busy = urls.count == 1 ? "Adding \(urls[0].lastPathComponent)…"

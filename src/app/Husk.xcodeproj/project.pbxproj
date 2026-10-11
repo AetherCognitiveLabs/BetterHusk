@@ -46,6 +46,7 @@
 		29B4497EDC1E890D82BDF969 /* GuestManifest.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A0490485F9BA884A0554EAD /* GuestManifest.swift */; };
 		2A3E4ED499EAA7EDDFCB3EE2 /* husk-tl-bionic-ldbl.c in Sources */ = {isa = PBXBuildFile; fileRef = 39B1A738A583D4E01CB15C60 /* husk-tl-bionic-ldbl.c */; };
 		2A70738EC7BE5ABEA7509E8B /* husk-tl-blit.c in Sources */ = {isa = PBXBuildFile; fileRef = CB3F6E9B90C81C37AAABE363 /* husk-tl-blit.c */; };
+		2BB97B7AE3D1994ABB4A67A0 /* MassTest.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2470C9D4EBE84F890D35A354 /* MassTest.swift */; };
 		305642B7B63D6DC85E36D091 /* husk-tl-nativeactivity.c in Sources */ = {isa = PBXBuildFile; fileRef = 3B72237F810FCE0EE433FA3D /* husk-tl-nativeactivity.c */; };
 		308AC941024A28652B15B3F4 /* husk-tl-res.c in Sources */ = {isa = PBXBuildFile; fileRef = 7FD8DC66414547110F0E0B0E /* husk-tl-res.c */; };
 		316E012591DFEDF656D393B4 /* HuskDownloadsWidget.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 5AC541CFA6D712D1A5F2E66B /* HuskDownloadsWidget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -261,6 +262,7 @@
 		2346959933B43E1D70ECDFC8 /* husk-tl-flutter-plugins.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "husk-tl-flutter-plugins.c"; sourceTree = "<group>"; };
 		23EF05EC9B3D8A0E6E8FC720 /* husk-tl-va.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "husk-tl-va.c"; sourceTree = "<group>"; };
 		242DD6EEB7DA97455CD76826 /* husk-tl-json.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "husk-tl-json.c"; sourceTree = "<group>"; };
+		2470C9D4EBE84F890D35A354 /* MassTest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MassTest.swift; sourceTree = "<group>"; };
 		24C5D68AB8EBD8B65BA22A9C /* husk-tl-dvm-gles30.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "husk-tl-dvm-gles30.c"; sourceTree = "<group>"; };
 		25DB1D606431C481B06C7337 /* HuskDownloadActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HuskDownloadActivity.swift; sourceTree = "<group>"; };
 		25E6473CC71D3627AB9709D1 /* husk-tl-jni.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "husk-tl-jni.h"; sourceTree = "<group>"; };
@@ -530,6 +532,7 @@
 				83275C7FEF2DEB950028D914 /* JITSetup.swift */,
 				5894E74BA308222C01AEE311 /* JITSetupView.swift */,
 				6829A7DBA27EDCC20D8C17AD /* Launcher.swift */,
+				2470C9D4EBE84F890D35A354 /* MassTest.swift */,
 				79E4865C5FE44ADD210A4917 /* OnboardingView.swift */,
 				766F6F7816E672E83CFFE47D /* PipeShim.c */,
 				2E91A601F16886103BC482AB /* QemuRunner.swift */,
@@ -1044,6 +1047,7 @@
 				70AF7E999105691EB51B54FD /* JITSetup.swift in Sources */,
 				D61EF536158A8495F2B0CE79 /* JITSetupView.swift in Sources */,
 				538ED3B97F9BC9511F1386E7 /* Launcher.swift in Sources */,
+				2BB97B7AE3D1994ABB4A67A0 /* MassTest.swift in Sources */,
 				D1DB4D94478AB7DD95E1A24E /* OnboardingView.swift in Sources */,
 				F1E2ED25F28A24BA7197C5DB /* PipeShim.c in Sources */,
 				010359771DB45AA97E28E3DC /* PlayAPI.swift in Sources */,
