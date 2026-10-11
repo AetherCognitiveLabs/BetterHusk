@@ -1097,6 +1097,10 @@ bool tl_javaapp_start(const tl_javaapp_config *cfg)
     { void tl_codewrite_enable(void); tl_codewrite_enable(); }
     A.cfg = *cfg;
     snprintf(A.apk, sizeof(A.apk), "%s", cfg->apk_path);
+    /* an app whose manifest needs OpenGL ES 3.1 or 3.2 is told the driver has it (ANGLE over Metal stops at 3.0; the shim writes
+       its 310/320 es shaders down), as it would otherwise refuse to start */
+    { int tl_manifest_gles(const char *); void tl_egl_es3_claim(int); int gv = tl_manifest_gles(cfg->apk_path);
+      if (gv >= 0x30001) { tl_egl_es3_claim(gv & 0xffff); tl_log_line("egl: the manifest asks for OpenGL ES 3.%d: the driver is described so", gv & 0xffff); } }
     snprintf(A.data, sizeof(A.data), "%s", cfg->data_dir);
     snprintf(A.ext, sizeof(A.ext), "%s/sdcard", cfg->data_dir);
     snprintf(A.fwres, sizeof(A.fwres), "%s", cfg->framework_res ? cfg->framework_res : "");

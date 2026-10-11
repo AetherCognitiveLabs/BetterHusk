@@ -453,6 +453,7 @@ static int b_AAudioStream_getChannelCount(aa_stream *s) { return s->channels; }
 static int b_AAudioStream_getFormat(aa_stream *s) { return s->format; }
 static int b_AAudioStream_getDeviceId(aa_stream *s) { (void)s; return 0; }
 static int b_AAudioStream_getFramesPerBurst(aa_stream *s) { return s->burst; }
+static int b_AAudioStream_getFramesPerDataCallback(aa_stream *s) { return s->burst; }
 static int b_AAudioStream_getBufferCapacityInFrames(aa_stream *s) { (void)s; return AA_BURST * 8; }
 static int b_AAudioStream_getBufferSizeInFrames(aa_stream *s) { return atomic_load(&s->buffer_size); }
 static int b_AAudioStream_setBufferSizeInFrames(aa_stream *s, int n) { atomic_store(&s->buffer_size, n); return n; }
@@ -925,7 +926,7 @@ const tl_bionic_entry tl_tab_ndk[] = {
     TL_WRAP("AAudioStream_requestStart", b_AAudioStream_requestStart), TL_WRAP("AAudioStream_requestStop", b_AAudioStream_requestStop),
     TL_WRAP("AAudioStream_close", b_AAudioStream_close), TL_WRAP("AAudioStream_getSampleRate", b_AAudioStream_getSampleRate),
     TL_WRAP("AAudioStream_getChannelCount", b_AAudioStream_getChannelCount), TL_WRAP("AAudioStream_getFormat", b_AAudioStream_getFormat),
-    TL_WRAP("AAudioStream_getDeviceId", b_AAudioStream_getDeviceId), TL_WRAP("AAudioStream_getFramesPerBurst", b_AAudioStream_getFramesPerBurst),
+    TL_WRAP("AAudioStream_getDeviceId", b_AAudioStream_getDeviceId), TL_WRAP("AAudioStream_getFramesPerBurst", b_AAudioStream_getFramesPerBurst), TL_WRAP("AAudioStream_getFramesPerDataCallback", b_AAudioStream_getFramesPerDataCallback),
     TL_WRAP("AAudioStream_getBufferCapacityInFrames", b_AAudioStream_getBufferCapacityInFrames), TL_WRAP("AAudioStream_getBufferSizeInFrames", b_AAudioStream_getBufferSizeInFrames),
     TL_WRAP("AAudioStream_setBufferSizeInFrames", b_AAudioStream_setBufferSizeInFrames), TL_WRAP("AAudioStream_getXRunCount", b_AAudioStream_getXRunCount),
     TL_WRAP("AAudioStream_getState", b_AAudioStream_getState), TL_WRAP("AAudioStream_read", b_AAudioStream_read),

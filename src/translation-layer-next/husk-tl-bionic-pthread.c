@@ -392,6 +392,9 @@ static int b_attr_getstacksize(const guest_attr *a, size_t *n) { *n = a->stack_s
 /* Scheduling attributes: a thread on this host runs at the system's own priority; the guest is told the default (SCHED_OTHER, priority 0) and its requests are accepted. */
 static int b_attr_getschedparam(const guest_attr *a, int *prio) { (void)a; *prio = 0; return 0; }
 static int b_attr_getschedpolicy(const guest_attr *a, int *policy) { (void)a; *policy = 0; return 0; }
+/* the inherit-scheduling choice: kept, as nothing here schedules threads differently */
+static int b_attr_setinheritsched(void *a, int v) { (void)a; return v == 0 || v == 1 ? 0 : 22; }
+static int b_attr_getinheritsched(const void *a, int *v) { (void)a; if (v) *v = 0; return 0; }
 static int b_attr_setschedpolicy(guest_attr *a, int policy) { (void)a; (void)policy; return 0; }
 static int b_attr_getguardsize(const guest_attr *a, size_t *n) { *n = a->guard_size; return 0; }
 static int b_attr_setguardsize(guest_attr *a, size_t n) { a->guard_size = n; return 0; }
@@ -530,7 +533,7 @@ const tl_bionic_entry tl_tab_pthread[] = {
     TL_WRAP("pthread_attr_setdetachstate", b_attr_setdetachstate), TL_WRAP("pthread_attr_setstacksize", b_attr_setstacksize),
     TL_WRAP("pthread_attr_getstacksize", b_attr_getstacksize), TL_WRAP("pthread_attr_getguardsize", b_attr_getguardsize), TL_WRAP("pthread_attr_setguardsize", b_attr_setguardsize), TL_WRAP("pthread_attr_setscope", b_attr_setscope), TL_WRAP("pthread_attr_getscope", b_attr_getscope), TL_WRAP("pthread_attr_getstack", b_attr_getstack),
     TL_WRAP("pthread_attr_getschedparam", b_attr_getschedparam),
-    TL_WRAP("pthread_attr_getschedpolicy", b_attr_getschedpolicy), TL_WRAP("pthread_attr_setschedpolicy", b_attr_setschedpolicy),
+    TL_WRAP("pthread_attr_getschedpolicy", b_attr_getschedpolicy), TL_WRAP("pthread_attr_setinheritsched", b_attr_setinheritsched), TL_WRAP("pthread_attr_getinheritsched", b_attr_getinheritsched), TL_WRAP("pthread_attr_setschedpolicy", b_attr_setschedpolicy),
     TL_WRAP("pthread_getattr_np", b_getattr_np),
     TL_WRAP("pthread_create", b_create), TL_WRAP("pthread_join", b_join), TL_WRAP("pthread_detach", b_detach),
     TL_DIRECT(pthread_exit), TL_DIRECT(pthread_self), TL_DIRECT(pthread_equal),
