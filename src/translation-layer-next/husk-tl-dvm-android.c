@@ -442,7 +442,8 @@ NAT(N_startGL)
     if (A.gl_started) return true;
     A.gl_version = a[2].i; A.gl_view = a[0].l;
     A.gl_started = true;
-    A.gl_renderer = a[1].l;                 /* the render thread picks it up */
+    /* the render thread picks it up; released after the version and view, so it never sees the renderer without them */
+    __atomic_store_n(&A.gl_renderer, a[1].l, __ATOMIC_RELEASE);
     return true;
 }
 
@@ -911,7 +912,7 @@ static void *gl_main(void *arg)
         if (atomic_load(&A.paused)) { usleep(20000); next = now_ns(); continue; }
         bool drew = false;
         /* the app's renderer, once its GLSurfaceView is on screen */
-        if (A.gl_renderer && !app) {
+        if (__atomic_load_n(&A.gl_renderer, __ATOMIC_ACQUIRE) && !app) {
             /* GLSurfaceView's default is OpenGL ES 1 (fixed function, through ANGLE's ES1 front end); 2 and 3 as asked */
             int es = A.gl_version >= 3 && es3 ? 3 : A.gl_version <= 1 ? 1 : 2;
             const EGLint attr[] = { 0x3098, es, EGL_NONE };
