@@ -66,6 +66,8 @@ extension TLReport {
         // SDL games run their own Java activity on the Java runtime: many prepare their data there first (Wesnoth unpacks it, OpenTTD
         // and Luanti copy theirs, launchers come before the game) and SDLActivity's Java drives the native side as on a phone.
         // python-for-android (Kivy) too: pyjnius needs real Java (proxies, string identity), which only the Java runtime has.
+        // Except Direct3D ports drawing through DXVK (GTA V): they need Vulkan on a Metal layer of their own, which only the SDL driver gives.
+        if engine == "SDL", libraries.contains(where: { $0.name.hasPrefix("libdxvk") }) { return .sdl }
         if engine == "SDL" || engine == "Python" { return .java }
         if engine == "Unreal Engine" { return .ue4 }
         if engine == "Rockstar" { return .gta }
