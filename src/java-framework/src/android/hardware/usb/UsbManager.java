@@ -80,10 +80,11 @@ public class UsbManager {
     public static java.lang.String usbGadgetHalVersionToString(int p0) { return null; }
     public static int usbSpeedToBandwidth(int p0) { return 0; }
     public boolean enableUsbDataSignal(boolean p0) { return false; }
-    public android.hardware.usb.UsbAccessory[] getAccessoryList() { return (android.hardware.usb.UsbAccessory[]) huskProps.get("AccessoryList"); }
+    /* no USB devices or accessories are attached here: empty, as on a phone with nothing plugged in (SDL lists them at start) */
+    public android.hardware.usb.UsbAccessory[] getAccessoryList() { return null; }
     public android.os.ParcelFileDescriptor getControlFd(long p0) { return null; }
     public long getCurrentFunctions() { return (huskProps.get("CurrentFunctions") instanceof Long ? (Long) huskProps.get("CurrentFunctions") : 0L); }
-    public java.util.HashMap getDeviceList() { return (java.util.HashMap) huskProps.get("DeviceList"); }
+    public java.util.HashMap<String, android.hardware.usb.UsbDevice> getDeviceList() { return new java.util.HashMap<>(); }
     public int getGadgetHalVersion() { return (huskProps.get("GadgetHalVersion") instanceof Integer ? (Integer) huskProps.get("GadgetHalVersion") : 0); }
     public java.util.List getPorts() { return (huskProps.get("Ports") != null ? (java.util.List) huskProps.get("Ports") : new java.util.ArrayList()); }
     public long getScreenUnlockedFunctions() { return (huskProps.get("ScreenUnlockedFunctions") instanceof Long ? (Long) huskProps.get("ScreenUnlockedFunctions") : 0L); }

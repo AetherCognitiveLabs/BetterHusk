@@ -1404,6 +1404,24 @@ NAT(Ctor_newInstance0)
     return true;
 }
 
+/* Constructor.newInstanceFromSerialization(ctorClass, allocClass): what ObjectInputStream makes a Serializable with -- an object of
+ * allocClass, built by the no-argument constructor of ctorClass (its first non-serializable superclass) */
+NAT(Ctor_newInstanceFromSerialization)
+{
+    (void)self;
+    jobj *cc = a[0].l, *ac = a[1].l;
+    if (!cc || !ac || cc->kind != TL_K_CLASS || ac->kind != TL_K_CLASS) return npe("class");
+    dvm_class *ctorc = dvm_class_of(cc->klass.jc), *allocc = dvm_class_of(ac->klass.jc);
+    if (!ctorc || !allocc) return dvm_throw("java/lang/InstantiationException", "%s", ac->klass.jc->name);
+    dvm_method *m = dvm_find_method(ctorc, "<init>", "()V", false);
+    if (!m) return dvm_throw("java/lang/NoSuchMethodException", "%s.<init>()", cc->klass.jc->name);
+    if (!dvm_ensure_init(allocc)) return false;
+    jobj *o = dvm_new_object(ac->klass.jc); dvm_slots(o);
+    jvalue r;
+    if (!dvm_call(m, o, NULL, &r)) return wrap_target_exception();
+    *ret = L(o);
+    return true;
+}
 
 NAT(Field_getName) { (void)a; dvm_field *f = field_of(self); *ret = L(f ? interned(f->name) : NULL); return true; }
 NAT(Field_getArtField) { (void)a; *ret = J((int64_t)(uintptr_t)field_of(self)); return true; }
@@ -1905,6 +1923,7 @@ static const entry k_natives[] = {
     { "java/lang/reflect/Method", "invoke", "(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;", Method_invoke },
     { "java/lang/reflect/Method", "getDefaultValue", "()Ljava/lang/Object;", An_Method_getDefaultValue },
     { "java/lang/reflect/Constructor", "newInstance0", "([Ljava/lang/Object;)Ljava/lang/Object;", Ctor_newInstance0 },
+    { "java/lang/reflect/Constructor", "newInstanceFromSerialization", "(Ljava/lang/Class;Ljava/lang/Class;)Ljava/lang/Object;", Ctor_newInstanceFromSerialization },
     { "java/lang/reflect/Field", "getDeclaredAnnotations", "()[Ljava/lang/annotation/Annotation;", An_Field_getDeclaredAnnotations },
     { "java/lang/reflect/Field", "getAnnotationNative", "(Ljava/lang/Class;)Ljava/lang/annotation/Annotation;", An_Field_getAnnotation },
     { "java/lang/reflect/Field", "isAnnotationPresentNative", "(Ljava/lang/Class;)Z", An_Field_isAnnotationPresent },

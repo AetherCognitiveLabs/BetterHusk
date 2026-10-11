@@ -595,7 +595,10 @@ static int bionic_waitpid(int pid, int *st, int opt) { (void)pid; (void)st; (voi
 static long bionic_ptrace(int req, int pid, void *addr, void *data) { (void)req; (void)pid; (void)addr; (void)data; tl_set_guest_errno(1); return -1; }
 
 /* A passwd entry like Android's: an app user. */
-static struct { char *pw_name; uint32_t pw_uid, pw_gid; char *pw_dir; char *pw_shell; } g_pwd = { "u0_a1", 10001, 10001, "/data", "/system/bin/sh" };
+/* bionic's LP64 struct passwd: name, passwd, uid, gid, gecos, dir, shell (an app's user, as bionic makes it from the uid) */
+typedef struct { char *pw_name, *pw_passwd; uint32_t pw_uid, pw_gid; char *pw_gecos, *pw_dir, *pw_shell; } guest_passwd;
+static guest_passwd g_pwd = { "u0_a1", NULL, 10001, 10001, NULL, "/data", "/system/bin/sh" };
+const void *tl_bionic_app_passwd(void) { return &g_pwd; }
 static void *bionic_getpwuid(uint32_t uid) { (void)uid; return &g_pwd; }
 static int bionic_getpwuid_r(uint32_t uid, void *pwd, char *buf, size_t n, void **result)
 {

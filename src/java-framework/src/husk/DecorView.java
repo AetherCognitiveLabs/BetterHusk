@@ -90,6 +90,14 @@ public final class DecorView extends FrameLayout {
     }
     public void setTitle(CharSequence t) { if (mTitle != null) mTitle.setText(t); }
     public View actionBarView() { return mActionBar; }
+    private View mTabStrip;
+    /** The action bar's navigation tabs, in a row under it (null takes the row away). */
+    public void setTabStrip(View strip) {
+        if (mStack == null || strip == mTabStrip) return;
+        if (mTabStrip != null) mStack.removeView(mTabStrip);
+        mTabStrip = strip;
+        if (strip != null) mStack.addView(strip, mActionBar != null ? mStack.indexOfChild(mActionBar) + 1 : 0, new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, (int) (48 * Native.density())));
+    }
     public void showActionBar(boolean show) { if (mActionBar != null) mActionBar.setVisibility(show ? VISIBLE : GONE); }
 
     /** A floating window (a dialog) is at least the theme's minimum width: a fraction of the screen's, or a size. */
