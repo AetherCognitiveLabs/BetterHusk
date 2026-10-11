@@ -613,6 +613,21 @@ NAT(Thread_status)
     *ret = I(alive ? 1 : a[0].z ? 5 : 0);
     return true;
 }
+/* UNIXProcess.forkAndExec(prog, argBlock, argc, envBlock, envc, dir, fds, redirectErrorStream): an app starting a
+ * program as a process of its own (Winlator's Box64 and Wine, a shell command). An iOS app can not start processes; the program
+ * is named in the log (the diagnosis reads it) and the app hears what Android says of a program it can not run. */
+NAT(UNIXProcess_forkAndExec)
+{
+    (void)self; (void)ret;
+    char prog[600] = "?", argv0[200] = "";
+    jobj *pb = a[0].l, *ab = a[1].l;
+    if (pb && pb->kind == TL_K_PRIM_ARRAY) snprintf(prog, sizeof(prog), "%.*s", (int)(pb->arr.len < 599 ? pb->arr.len : 599), (const char *)pb->arr.data);
+    if (ab && ab->kind == TL_K_PRIM_ARRAY && ab->arr.len) snprintf(argv0, sizeof(argv0), "%.*s", (int)(ab->arr.len < 199 ? ab->arr.len : 199), (const char *)ab->arr.data);
+    for (char *q = argv0; *q; q++) if (*q == 0) *q = ' ';
+    tl_log_line("dvm: the app started a process: %s %s -- an iOS app can not start processes", prog, argv0);
+    return dvm_throw("java/io/IOException", "error=38, Function not implemented");
+}
+
 NAT(Thread_holdsLock)
 {
     UNUSED;
@@ -1836,6 +1851,7 @@ static const entry k_natives[] = {
     { "java/lang/Thread", "isInterrupted", "()Z", Thread_false },
     { "java/lang/Thread", "interrupt0", "()V", Thread_noop },
     { "java/lang/Thread", "holdsLock", "(Ljava/lang/Object;)Z", Thread_holdsLock },
+    { "java/lang/UNIXProcess", "forkAndExec", "([B[BI[BI[B[IZ)I", UNIXProcess_forkAndExec },
     { "java/lang/Thread", "nativeCreate", "(Ljava/lang/Thread;JZ)V", Thread_nativeCreate },
     { "java/lang/Thread", "nativeGetStatus", "(Z)I", Thread_status },
     { "java/lang/Thread", "nicenessForPriority", "(I)I", Thread_nice },

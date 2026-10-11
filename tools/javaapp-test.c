@@ -43,6 +43,8 @@ void tl_log_line(const char *fmt, ...)
     pthread_mutex_unlock(&m);
 }
 
+static struct timespec g_start;                 /* when the run began (the quit summary) */
+
 static void describe(const char *label, const void *addr)
 {
     const char *lib = NULL; const void *sa = NULL;
@@ -141,7 +143,12 @@ static void *control_thread(void *arg)
             else if (!strncmp(line, "back", 4)) tl_javaapp_back();
             else if (!strncmp(line, "pause", 5)) tl_javaapp_set_paused(true);
             else if (!strncmp(line, "resume", 6)) tl_javaapp_set_paused(false);
-            else if (!strncmp(line, "quit", 4)) { fprintf(stderr, "ctl: quit\n"); fflush(stderr); _exit(0); }
+            else if (!strncmp(line, "quit", 4)) {
+                /* the run's frame count, as a timed-out run says it (sweeps compare it) */
+                struct timespec now; clock_gettime(CLOCK_MONOTONIC, &now);
+                fprintf(stderr, "javaapp: %lu frames in %d s\nctl: quit\n", tl_javaapp_frames(), (int)(now.tv_sec - g_start.tv_sec));
+                fflush(stderr); _exit(0);
+            }
         }
         fclose(f);
     }
@@ -218,6 +225,7 @@ static void *run(void *p)
 
 int main(int argc, char **argv)
 {
+    clock_gettime(CLOCK_MONOTONIC, &g_start);
     if (argc < 2) { fprintf(stderr, "usage: %s <apk> [seconds] [width height]\n", argv[0]); return 2; }
     static uint8_t altstack[1 << 16];
     stack_t ss = { .ss_sp = altstack, .ss_size = sizeof(altstack) };
