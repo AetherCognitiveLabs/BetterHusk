@@ -14,8 +14,11 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 BIN = '/Volumes/GTAV/husk2/bin'
 JAVA = '/Volumes/GTAV/husk2/java/javaapp-test'
 SCAN = '/Volumes/GTAV/husk2/tl-scan'
+# the harness of the driver the app picks for each engine (TranslationLayer.swift's nativeEngine)
 NATIVE = {'Unity (IL2CPP)': 'unity-test', 'Unity': 'unity-test', 'Unity (Mono)': 'unity-test', 'Flutter': 'flutter-test',
-          'Cocos': 'cocos-test', 'SDL': 'sdl-test', 'Python': 'sdl-test'}
+          'Cocos': 'cocos-test', 'SDL': 'sdl-test', 'Python': 'sdl-test', 'Godot': 'godot-test', 'GameMaker': 'gamemaker-test',
+          'NativeActivity': 'ue-test', 'Unreal Engine': 'ue-test', 'Rockstar': 'gta-test', 'Minecraft': 'ga-test'}
+# harnesses that take a screenshot when told to (TL_CTL), rather than leaving frames in a folder
 
 def apks(d):
     fs = sorted(glob.glob(os.path.join(d, '*.apk')), key=len)
@@ -62,7 +65,11 @@ def main():
         if engine in NATIVE:
             harness = NATIVE[engine]
             env['TL_SPLITS'] = ':'.join(splits)
-            cmd = [os.path.join(BIN, harness), base, str(a.secs), '1748', '804']
+            cmd = [os.path.join(BIN, harness), base, str(a.secs + 20), '1748', '804']
+            # a screenshot near the end of the run, through the harness's control file (every native harness reads one)
+            ctl = os.path.join(a.out, pkg + '.ctl')
+            open(ctl, 'w').write('wait %d\nshot %s\nquit\n' % (a.secs * 1000, shot))
+            env['TL_CTL'] = ctl
         else:
             harness = 'javaapp-test'
             cmd = [JAVA, d, str(a.secs)]

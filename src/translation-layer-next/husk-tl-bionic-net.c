@@ -401,7 +401,8 @@ static int b_getaddrinfo(const char *node, const char *service, const guest_addr
         hp = &hints;
     }
     int r = getaddrinfo(node, service, hp, &dres);
-    NTRACE("getaddrinfo(%s, %s) -> %d", node ? node : "(null)", service ? service : "(null)", r);
+    NTRACE("getaddrinfo(%s, %s, family %d flags %#x socktype %d) -> %d", node ? node : "(null)", service ? service : "(null)",
+           gh ? gh->ai_family : -1, gh ? gh->ai_flags : -1, gh ? gh->ai_socktype : -1, r);
     if (r) return r;                                                /* EAI_* values agree with bionic's */
     guest_addrinfo *head = NULL, **tail = &head;
     for (struct addrinfo *a = dres; a; a = a->ai_next) {

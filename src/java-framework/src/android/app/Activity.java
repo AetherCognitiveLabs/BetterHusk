@@ -154,6 +154,13 @@ public class Activity extends ContextThemeWrapper implements Window.Callback, Ke
     public void onSaveInstanceState(Bundle out, android.os.PersistableBundle p) { onSaveInstanceState(out); }
     protected void onRestoreInstanceState(Bundle state) {}
     protected void onNewIntent(Intent i) {}
+    /** A new intent for this activity (singleTop, or brought back by CLEAR_TOP): as Android, paused around onNewIntent when it is up. */
+    public void huskNewIntent(Intent i) {
+        boolean up = isResumedHusk();
+        if (up) huskPause();
+        onNewIntent(i);
+        if (up) huskResume();
+    }
     protected void onActivityResult(int request, int result, Intent data) {}
     public void onActivityReenter(int result, Intent data) {}
     protected void onUserLeaveHint() {}

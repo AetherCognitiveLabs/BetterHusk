@@ -137,6 +137,9 @@ static int b_mutexattr_settype(long *a, int type)
     return 0;
 }
 static int b_mutexattr_gettype(const long *a, int *type) { *type = (int)(*a & 0xf); return 0; }
+/* process-shared: this is one process, so remembered and nothing more */
+static int b_mutexattr_setpshared(long *a, int ps) { if (ps != 0 && ps != 1) return 22; *a = (*a & ~0x10L) | (ps ? 0x10L : 0); return 0; }
+static int b_mutexattr_getpshared(const long *a, int *ps) { *ps = (*a & 0x10L) ? 1 : 0; return 0; }
 
 /* ------------------------------------------------------ condition variables */
 
@@ -207,6 +210,8 @@ static int b_cond_timedwait_monotonic(void *g, void *m, const struct timespec *a
 
 static int b_condattr_init(long *a)    { *a = 0; return 0; }
 static int b_condattr_destroy(long *a) { (void)a; return 0; }
+static int b_condattr_setpshared(long *a, int ps) { if (ps != 0 && ps != 1) return 22; *a = (*a & ~1L) | (ps ? 1L : 0); return 0; }
+static int b_condattr_getpshared(const long *a, int *ps) { *ps = (int)(*a & 1L); return 0; }
 static int b_condattr_setclock(long *a, int clock)
 {
     if (clock == 0) *a &= ~2L;
@@ -389,6 +394,9 @@ static int b_attr_getschedparam(const guest_attr *a, int *prio) { (void)a; *prio
 static int b_attr_getschedpolicy(const guest_attr *a, int *policy) { (void)a; *policy = 0; return 0; }
 static int b_attr_setschedpolicy(guest_attr *a, int policy) { (void)a; (void)policy; return 0; }
 static int b_attr_getguardsize(const guest_attr *a, size_t *n) { *n = a->guard_size; return 0; }
+static int b_attr_setguardsize(guest_attr *a, size_t n) { a->guard_size = n; return 0; }
+static int b_attr_setscope(guest_attr *a, int scope) { (void)a; return scope == 0 ? 0 : 95; }    /* only PTHREAD_SCOPE_SYSTEM, as bionic */
+static int b_attr_getscope(const guest_attr *a, int *scope) { (void)a; *scope = 0; return 0; }
 static int b_attr_getstack(const guest_attr *a, void **base, size_t *size) { *base = a->stack_base; *size = a->stack_size; return 0; }
 
 static int b_getattr_np(pthread_t t, guest_attr *a)
@@ -488,13 +496,13 @@ const tl_bionic_entry tl_tab_pthread[] = {
     TL_WRAP("pthread_mutex_lock", b_mutex_lock), TL_WRAP("pthread_mutex_trylock", b_mutex_trylock),
     TL_WRAP("pthread_mutex_unlock", b_mutex_unlock),
     TL_WRAP("pthread_mutexattr_init", b_mutexattr_init), TL_WRAP("pthread_mutexattr_destroy", b_mutexattr_destroy),
-    TL_WRAP("pthread_mutexattr_settype", b_mutexattr_settype), TL_WRAP("pthread_mutexattr_gettype", b_mutexattr_gettype),
+    TL_WRAP("pthread_mutexattr_settype", b_mutexattr_settype), TL_WRAP("pthread_mutexattr_setpshared", b_mutexattr_setpshared), TL_WRAP("pthread_mutexattr_getpshared", b_mutexattr_getpshared), TL_WRAP("pthread_mutexattr_gettype", b_mutexattr_gettype),
     TL_WRAP("pthread_cond_init", b_cond_init), TL_WRAP("pthread_cond_destroy", b_cond_destroy),
     TL_WRAP("pthread_cond_signal", b_cond_signal), TL_WRAP("pthread_cond_broadcast", b_cond_broadcast),
     TL_WRAP("pthread_cond_wait", b_cond_wait), TL_WRAP("pthread_cond_timedwait", b_cond_timedwait), TL_WRAP("pthread_cond_clockwait", b_cond_clockwait),
     TL_WRAP("pthread_cond_timedwait_monotonic_np", b_cond_timedwait_monotonic), TL_WRAP("pthread_cond_timedwait_monotonic", b_cond_timedwait_monotonic),
     TL_WRAP("pthread_condattr_init", b_condattr_init), TL_WRAP("pthread_condattr_destroy", b_condattr_destroy),
-    TL_WRAP("pthread_condattr_setclock", b_condattr_setclock),
+    TL_WRAP("pthread_condattr_setclock", b_condattr_setclock), TL_WRAP("pthread_condattr_setpshared", b_condattr_setpshared), TL_WRAP("pthread_condattr_getpshared", b_condattr_getpshared),
     TL_WRAP("pthread_rwlock_init", b_rwlock_init), TL_WRAP("pthread_rwlock_destroy", b_rwlock_destroy),
     TL_WRAP("pthread_rwlock_rdlock", b_rwlock_rdlock), TL_WRAP("pthread_rwlock_wrlock", b_rwlock_wrlock),
     TL_WRAP("pthread_rwlock_tryrdlock", b_rwlock_tryrdlock), TL_WRAP("pthread_rwlock_trywrlock", b_rwlock_trywrlock),
@@ -508,7 +516,7 @@ const tl_bionic_entry tl_tab_pthread[] = {
     TL_WRAP("pthread_getspecific", b_getspecific), TL_WRAP("pthread_setspecific", b_setspecific),
     TL_WRAP("pthread_attr_init", b_attr_init), TL_WRAP("pthread_attr_destroy", b_attr_destroy),
     TL_WRAP("pthread_attr_setdetachstate", b_attr_setdetachstate), TL_WRAP("pthread_attr_setstacksize", b_attr_setstacksize),
-    TL_WRAP("pthread_attr_getstacksize", b_attr_getstacksize), TL_WRAP("pthread_attr_getguardsize", b_attr_getguardsize), TL_WRAP("pthread_attr_getstack", b_attr_getstack),
+    TL_WRAP("pthread_attr_getstacksize", b_attr_getstacksize), TL_WRAP("pthread_attr_getguardsize", b_attr_getguardsize), TL_WRAP("pthread_attr_setguardsize", b_attr_setguardsize), TL_WRAP("pthread_attr_setscope", b_attr_setscope), TL_WRAP("pthread_attr_getscope", b_attr_getscope), TL_WRAP("pthread_attr_getstack", b_attr_getstack),
     TL_WRAP("pthread_attr_getschedparam", b_attr_getschedparam),
     TL_WRAP("pthread_attr_getschedpolicy", b_attr_getschedpolicy), TL_WRAP("pthread_attr_setschedpolicy", b_attr_setschedpolicy),
     TL_WRAP("pthread_getattr_np", b_getattr_np),

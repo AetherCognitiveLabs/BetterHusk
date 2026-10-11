@@ -568,6 +568,14 @@ static long b_write(int fd, const void *p, size_t n)
     if (net_trace_fd(fd)) tl_log_line("net: write(fd %d, %zu) -> %ld errno %d", fd, n, r, r < 0 ? e : 0);
     return r;
 }
+/* eventfd's helpers, over the pipe an eventfd is here */
+static int b_eventfd_write(int fd, uint64_t v) { return b_write(fd, &v, sizeof(v)) == (long)sizeof(v) ? 0 : -1; }
+static int b_eventfd_read(int fd, uint64_t *v) { return b_read(fd, v, sizeof(*v)) == (long)sizeof(*v) ? 0 : -1; }
+/* mount tables (libopenjdk's FileStore): there are none to list */
+static void *b_setmntent(const char *path, const char *mode) { (void)path; (void)mode; tl_set_guest_errno(2); return NULL; }
+static void *b_getmntent(void *f) { (void)f; return NULL; }
+static void *b_getmntent_r(void *f, void *ent, char *buf, int n) { (void)f; (void)ent; (void)buf; (void)n; return NULL; }
+static int b_endmntent(void *f) { (void)f; return 1; }
 /* write() with the buffer's size checked first, as bionic's FORTIFY does */
 static long b___write_chk(int fd, const void *p, size_t n, size_t bufsize) { if (n > bufsize) abort(); return b_write(fd, p, n); }
 static long b_writev(int fd, const struct iovec *v, int n) { TL_ERRNO_BEGIN(); long r = writev(fd, v, n); TL_ERRNO_END(); return r; }
@@ -1479,6 +1487,8 @@ const tl_bionic_entry tl_tab_io[] = {
     TL_WRAP("pread64", b_pread64), TL_WRAP("pwrite64", b_pwrite64), TL_WRAP("pread", b_pread64), TL_WRAP("pwrite", b_pwrite64), TL_WRAP("__pread64_chk", b___pread64_chk), TL_WRAP("__pwrite64_chk", b___pwrite64_chk), TL_WRAP("__pwrite_chk", b___pwrite64_chk), TL_WRAP("__pread_chk", b___pread64_chk), TL_WRAP("lseek", b_lseek), TL_WRAP("lseek64", b_lseek),
     TL_WRAP("dup", b_dup), TL_WRAP("dup2", b_dup2), TL_WRAP("pipe", b_pipe), TL_WRAP("fsync", b_fsync), TL_WRAP("fdatasync", b_fsync),
     TL_WRAP("mkfifo", b_mkfifo), TL_WRAP("mknod", b_mknod), TL_WRAP("mknodat", b_mknodat), TL_WRAP("mkfifoat", b_mkfifoat),
+    TL_WRAP("eventfd_write", b_eventfd_write), TL_WRAP("eventfd_read", b_eventfd_read), TL_WRAP("setmntent", b_setmntent),
+    TL_WRAP("getmntent", b_getmntent), TL_WRAP("getmntent_r", b_getmntent_r), TL_WRAP("endmntent", b_endmntent),
     TL_WRAP("ftruncate", b_ftruncate), TL_WRAP("ftruncate64", b_ftruncate), TL_WRAP("truncate", b_truncate), TL_WRAP("isatty", b_isatty), TL_WRAP("flock", b_flock),
     TL_WRAP("unlink", b_unlink), TL_WRAP("rmdir", b_rmdir), TL_WRAP("mkdir", b_mkdir), TL_WRAP("access", b_access),
     TL_WRAP("chmod", b_chmod), TL_WRAP("fchmod", b_fchmod), TL_WRAP("link", b_link), TL_WRAP("symlink", b_symlink),

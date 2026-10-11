@@ -283,6 +283,9 @@ static int b_fseek(void *f, long off, int whence) { TL_ERRNO_BEGIN(); int r = fs
 static int b_fseeko(void *f, long off, int whence) { TL_ERRNO_BEGIN(); int r = fseeko(map_stream(f), off, whence); TL_ERRNO_END(); return r; }
 static long b_ftell(void *f) { TL_ERRNO_BEGIN(); long r = ftell(map_stream(f)); TL_ERRNO_END(); return r; }
 static long b_ftello(void *f) { TL_ERRNO_BEGIN(); long r = ftello(map_stream(f)); TL_ERRNO_END(); return r; }
+/* bionic's fpos_t is an off_t: the position alone */
+static int b_fgetpos(void *f, int64_t *pos) { TL_ERRNO_BEGIN(); off_t r = ftello(map_stream(f)); TL_ERRNO_END(); if (r < 0) return -1; *pos = r; return 0; }
+static int b_fsetpos(void *f, const int64_t *pos) { TL_ERRNO_BEGIN(); int r = fseeko(map_stream(f), (off_t)*pos, SEEK_SET); TL_ERRNO_END(); return r; }
 static int b_fflush(void *f)
 {
     if (!f) { TL_ERRNO_BEGIN(); int r = fflush(NULL); TL_ERRNO_END(); return r; }
@@ -660,7 +663,7 @@ const tl_bionic_entry tl_tab_str[] = {
     TL_DATA("__sF", g_sF),
     TL_WRAP("fopen", b_fopen), TL_WRAP("freopen", b_freopen), TL_WRAP("freopen64", b_freopen), TL_WRAP("fopen64", b_fopen), TL_WRAP("fseeko64", b_fseeko), TL_WRAP("ftello64", b_ftello), TL_DIRECT(funopen), TL_DIRECT(wcwidth), TL_WRAP("fdopen", b_fdopen), TL_WRAP("fclose", b_fclose), TL_WRAP("fgets", b_fgets),
     TL_WRAP("fread", b_fread), TL_WRAP("fwrite", b_fwrite), TL_WRAP("fseek", b_fseek), TL_WRAP("fseeko", b_fseeko),
-    TL_WRAP("ftell", b_ftell), TL_WRAP("ftello", b_ftello), TL_WRAP("fflush", b_fflush), TL_WRAP("fputc", b_fputc),
+    TL_WRAP("ftell", b_ftell), TL_WRAP("ftello", b_ftello), TL_WRAP("fgetpos", b_fgetpos), TL_WRAP("fsetpos", b_fsetpos), TL_WRAP("fgetpos64", b_fgetpos), TL_WRAP("fsetpos64", b_fsetpos), TL_WRAP("fflush", b_fflush), TL_WRAP("fputc", b_fputc),
     TL_WRAP("getline", b_getline), TL_WRAP("getdelim", b_getdelim), TL_WRAP("flockfile", b_flockfile), TL_WRAP("funlockfile", b_funlockfile),
     TL_WRAP("getc_unlocked", b_getc_unlocked), TL_WRAP("putc_unlocked", b_putc_unlocked),
     TL_WRAP("putc", b_putc), TL_WRAP("getc", b_getc), TL_WRAP("fgetc", b_getc), TL_WRAP("ungetc", b_ungetc), TL_WRAP("getwc", b_getwc),

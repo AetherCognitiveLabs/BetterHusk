@@ -198,6 +198,8 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
             if ((mInputType & EditorInfo.TYPE_MASK_CLASS) != EditorInfo.TYPE_CLASS_TEXT || (mInputType & EditorInfo.TYPE_TEXT_FLAG_MULTI_LINE) == 0) { if (lines < 0 && maxLines < 0 && (mInputType & EditorInfo.TYPE_TEXT_FLAG_MULTI_LINE) == 0) singleLine = true; }
         } else if (mTextIsSelectable) { bt = BufferType.SPANNABLE; mMovement = ArrowKeyMovementMethod.getInstance(); }
         if (mAutoLinkMask != 0) bt = bt == BufferType.EDITABLE ? bt : BufferType.SPANNABLE;
+        // textAllCaps from the layout or style: as Android, an all-caps transformation unless one is set already (password)
+        if (mAllCaps && mTransformation == null) mTransformation = new AllCapsTransformation();
         if (singleLine) applySingleLine(true, mTransformation == null);
         if (lines >= 0) setLines(lines);
         else { if (maxLines >= 0) setMaxLines(maxLines); if (minLines >= 0) setMinLines(minLines); }
@@ -604,7 +606,8 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
     public ColorStateList getCompoundDrawableTintList() { return mDrawableTint; }
     public void setCompoundDrawableTintMode(PorterDuff.Mode m) { mDrawableTintMode = m; for (Drawable d : mDrawables) if (d != null) d.setTintMode(m); }
     public PorterDuff.Mode getCompoundDrawableTintMode() { return mDrawableTintMode; }
-    @Override protected boolean verifyDrawable(Drawable who) { for (Drawable d : mDrawables) if (d == who) return true; return super.verifyDrawable(who); }
+    /* called from View's constructor too (a tinted background invalidates itself) before this class's fields are set */
+    @Override protected boolean verifyDrawable(Drawable who) { if (mDrawables != null) for (Drawable d : mDrawables) if (d == who) return true; return super.verifyDrawable(who); }
     private int dw(int i) { Drawable d = mDrawables[i]; return d == null ? 0 : d.getBounds().width(); }
     private int dh(int i) { Drawable d = mDrawables[i]; return d == null ? 0 : d.getBounds().height(); }
     public int getCompoundPaddingLeft() { return getPaddingLeft() + (mDrawables[0] != null ? dw(0) + mDrawablePadding : 0); }

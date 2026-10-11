@@ -67,7 +67,11 @@ public final class AppRunner {
         app.onCreate();
         Manifest.Component launcher = Manifest.activity(activityClass);
         Intent main = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER);
-        main.setComponent(new ComponentName(Native.packageName(), activityClass));
+        // started through the launcher's alias, the activity's component is the alias (Android compares that, not the class, when
+        // the app later starts the target by name: LinkedIn's MainActivity starts a new one of itself and finishes)
+        Manifest.Component entry = Manifest.launcher();
+        String startedAs = entry != null && "activity-alias".equals(entry.kind) && activityClass.equals(entry.parentActivity) ? entry.name : activityClass;
+        main.setComponent(new ComponentName(Native.packageName(), startedAs));
         main.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         launch(activityClass, main, null, -1, launcher);
         Looper.loop();
@@ -124,6 +128,11 @@ public final class AppRunner {
         }
         return a;
     }
+    /** The component an activity was started as: its class, or the alias it was reached through. */
+    private static String startedAs(Activity a) {
+        Intent i = a.getIntent();
+        return i != null && i.getComponent() != null ? i.getComponent().getClassName() : a.getClass().getName();
+    }
     /** Context.startActivity: an activity of the app's own, or something the host can open (a web page, mail, the store). */
     public static void startActivity(Context from, Intent i, int request, Bundle opts) {
         Manifest.Component c = Manifest.resolve(i);
@@ -135,7 +144,7 @@ public final class AppRunner {
             sHandler.post(() -> {
                 try {
                     if ((intent.getFlags() & Intent.FLAG_ACTIVITY_CLEAR_TOP) != 0) {
-                        for (int k = sStack.size() - 1; k >= 0; k--) if (sStack.get(k).getClass().getName().equals(c.name)) {
+                        for (int k = sStack.size() - 1; k >= 0; k--) if (startedAs(sStack.get(k)).equals(intent.getComponent().getClassName())) {
                             Activity existing = sStack.get(k);
                             while (top() != existing) finishNow(top(), false);
                             existing.setIntent(intent);
@@ -146,7 +155,7 @@ public final class AppRunner {
                     }
                     if ((intent.getFlags() & 0x20000000 /* SINGLE_TOP */) != 0 || c.launchMode == 1) {
                         Activity t = top();
-                        if (t != null && t.getClass().getName().equals(c.name)) { t.setIntent(intent); return; }
+                        if (t != null && !t.isFinishing() && startedAs(t).equals(intent.getComponent().getClassName())) { t.huskNewIntent(intent); return; }
                     }
                     launch(c.name, intent, caller, request, c);
                 } catch (Throwable t) {
