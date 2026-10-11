@@ -156,11 +156,18 @@ static NSString *bridge_js(void)
     c.mediaTypesRequiringUserActionForPlayback = WKAudiovisualMediaTypeNone;
 #endif
     @try { [c.preferences setValue:@YES forKey:@"allowFileAccessFromFileURLs"]; } @catch (NSException *e) {}
+    @try { [c setValue:@YES forKey:@"allowUniversalAccessFromFileURLs"]; } @catch (NSException *e) {}
     _web = [[WKWebView alloc] initWithFrame:CGRectMake(0, 0, 10, 10) configuration:c];
     _web.navigationDelegate = self;
     _web.UIDelegate = self;
     _web.customUserAgent = @"Mozilla/5.0 (Linux; Android 14; Husk; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/124.0.0.0 Mobile Safari/537.36";
     if (@available(iOS 16.4, macOS 13.3, *)) _web.inspectable = YES;
+#if !TARGET_OS_IPHONE
+    /* the harness's window is nearly all off screen: without this WebKit calls the page hidden and pages that wait to be seen
+       (EA's consent dialog fades in on visibility) never show */
+    SEL occl = NSSelectorFromString(@"_setWindowOcclusionDetectionEnabled:");
+    if ([_web respondsToSelector:occl]) { void (*f)(id, SEL, BOOL) = (void (*)(id, SEL, BOOL))[_web methodForSelector:occl]; f(_web, occl, NO); }
+#endif
 #if TARGET_OS_IPHONE
     _web.opaque = NO;
     _web.backgroundColor = UIColor.whiteColor;
@@ -402,7 +409,12 @@ NAT(W_loadData)
         HuskWeb *h = view_of(wid);
         if (!h) return;
         h.apiLoad = true;
-        [h.web loadData:data ?: [NSData data] MIMEType:mime characterEncodingName:enc baseURL:(base ? [NSURL URLWithString:base] : nil) ?: [NSURL URLWithString:@"about:blank"]];
+        /* Android lets a page loaded without a base URL use file:// frames and images when file access is on (EA's consent
+           dialog is made of iframes on files in the app's folder); WebKit only lets a file:// page do that, so such a page gets
+           the app's data folder as its base */
+        NSURL *b = base.length && ![base isEqualToString:@"about:blank"] ? [NSURL URLWithString:base] : nil;
+        if (!b) { extern const char *tl_data_dir(void); b = [NSURL fileURLWithPath:[NSString stringWithUTF8String:tl_data_dir()] isDirectory:YES]; }
+        [h.web loadData:data ?: [NSData data] MIMEType:mime characterEncodingName:enc baseURL:b];
     });
     return true;
 }

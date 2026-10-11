@@ -133,6 +133,22 @@ struct AppDiagnosis: Identifiable, Equatable {
             return googleDiagnosis(l)
         }
 
+        // A game whose data comes as an expansion file the store did not install
+        if let l = lines.first(where: { $0.contains("expansion file (OBB) is missing") }) {
+            return AppDiagnosis(kind: .missingSplits, title: "Missing game data",
+                                detail: "This game keeps most of its data in an expansion file (OBB) that the Play Store downloads separately "
+                                    + "from the app. Husk installed the app itself but not that file, so the game cannot load.",
+                                evidence: l)
+        }
+
+        // Video that only plays with DRM keys
+        if let l = lines.first(where: { $0.contains("Husk cannot decrypt protected media") }) {
+            return AppDiagnosis(kind: .protected, title: "Protected video is not supported",
+                                detail: "The app's video is DRM-protected (Widevine), which only certified Android devices can decrypt. "
+                                    + "Unprotected video plays; protected video stays black.",
+                                evidence: l)
+        }
+
         // A function of Android's C library or system libraries that was never written for Husk
         if let l = lines.first(where: { $0.contains("CALLED an unresolved import: ") }), lines.contains(where: { $0.contains("the app finished") || $0.contains("CRASH") }) {
             let fn = l.components(separatedBy: "unresolved import: ").last?.split(separator: " ").first.map(String.init) ?? "?"
