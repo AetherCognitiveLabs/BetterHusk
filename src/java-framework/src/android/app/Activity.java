@@ -32,6 +32,10 @@ public class Activity extends ContextThemeWrapper implements Window.Callback, Ke
     private ActionBar mActionBar;
     private final ArrayList<Application.ActivityLifecycleCallbacks> mLifecycleCallbacks = new ArrayList<>();
     private FragmentManager mFragments;
+    /* how far the platform fragments may go (FragmentManager's host states): created, activity created, started, resumed */
+    private int mFragmentHost;
+    final int huskFragmentHost() { return mFragmentHost; }
+    private void fragmentHost(int state) { mFragmentHost = state; if (mFragments != null) mFragments.huskHostState(state); }
     private int mRequestedOrientation = -1;
     private husk.Manifest.Component mInfo;
 
@@ -67,8 +71,10 @@ public class Activity extends ContextThemeWrapper implements Window.Callback, Ke
         getLayoutInflater().setPrivateFactory(this);
         each(c -> c.onActivityPreCreated(this, state));
         mCalled = false;
+        mFragmentHost = FragmentManager.HOST_CREATED;
         onCreate(state);
         if (!mCalled) throw new SuperNotCalledException("Activity " + getClass().getName() + " did not call through to super.onCreate()");
+        fragmentHost(FragmentManager.HOST_ACTIVITY_CREATED);   /* as performCreate: fragments hear onActivityCreated after onCreate */
         /* as Activity.performCreate: visibility comes from the theme after onCreate, so setVisible(false) there does not hide
            the activity (Spotify's login calls it and never shows itself again) */
         try {
@@ -82,6 +88,7 @@ public class Activity extends ContextThemeWrapper implements Window.Callback, Ke
     public final void huskStart() {
         each(c -> c.onActivityPreStarted(this));
         mCalled = false; onStart(); mStarted = true;
+        fragmentHost(FragmentManager.HOST_STARTED);
         if (mLoaders != null) mLoaders.doStart();
         each(c -> c.onActivityPostStarted(this));
     }
@@ -91,12 +98,14 @@ public class Activity extends ContextThemeWrapper implements Window.Callback, Ke
         mCalled = false;
         onResume();
         mResumed = true;
+        fragmentHost(FragmentManager.HOST_RESUMED);
         onPostResume();
         each(c -> c.onActivityPostResumed(this));
         if (mVisibleFromClient) makeVisible();
     }
     public final void huskPause() {
         each(c -> c.onActivityPrePaused(this));
+        fragmentHost(FragmentManager.HOST_STARTED);            /* fragments pause before the activity, as performPause */
         mResumed = false; onPause();
         each(c -> c.onActivityPostPaused(this));
         android.content.HuskSharedPreferences.flushAll();      /* as QueuedWork after onPause */
@@ -104,6 +113,7 @@ public class Activity extends ContextThemeWrapper implements Window.Callback, Ke
     public final void huskStop() {
         if (mStarted) {                                  /* one that finished in onCreate never started, and does not stop */
             each(c -> c.onActivityPreStopped(this));
+            fragmentHost(FragmentManager.HOST_ACTIVITY_CREATED);
             mStarted = false; onStop();
             if (mLoaders != null) mLoaders.doStop();
             each(c -> c.onActivityPostStopped(this));
@@ -112,6 +122,7 @@ public class Activity extends ContextThemeWrapper implements Window.Callback, Ke
     }
     public final void huskDestroy() {
         each(c -> c.onActivityPreDestroyed(this));
+        fragmentHost(FragmentManager.HOST_NONE);
         mDestroyed = true; onDestroy();
         if (mLoaders != null) mLoaders.doDestroy();
         each(c -> c.onActivityPostDestroyed(this));
