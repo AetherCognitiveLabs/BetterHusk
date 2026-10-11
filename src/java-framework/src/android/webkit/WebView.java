@@ -187,9 +187,15 @@ public class WebView extends AbsoluteLayout implements android.view.ViewTreeObse
             // the app may serve this origin itself (shouldInterceptRequest): ask before WebKit goes to the network
             sIo.execute(() -> {
                 WebResourceResponse r = intercept(target, "GET", true, additionalHttpHeaders);
-                Log.d(TAG, target + (r != null ? ": the app serves this origin" : ": from the network"));
+                Uri u = Uri.parse(target);
+                boolean virtual = r != null && !NETWORK_ONLY && virtualHost(u.getHost());
+                Log.d(TAG, target + (virtual ? ": the app serves this origin" : r != null ? ": the app also serves this public origin: from the network first" : ": from the network"));
                 synchronized (this) {
-                    if (r != null && !NETWORK_ONLY) { Uri u = Uri.parse(target); mLocalSchemes.put(u.getHost(), u.getScheme()); mPrimed.put(toHost(target), r); }
+                    // An origin only the app has (localhost, *.androidplatform.net, ...) loads through the huskapp scheme. A public one
+                    // the app also answers for (an offline cache: Notion) loads from the network, so the page keeps its https origin --
+                    // pages route by it -- unless the network does not have it (a made-up domain), and then through the app after all.
+                    if (virtual) { mLocalSchemes.put(u.getHost(), u.getScheme()); mPrimed.put(toHost(target), r); }
+                    else if (r != null && u.getHost() != null) mNetworkFirst.put(u.getHost().toLowerCase(java.util.Locale.ROOT), u.getScheme());
                 }
                 husk.Web.load(mId, toHost(target), headers, null);
             });
@@ -507,6 +513,15 @@ public class WebView extends AbsoluteLayout implements android.view.ViewTreeObse
         return end < url.length() && url.charAt(end) == '/' ? url : url.substring(0, end) + "/" + url.substring(end);
     }
     private static boolean isHttp(String url) { return url.regionMatches(true, 0, "http://", 0, 7) || url.regionMatches(true, 0, "https://", 0, 8); }
+    private final Map<String, String> mNetworkFirst = new HashMap<>();   // public hosts the app also serves, until the network shows it has them
+    /** A host only the device can mean: localhost, an IP address, a name without dots, Android's appassets domain, .local. */
+    private static boolean virtualHost(String h) {
+        if (h == null || h.isEmpty()) return true;
+        h = h.toLowerCase(java.util.Locale.ROOT);
+        if (h.equals("localhost") || h.endsWith(".localhost") || h.indexOf('.') < 0 || h.indexOf(':') >= 0) return true;
+        if (h.endsWith(".androidplatform.net") || h.endsWith(".local") || h.endsWith(".internal") || h.endsWith(".test") || h.endsWith(".invalid")) return true;
+        return h.matches("[0-9.]+");
+    }
     private synchronized boolean isLocal(String url) {
         Uri u = Uri.parse(url);
         String s = mLocalSchemes.get(u.getHost());
@@ -612,6 +627,7 @@ public class WebView extends AbsoluteLayout implements android.view.ViewTreeObse
         case "m": mClient.onPageCommitVisible(this, fromHost(f[2])); mClient.doUpdateVisitedHistory(this, fromHost(f[2]), false); break;
         case "f": {
             String url = fromHost(f[2]);
+            { Uri fu = Uri.parse(url); if (fu.getHost() != null) synchronized (this) { mNetworkFirst.remove(fu.getHost().toLowerCase(java.util.Locale.ROOT)); } }
             if (!url.isEmpty()) mUrl = url;
             mProgress = 100;
             if (mChrome != null) mChrome.onProgressChanged(this, 100);
@@ -628,6 +644,17 @@ public class WebView extends AbsoluteLayout implements android.view.ViewTreeObse
         }
         case "h": mCanBack = "1".equals(f[2]); mCanForward = "1".equals(f[3]); if (!f[4].isEmpty()) mUrl = fromHost(f[4]); break;
         case "E": {
+            String failed = fromHost(f[4]);
+            Uri fu = Uri.parse(failed);
+            String fh = fu.getHost() == null ? null : fu.getHost().toLowerCase(java.util.Locale.ROOT);
+            synchronized (this) {
+                if (fh != null && mNetworkFirst.remove(fh) != null) {
+                    Log.d(TAG, failed + ": not on the network: the app serves it");
+                    mLocalSchemes.put(fu.getHost(), fu.getScheme());
+                    husk.Web.load(mId, toHost(failed), null, null);
+                    break;
+                }
+            }
             final int code = errorCode(Integer.parseInt(f[2]));
             final String desc = f[3];
             mClient.onReceivedError(this, request(fromHost(f[4]), "GET", true, false, null), new WebResourceError() {
