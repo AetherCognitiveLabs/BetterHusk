@@ -291,6 +291,12 @@ bool tl_xmem_alloc(size_t bytes, uint8_t **rx, uint8_t **rw)
 }
 
 ptrdiff_t tl_xmem_delta(void) { return g_x.rw - g_x.rx; }
+bool tl_xmem_near(const void *p, size_t dist)
+{
+    if (!g_x.open || !p) return false;
+    uintptr_t a = (uintptr_t)p, lo = (uintptr_t)g_x.rx, hi = lo + g_x.size;
+    return a + dist >= lo && a <= hi + dist;
+}
 
 bool tl_xmem_contains(const void *p)
 {

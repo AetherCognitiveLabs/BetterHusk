@@ -16,6 +16,8 @@
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
+#include <execinfo.h>
+#include <TargetConditionals.h>
 #include <stdbool.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -995,11 +997,21 @@ static void anon_zap(uintptr_t addr, size_t len)
     pthread_mutex_unlock(&g_anon_lock);
 }
 
+const char *tl_ld_symbol_at(const void *addr, const char **lib_name, const void **sym_addr);
 static int g_mm_trace = -1;
 static void mm_trace(const char *what, void *a, size_t l, long x, long y)
 {
     if (g_mm_trace < 0) g_mm_trace = getenv("TL_MM_TRACE") ? 1 : 0;
-    if (g_mm_trace) tl_log_line("mm: %s addr=%p len=%#zx %#lx %#lx", what, a, l, x, y);
+    if (!g_mm_trace) return;
+    /* a big one says who asked (the guest's code that called mmap, mprotect or madvise) */
+    if (l >= (64u << 20)) {
+        void *ra[8]; int n = backtrace(ra, 8);
+        const char *who = "?", *lib = NULL; const void *sa = NULL;
+        for (int i = 1; i < n; i++) { const char *sym = tl_ld_symbol_at(ra[i], &lib, &sa); if (lib) { who = sym ? sym : "?"; break; } }
+        tl_log_line("mm: %s addr=%p len=%#zx %#lx %#lx  <- %s %s", what, a, l, x, y, lib ? lib : "?", who);
+        return;
+    }
+    tl_log_line("mm: %s addr=%p len=%#zx %#lx %#lx", what, a, l, x, y);
 }
 
 /*
@@ -1058,6 +1070,17 @@ static size_t phantom_clamp(uintptr_t a, size_t l)
     return l;
 }
 
+/* Whether only the JIT region can execute here: the phone (iOS), or a Mac told to behave like one (TL_PHONE_JIT=1). */
+static bool phone_jit(void)
+{
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    return true;
+#else
+    static int on = -1;
+    if (on < 0) on = getenv("TL_PHONE_JIT") ? 1 : 0;
+    return on;
+#endif
+}
 static void *b_mmap(void *addr, size_t len, int prot, int flags, int fd, long off)
 {
     /* A hooking library's trampolines (Geode): executable memory is a piece of the JIT region, written through the other view. */
@@ -1067,6 +1090,21 @@ static void *b_mmap(void *addr, size_t len, int prot, int flags, int fd, long of
         if (tl_xmem_alloc(n, &rx, &rw)) {
             memset(rw, 0, n);
             tl_log_line("mm: %#zx bytes of executable memory for the guest at %p", n, (void *)rx);
+            return rx;
+        }
+    }
+    /* A JIT's code memory where only the JIT region can execute (a phone: iOS 26+ lets nothing else run): LuaJIT maps it near its
+     * own code with a hint, writes the machine code, then makes it executable with mprotect -- which on a phone "succeeds" and
+     * then faults. An anonymous, code-sized, writable mapping hinted near the region comes from the region instead: its stores
+     * go through the writable view (code-write emulation), and mprotect there is a yes. TL_PHONE_JIT=1 does this on a Mac too. */
+    if (addr && !(prot & PROT_EXEC) && (prot & PROT_WRITE) && (flags & 0x20) && !(flags & 0x10) && len <= (32u << 20)
+        && tl_codewrite_enabled() && phone_jit() && tl_xmem_near(addr, 256u << 20)) {
+        uint8_t *rx, *rw;
+        size_t n = (len + TL_XMEM_PAGE - 1) & ~(size_t)(TL_XMEM_PAGE - 1);
+        if (tl_xmem_alloc(n, &rx, &rw)) {
+            memset(rw, 0, n);
+            tl_note_once("a JIT's code memory (mmap hinted near the code) comes from the JIT region");
+            mm_trace("mmap-jit", rx, len, prot, flags);
             return rx;
         }
     }
