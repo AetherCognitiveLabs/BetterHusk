@@ -51,7 +51,7 @@ static tl_looper *looper_make(void)
     return l;
 }
 static void *b_ALooper_prepare(int opts) { (void)opts; if (!t_looper) t_looper = looper_make(); return t_looper; }
-static void *b_ALooper_forThread(void) { return t_looper; }
+static void *b_ALooper_forThread(void) { if (!t_looper && getenv("TL_LOOPER_TRACE")) { char nm[32] = ""; pthread_getname_np(pthread_self(), nm, sizeof(nm)); tl_log_line("looper: ALooper_forThread on '%s', which has none", nm); } return t_looper; }
 static void b_ALooper_acquire(tl_looper *l) { if (l) atomic_fetch_add(&l->refs, 1); }
 static void b_ALooper_release(tl_looper *l) { (void)l; }
 static void b_ALooper_wake(tl_looper *l)

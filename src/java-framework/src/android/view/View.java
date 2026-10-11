@@ -1033,7 +1033,9 @@ public class View implements Drawable.Callback, KeyEvent.Callback {
                 else c.clipRect(o.mRect);
             } else if (o.mPath != null) c.clipPath(o.mPath);
         }
-        if (alpha < 0.998f || (mLayerType != LAYER_TYPE_NONE && mLayerPaint != null)) {
+        /* a view with a layer (software or hardware) draws into one of its own, as Android's: its blending (a DST_IN mask, a CLEAR)
+           then stays inside it instead of reaching what is under it in the window */
+        if (alpha < 0.998f || mLayerType != LAYER_TYPE_NONE) {
             int a = Math.round(alpha * 255);
             if (mLayerPaint != null) a = a * mLayerPaint.getAlpha() / 255;
             c.saveLayerAlpha(0, 0, w, h, a);
