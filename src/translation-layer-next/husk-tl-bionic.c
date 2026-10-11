@@ -197,6 +197,16 @@ static int bionic___system_property_get(const char *name, char *value)
     return (int)strlen(value);
 }
 int tl_property_get(const char *name, char *value) { return bionic___system_property_get(name, value); }
+/* every property, as getprop prints them ([name]: [value]) */
+size_t tl_property_list(char *buf, size_t n)
+{
+    size_t o = 0; buf[0] = 0;
+    for (size_t i = 0; i < sizeof(k_props) / sizeof(k_props[0]) && o + 1 < n; i++) {
+        char v[92]; bionic___system_property_get(k_props[i].k, v);
+        o += (size_t)snprintf(buf + o, n - o, "[%s]: [%s]\n", k_props[i].k, v);
+    }
+    return o < n ? o : n - 1;
+}
 
 /* The rest of the property API Android's own libraries use (ART's libbase reads properties through the callback). */
 typedef void (*guest_prop_cb)(void *cookie, const char *name, const char *value, uint32_t serial);
