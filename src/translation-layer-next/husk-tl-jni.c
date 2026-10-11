@@ -389,14 +389,17 @@ static jvalue *field_slot(jobj *o, tl_jfield *f)
     if (f->detached) return &f->dval;
     if (f->is_static) return &f->cls->statics[f->index];
     /* an interpreter object's slots are its own: never grown from here */
-    if (tl_dvm && o && o->cls && o->cls->dvm && f->index >= o->nfields) {
-        static __thread jvalue scratch;
-        scratch.j = 0;
-        return &scratch;
+    if (tl_dvm) {
+        /* count before array, as the interpreter's writers publish them (dvm_slots_for) */
+        uint32_t n = __atomic_load_n(&o->nfields, __ATOMIC_ACQUIRE);
+        jvalue *sl = __atomic_load_n(&o->fields, __ATOMIC_ACQUIRE);
+        if (sl && f->index < n) return &sl[f->index];
+        if (o->cls && o->cls->dvm) { static __thread jvalue scratch; scratch.j = 0; return &scratch; }
+        jvalue *dvm_grow_slots(jobj *, uint32_t);
+        return &dvm_grow_slots(o, f->index + 8)[f->index];
     }
     if (f->index >= o->nfields) {
         uint32_t n = f->index + 8;
-        if (tl_dvm) { jvalue *dvm_grow_slots(jobj *, uint32_t); return &dvm_grow_slots(o, n)[f->index]; }
         o->fields = realloc(o->fields, n * sizeof(jvalue));
         memset(o->fields + o->nfields, 0, (n - o->nfields) * sizeof(jvalue));
         o->nfields = n;

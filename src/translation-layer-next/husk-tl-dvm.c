@@ -607,7 +607,7 @@ jvalue *dvm_slots(jobj *o)
     jvalue *f = calloc(n, sizeof(jvalue));
     pthread_mutex_lock(&g_lock);
     bool mine = !o->fields;
-    if (mine) { o->fields = f; o->nfields = n; f = NULL; }
+    if (mine) { __atomic_store_n(&o->fields, f, __ATOMIC_RELEASE); __atomic_store_n(&o->nfields, n, __ATOMIC_RELEASE); f = NULL; }
     pthread_mutex_unlock(&g_lock);
     free(f);
     if (mine && o->kind == TL_K_CLASS) { void dvm_fill_mirror(jobj *mirror); dvm_fill_mirror(o); }
@@ -627,11 +627,28 @@ jvalue *dvm_grow_slots(jobj *o, uint32_t need)
         jvalue *f = calloc(nn, sizeof(jvalue));
         if (o->fields && o->nfields) memcpy(f, o->fields, (size_t)o->nfields * sizeof(jvalue));
         __atomic_store_n(&o->fields, f, __ATOMIC_RELEASE);
-        o->nfields = nn;
+        __atomic_store_n(&o->nfields, nn, __ATOMIC_RELEASE);
     }
     jvalue *r = o->fields;
     pthread_mutex_unlock(&g_lock);
     return r;
+}
+
+/* An object's slots, at least slot+1 of them. The count is read before the array (the writers above store the array first, then
+ * the count): a thread that sees a grown count then sees the grown array, never the old shorter one with the new count -- which is
+ * how a store landed past the end of an array another thread had just replaced. */
+jvalue *dvm_slots_for(jobj *o, uint32_t slot)
+{
+    uint32_t n = __atomic_load_n(&o->nfields, __ATOMIC_ACQUIRE);
+    jvalue *f = __atomic_load_n(&o->fields, __ATOMIC_ACQUIRE);
+    if (f && slot < n) return f;
+    if (!f) {
+        dvm_slots(o);
+        n = __atomic_load_n(&o->nfields, __ATOMIC_ACQUIRE);
+        f = __atomic_load_n(&o->fields, __ATOMIC_ACQUIRE);
+        if (f && slot < n) return f;
+    }
+    return dvm_grow_slots(o, slot + 1);
 }
 
 jobj *dvm_new_object(tl_jclass *jc)
@@ -919,6 +936,17 @@ int dvm_capture_frames(void **out, uint32_t *pcs, int max)
     return n;
 }
 
+/* The calling thread's Java frames, innermost first, for a crash report. */
+void tl_dvm_print_stack(FILE *f, int max)
+{
+    void *fr[64]; uint32_t pcs[64];
+    int n = dvm_capture_frames(fr, pcs, max < 64 ? max : 64);
+    for (int i = 0; i < n; i++) {
+        dvm_method *m = fr[i];
+        fprintf(f, "  java   %s.%s%s @%u%s\n", m->cls->name, m->name, m->sig, pcs[i], m->flags & 0x100 ? " (native)" : "");
+    }
+}
+
 static bool dvm_call_inner(dvm_method *m, jobj *self, const jvalue *params, jvalue *ret);
 /* TL_DVM_CALLS: comma-separated cls.method entries (class names with slashes) */
 static bool watch_hit(const char *w, const dvm_method *m)
@@ -1066,15 +1094,54 @@ static void *find_jni(dvm_method *m)
     return fn;
 }
 
+/* A call into a JNI function with any number of arguments: x0-x7 and d0-d7 from the arrays, the rest as 8-byte stack slots (the
+ * Android ABI), however many there are -- proxygen's HTTPClient.init takes over eighty. Returns x0, and d0 through dret. */
+int64_t tl_dvm_jcall(void *fn, const int64_t *gp, const double *fp, const int64_t *stk, uint64_t nstk, double *dret);
+__asm__(
+    ".text\n.p2align 2\n.globl _tl_dvm_jcall\n_tl_dvm_jcall:\n"
+    "  stp x29, x30, [sp, #-32]!\n"
+    "  mov x29, sp\n"
+    "  stp x19, x20, [sp, #16]\n"
+    "  mov x19, x0\n"
+    "  mov x20, x5\n"
+    "  lsl x9, x4, #3\n"
+    "  add x9, x9, #15\n"
+    "  and x9, x9, #0xfffffffffffffff0\n"
+    "  sub sp, sp, x9\n"
+    "  mov x10, #0\n"
+    "1:\n"
+    "  cmp x10, x4\n"
+    "  b.hs 2f\n"
+    "  ldr x11, [x3, x10, lsl #3]\n"
+    "  str x11, [sp, x10, lsl #3]\n"
+    "  add x10, x10, #1\n"
+    "  b 1b\n"
+    "2:\n"
+    "  ldp d0, d1, [x2]\n"
+    "  ldp d2, d3, [x2, #16]\n"
+    "  ldp d4, d5, [x2, #32]\n"
+    "  ldp d6, d7, [x2, #48]\n"
+    "  mov x9, x1\n"
+    "  ldp x0, x1, [x9]\n"
+    "  ldp x2, x3, [x9, #16]\n"
+    "  ldp x4, x5, [x9, #32]\n"
+    "  ldp x6, x7, [x9, #48]\n"
+    "  blr x19\n"
+    "  str d0, [x20]\n"
+    "  mov sp, x29\n"
+    "  ldp x19, x20, [sp, #16]\n"
+    "  ldp x29, x30, [sp], #32\n"
+    "  ret\n");
+
 static bool call_native(dvm_method *m, jobj *self, const jvalue *params, jvalue *ret)
 {
     if (m->intrinsic) return m->intrinsic(self, params, ret);
     void *fn = find_jni(m);
     if (!fn) return dvm_throw("java/lang/UnsatisfiedLinkError", "No implementation found for %s.%s%s", m->cls->name, m->name, m->sig);
     if (g_dvm_trace >= 2) tl_log_line("dvm: jni %s.%s%s", m->cls->name, m->name, m->sig);
-    int64_t gp[8]; double fp[8]; int64_t stk[24];
+    int64_t gp[8]; double fp[8]; int64_t stk[256];
     int ng = 0, nf = 0, ns = 0;
-    memset(gp, 0, sizeof(gp)); memset(fp, 0, sizeof(fp)); memset(stk, 0, sizeof(stk));
+    memset(gp, 0, sizeof(gp)); memset(fp, 0, sizeof(fp));
     /* @CriticalNative: a static method called with its arguments alone, no JNIEnv and no class (protobuf's upb, Google's libraries) */
     if (m->critical == 0) { bool dvm_method_annotated_build(dvm_method *, const char *); m->critical = (m->flags & 8) && dvm_method_annotated_build(m, "Ldalvik/annotation/optimization/CriticalNative;") ? 1 : -1; }
     if (m->critical < 0) {
@@ -1086,7 +1153,7 @@ static bool call_native(dvm_method *m, jobj *self, const jvalue *params, jvalue 
         if (k == 'F' || k == 'D') {
             union { double d; uint64_t u; } v;
             if (k == 'F') v.u = (uint32_t)params[i].i; else v.u = (uint64_t)params[i].j;
-            if (nf < 8) fp[nf++] = v.d; else if (ns < 24) stk[ns++] = (int64_t)v.u;
+            if (nf < 8) fp[nf++] = v.d; else if (ns < 256) stk[ns++] = (int64_t)v.u;
         } else {
             int64_t v;
             switch (k) {
@@ -1094,20 +1161,16 @@ static bool call_native(dvm_method *m, jobj *self, const jvalue *params, jvalue 
             case 'S': v = params[i].s; break; case 'I': v = params[i].i; break; case 'J': v = params[i].j; break;
             default: v = (int64_t)(uintptr_t)params[i].l; break;
             }
-            if (ng < 8) gp[ng++] = v; else if (ns < 24) stk[ns++] = v;
+            if (ng < 8) gp[ng++] = v; else if (ns < 256) stk[ns++] = v;
         }
     }
     char rk = m->shorty[0];
+    double dr = 0;
+    int64_t r = tl_dvm_jcall(fn, gp, fp, stk, (uint64_t)ns, &dr);
     if (rk == 'F' || rk == 'D') {
-        union { double d; uint64_t u; } r;
-        r.d = ((gcall_d)fn)(gp[0], gp[1], gp[2], gp[3], gp[4], gp[5], gp[6], gp[7], fp[0], fp[1], fp[2], fp[3], fp[4], fp[5], fp[6], fp[7],
-                            stk[0], stk[1], stk[2], stk[3], stk[4], stk[5], stk[6], stk[7], stk[8], stk[9], stk[10], stk[11],
-                            stk[12], stk[13], stk[14], stk[15], stk[16], stk[17], stk[18], stk[19], stk[20], stk[21], stk[22], stk[23]);
-        if (rk == 'F') ret->i = (int32_t)(uint32_t)r.u; else ret->j = (int64_t)r.u;
+        union { double d; uint64_t u; } u = { .d = dr };
+        if (rk == 'F') ret->i = (int32_t)(uint32_t)u.u; else ret->j = (int64_t)u.u;
     } else {
-        int64_t r = ((gcall_i)fn)(gp[0], gp[1], gp[2], gp[3], gp[4], gp[5], gp[6], gp[7], fp[0], fp[1], fp[2], fp[3], fp[4], fp[5], fp[6], fp[7],
-                                  stk[0], stk[1], stk[2], stk[3], stk[4], stk[5], stk[6], stk[7], stk[8], stk[9], stk[10], stk[11],
-                                  stk[12], stk[13], stk[14], stk[15], stk[16], stk[17], stk[18], stk[19], stk[20], stk[21], stk[22], stk[23]);
         switch (rk) {
         case 'Z': ret->j = 0; ret->z = (uint8_t)r; break;
         case 'B': ret->i = (int8_t)r; break;
@@ -1712,9 +1775,7 @@ dispatch:;
                 WI(regs, A4, (n << 1) | (latin1 ? 0 : 1));
                 NEXT(2);
             }
-            jvalue *sl = dvm_slots(o);
-            if (f->df->slot >= o->nfields) sl = dvm_grow_slots(o, f->df->slot + 1);
-            slot = &sl[f->df->slot];
+            slot = &dvm_slots_for(o, f->df->slot)[f->df->slot];
         } else {
             if (!f->hf) { dvm_throw("java/lang/NoSuchFieldError", "field %u", FETCH(1)); goto exception; }
             slot = tl_jni_field_slot(o, f->hf);

@@ -90,7 +90,7 @@ def main():
             if bmps and not os.path.exists(shot): subprocess.run(['sips', '-s', 'format', 'png', bmps[-1], '--out', shot], capture_output=True)
             subprocess.run(['rm', '-rf', fm.group(1)])
         dm = re.search(r'^data: (\S+)', text, re.M)
-        if dm and dm.group(1).startswith('/Volumes/GTAV/husk2/tmp/'): subprocess.run(['rm', '-rf', dm.group(1)])
+        if dm and dm.group(1).startswith('/Volumes/GTAV/husk2/tmp/'): subprocess.run(['chmod', '-R', 'u+w', dm.group(1)], capture_output=True); subprocess.run(['rm', '-rf', dm.group(1)])
         row = {'pkg': pkg, 'engine': engine or 'Java', 'harness': harness, 'rc': rc}
         row.update(summarise(text))
         rows.append(row)
