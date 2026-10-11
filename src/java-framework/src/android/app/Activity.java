@@ -39,8 +39,12 @@ public class Activity extends ContextThemeWrapper implements Window.Callback, Ke
 
     // ---- husk.AppRunner's side
     /** As Activity.attach: the base context, the window, the intent. */
+    private boolean mAttaching;
     public final void huskAttach(Context base, Application app, Intent intent, husk.Manifest.Component info, Activity caller, int requestCode) {
-        attachBaseContext(base);
+        /* as Activity.attach: the window is made after attachBaseContext, so getWindow() is null in it (AppCompat's delegate
+           installs itself into a window it finds there, reading the theme before the base context is set -- Todoist) */
+        mAttaching = true;
+        try { attachBaseContext(base); } finally { mAttaching = false; }
         mApplication = app;
         mIntent = intent != null ? intent : new Intent(Intent.ACTION_MAIN);
         mInfo = info;
@@ -195,6 +199,7 @@ public class Activity extends ContextThemeWrapper implements Window.Callback, Ke
 
     // ---- the window
     public Window getWindow() {
+        if (mWindow == null && mAttaching) return null;
         if (mWindow == null) {
             mWindow = new Window(this);
             mWindow.setCallback(this);

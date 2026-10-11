@@ -203,7 +203,7 @@ static uint16_t *mutf8_to_u16(const char *s, int32_t *n)
     return o;
 }
 
-/* UTF-16 to standard UTF-8 (surrogate pairs joined). */
+/* UTF-16 to UTF-8 (surrogate pairs joined; U+0000 as C0 80). */
 static char *u16_to_utf8(const uint16_t *s, int32_t n)
 {
     char *o = malloc((size_t)n * 3 + 1);
@@ -215,7 +215,8 @@ static char *u16_to_utf8(const uint16_t *s, int32_t n)
             o[k++] = (char)(0xF0 | c >> 18); o[k++] = (char)(0x80 | ((c >> 12) & 0x3F)); o[k++] = (char)(0x80 | ((c >> 6) & 0x3F)); o[k++] = (char)(0x80 | (c & 0x3F));
             continue;
         }
-        if (c < 0x80) o[k++] = (char)c;
+        if (c == 0) { o[k++] = (char)0xC0; o[k++] = (char)0x80; }        /* U+0000 as Java's modified UTF-8 does: a C string must not end there */
+        else if (c < 0x80) o[k++] = (char)c;
         else if (c < 0x800) { o[k++] = (char)(0xC0 | c >> 6); o[k++] = (char)(0x80 | (c & 0x3F)); }
         else { o[k++] = (char)(0xE0 | c >> 12); o[k++] = (char)(0x80 | ((c >> 6) & 0x3F)); o[k++] = (char)(0x80 | (c & 0x3F)); }
     }

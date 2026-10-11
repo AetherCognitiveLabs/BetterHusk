@@ -166,6 +166,11 @@ public final class ContextImpl extends Context {
             { "android.hardware.lights.LightsManager", "lights" }, { "android.media.AudioDeviceVolumeManager", "audio_device_volume" },
             { "android.os.SystemUpdateManager", "system_update" }, { "android.app.ambientcontext.AmbientContextManager", "ambient_context" },
             { "android.health.connect.HealthConnectManager", "healthconnect" }, { "android.os.ProfilingManager", "profiling" },
+            { "android.app.slice.SliceManager", SLICE_SERVICE }, { "android.content.pm.verify.domain.DomainVerificationManager", DOMAIN_VERIFICATION_SERVICE },
+            { "android.app.people.PeopleManager", PEOPLE_SERVICE }, { "android.media.tv.TvInputManager", TV_INPUT_SERVICE },
+            { "android.app.usage.NetworkStatsManager", NETWORK_STATS_SERVICE }, { "android.view.inputmethod.InputMethodManager", INPUT_METHOD_SERVICE },
+            { "android.os.storage.StorageManager", STORAGE_SERVICE }, { "android.net.wifi.aware.WifiAwareManager", WIFI_AWARE_SERVICE },
+            { "android.net.wifi.rtt.WifiRttManager", WIFI_RTT_RANGING_SERVICE }, { "android.app.UiModeManager", UI_MODE_SERVICE },
         };
         for (String[] e : m) { try { sNames.put(Class.forName(e[0]), e[1]); } catch (Throwable t) {} }
     }
