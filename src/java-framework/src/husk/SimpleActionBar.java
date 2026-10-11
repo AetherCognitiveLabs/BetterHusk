@@ -17,17 +17,59 @@ public final class SimpleActionBar extends ActionBar {
     private int mOptions = DISPLAY_SHOW_TITLE | DISPLAY_SHOW_HOME;
     private View mCustom;
     private boolean mShowing = true;
-    public SimpleActionBar(Activity a, DecorView d) { mActivity = a; mDecor = d; mTitle = a.getTitle(); }
+    public SimpleActionBar(Activity a, DecorView d) {
+        mActivity = a; mDecor = d; mTitle = a.getTitle();
+        // the options menu, made once the activity's onCreate is done (as the platform makes its panel menu)
+        d.post(this::invalidateOptionsMenu);
+    }
+    private android.widget.Toolbar bar() { View v = mDecor.actionBarView(); return v instanceof android.widget.Toolbar ? (android.widget.Toolbar) v : null; }
+    /** The activity's options menu on the bar: actions where there is room, the rest in the overflow; picks go to onMenuItemSelected. */
+    @Override public boolean invalidateOptionsMenu() {
+        android.widget.Toolbar tb = bar();
+        if (tb == null) return false;
+        android.view.Menu m = tb.getMenu();
+        m.clear();
+        boolean show = mActivity.onCreatePanelMenu(android.view.Window.FEATURE_OPTIONS_PANEL, m) && mActivity.onPreparePanel(android.view.Window.FEATURE_OPTIONS_PANEL, null, m);
+        if (!show) m.clear();
+        tb.setOnMenuItemClickListener(item -> mActivity.onMenuItemSelected(android.view.Window.FEATURE_OPTIONS_PANEL, item));
+        tb.huskMenuChanged();
+        return true;
+    }
+    private Drawable mUpIndicator;
+    private void updateHome() {
+        android.widget.Toolbar tb = bar();
+        if (tb == null) return;
+        if ((mOptions & DISPLAY_HOME_AS_UP) != 0) {
+            tb.setNavigationIcon(mUpIndicator != null ? mUpIndicator : new UpArrow(tb.getTitleTextColorHusk()));
+            tb.setNavigationOnClickListener(v -> mActivity.onMenuItemSelected(android.view.Window.FEATURE_OPTIONS_PANEL, new husk.MenuImpl(mActivity).add(0, android.R.id.home, 0, "")));
+        } else tb.setNavigationIcon((Drawable) null);
+    }
+    @Override public void setHomeAsUpIndicator(Drawable d) { mUpIndicator = d; updateHome(); }
+    @Override public void setHomeAsUpIndicator(int r) { mUpIndicator = r != 0 ? mActivity.getDrawable(r) : null; updateHome(); }
+    /** The platform's up arrow, drawn: a shaft and a head pointing left, in the title's color. */
+    private static final class UpArrow extends Drawable {
+        private final android.graphics.Paint p = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+        UpArrow(int color) { p.setColor(color); p.setStyle(android.graphics.Paint.Style.STROKE); p.setStrokeWidth(2 * Native.density()); p.setStrokeCap(android.graphics.Paint.Cap.ROUND); }
+        @Override public void draw(android.graphics.Canvas c) {
+            android.graphics.Rect b = getBounds(); float d = Native.density(), cx = b.exactCenterX(), cy = b.exactCenterY(), r = 8 * d;
+            c.drawLine(cx - r, cy, cx + r, cy, p); c.drawLine(cx - r, cy, cx - r + 6 * d, cy - 6 * d, p); c.drawLine(cx - r, cy, cx - r + 6 * d, cy + 6 * d, p);
+        }
+        @Override public int getIntrinsicWidth() { return (int) (24 * Native.density()); }
+        @Override public int getIntrinsicHeight() { return (int) (24 * Native.density()); }
+        @Override public void setAlpha(int a) { p.setAlpha(a); }
+        @Override public void setColorFilter(android.graphics.ColorFilter f) { p.setColorFilter(f); }
+        @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
+    }
     public void setCustomView(View v) { mCustom = v; } public void setCustomView(View v, LayoutParams p) { mCustom = v; } public void setCustomView(int r) { mCustom = android.view.LayoutInflater.from(mActivity).inflate(r, null); }
     public void setIcon(int r) {} public void setIcon(Drawable d) {} public void setLogo(int r) {} public void setLogo(Drawable d) {}
-    public void setDisplayOptions(int o) { mOptions = o; } public void setDisplayOptions(int o, int mask) { mOptions = (mOptions & ~mask) | (o & mask); }
-    public void setDisplayUseLogoEnabled(boolean e) {} public void setDisplayShowHomeEnabled(boolean e) {} public void setDisplayHomeAsUpEnabled(boolean e) {}
+    public void setDisplayOptions(int o) { mOptions = o; updateHome(); } public void setDisplayOptions(int o, int mask) { mOptions = (mOptions & ~mask) | (o & mask); updateHome(); }
+    public void setDisplayUseLogoEnabled(boolean e) {} public void setDisplayShowHomeEnabled(boolean e) {} public void setDisplayHomeAsUpEnabled(boolean e) { setDisplayOptions(e ? DISPLAY_HOME_AS_UP : 0, DISPLAY_HOME_AS_UP); }
     public void setDisplayShowTitleEnabled(boolean e) { mDecor.setTitle(e ? mTitle : ""); } public void setDisplayShowCustomEnabled(boolean e) {}
     public void setBackgroundDrawable(Drawable d) { View v = mDecor.actionBarView(); if (v != null) v.setBackground(d); }
     public View getCustomView() { return mCustom; }
     public CharSequence getTitle() { return mTitle; } public CharSequence getSubtitle() { return mSubtitle; }
     public void setTitle(CharSequence t) { mTitle = t; mDecor.setTitle(t); } public void setTitle(int r) { setTitle(mActivity.getText(r)); }
-    public void setSubtitle(CharSequence s) { mSubtitle = s; } public void setSubtitle(int r) { mSubtitle = mActivity.getText(r); }
+    public void setSubtitle(CharSequence s) { mSubtitle = s; android.widget.Toolbar tb = bar(); if (tb != null) tb.setSubtitle(s); } public void setSubtitle(int r) { setSubtitle(mActivity.getText(r)); }
     public int getDisplayOptions() { return mOptions; }
     public int getHeight() { View v = mDecor.actionBarView(); return v == null ? 0 : v.getHeight(); }
     public void show() { mShowing = true; mDecor.showActionBar(true); } public void hide() { mShowing = false; mDecor.showActionBar(false); }

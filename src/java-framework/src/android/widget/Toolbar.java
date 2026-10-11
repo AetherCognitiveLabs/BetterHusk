@@ -135,6 +135,8 @@ public class Toolbar extends ViewGroup {
     public void setTitleTextAppearance(Context c, int r) { mTitleAppearance = r; if (mTitleTextView != null) mTitleTextView.setTextAppearance(r); }
     public void setSubtitleTextAppearance(Context c, int r) { mSubtitleAppearance = r; if (mSubtitleTextView != null) mSubtitleTextView.setTextAppearance(r); }
     public void setTitleTextColor(int c) { mTitleTextColor = c; mTitleColorSet = true; if (mTitleTextView != null) mTitleTextView.setTextColor(c); }
+    /** Husk: the title's color, for icons drawn to match it (the decor action bar's up arrow). */
+    public int getTitleTextColorHusk() { return mTitleColorSet ? mTitleTextColor : foreground(); }
     public void setTitleTextColor(ColorStateList c) { setTitleTextColor(c.getDefaultColor()); }
     public void setSubtitleTextColor(int c) { mSubtitleTextColor = c; mSubtitleColorSet = true; if (mSubtitleTextView != null) mSubtitleTextView.setTextColor(c); }
     public void setSubtitleTextColor(ColorStateList c) { setSubtitleTextColor(c.getDefaultColor()); }

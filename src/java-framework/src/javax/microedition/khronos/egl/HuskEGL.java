@@ -50,7 +50,8 @@ final class HuskEGL implements EGL11 {
     public EGLContext eglCreateContext(EGLDisplay d, EGLConfig c, EGLContext share, int[] attribs) {
         int version = 1;
         if (attribs != null) for (int i = 0; i + 1 < attribs.length && attribs[i] != EGL_NONE; i += 2) if (attribs[i] == 0x3098) version = attribs[i + 1];
-        if (render()) { sRequestedVersion = version; return CONTEXT; }
+        sRequestedVersion = version;                 /* what GLSurfaceView asks the app's EGLContextFactory for, on any thread */
+        if (render()) return CONTEXT;
         long h = husk.EGLNative.createContext(version, share instanceof Context ? ((Context) share).handle : 0);
         if (h == 0) { err(EGL_BAD_ALLOC); return EGL_NO_CONTEXT; }
         Context ctx = new Context(); ctx.handle = h; ctx.version = version;
