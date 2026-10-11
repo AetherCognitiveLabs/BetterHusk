@@ -158,12 +158,21 @@ public final class ViewRoot implements ViewParent {
         for (int i = 0; i < depth; i++) b.append("  ");
         b.append(v.getClass().getName()).append(' ').append(v.getLeft()).append(',').append(v.getTop()).append(' ').append(v.getWidth()).append('x').append(v.getHeight());
         if (v.getVisibility() != View.VISIBLE) b.append(v.getVisibility() == View.GONE ? " GONE" : " INVISIBLE");
+        if (v.getAlpha() != 1f) b.append(" a=").append(v.getAlpha());
+        if (v.getLayerType() != View.LAYER_TYPE_NONE) b.append(" layer=").append(v.getLayerType());
         if (v.getId() != View.NO_ID) b.append(" #").append(Integer.toHexString(v.getId()));
         if (v instanceof android.widget.TextView) {
             CharSequence tx = ((android.widget.TextView) v).getText();
             StringBuilder e = new StringBuilder();
             for (int i = 0; tx != null && i < tx.length(); i++) { char ch = tx.charAt(i); if (ch < 32 || ch > 126) e.append(String.format("\\u%04x", (int) ch)); else e.append(ch); }
             b.append(" \"").append(e).append('"');
+            if (tx instanceof android.text.Spanned) for (Object sp : ((android.text.Spanned) tx).getSpans(0, tx.length(), Object.class)) {
+                b.append(" span=").append(sp.getClass().getName());
+                if (sp instanceof android.text.style.DynamicDrawableSpan) { android.graphics.drawable.Drawable dd = ((android.text.style.DynamicDrawableSpan) sp).getDrawable(); b.append('(').append(dd == null ? "null" : dd.getClass().getName() + " " + dd.getBounds() + " cf=" + dd.getColorFilter()).append(')'); }
+            }
+            android.text.TextPaint tp = ((android.widget.TextView) v).getPaint();
+            b.append(" color=").append(Integer.toHexString(tp.getColor())).append(tp.getShader() != null ? " shader=" + tp.getShader().getClass().getSimpleName() : "")
+             .append(tp.getXfermode() != null ? " xfer" : "").append(tp.getColorFilter() != null ? " cf" : "").append(tp.getMaskFilter() != null ? " mask" : "");
         }
         android.graphics.drawable.Drawable bg = v.getBackground();
         if (bg instanceof android.graphics.drawable.InsetDrawable && ((android.graphics.drawable.InsetDrawable) bg).getDrawable() != null) {

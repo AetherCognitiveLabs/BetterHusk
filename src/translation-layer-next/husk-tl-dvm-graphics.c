@@ -496,7 +496,12 @@ static bool paint_begin(CGContextRef c, const int32_t *p, bool *layered)
     } else CGContextSetBlendMode(c, blend_of(p[P_XFER]));
     return true;
 }
-static void paint_end(CGContextRef c, const int32_t *p, bool layered, CGRect area)
+/* What was drawn, as a clip: MULTIPLY's filter colour is laid only over it (Android keeps the drawing's alpha, Sa*Da; CoreGraphics's
+   multiply would fill the whole area -- Telegram's tinted wordmark came out a solid block). */
+typedef void (*clip_fn)(CGContextRef c, const void *ctx);
+static void paint_end_clip(CGContextRef c, const int32_t *p, bool layered, CGRect area, clip_fn clip, const void *ctx);
+static void paint_end(CGContextRef c, const int32_t *p, bool layered, CGRect area) { paint_end_clip(c, p, layered, area, NULL, NULL); }
+static void paint_end_clip(CGContextRef c, const int32_t *p, bool layered, CGRect area, clip_fn clip, const void *ctx)
 {
     if (layered) {
         CGColorRef fc = color_of((uint32_t)p[P_CFCOLOR], 1);
@@ -505,13 +510,36 @@ static void paint_end(CGContextRef c, const int32_t *p, bool layered, CGRect are
         CGContextSetShadowWithColor(c, CGSizeZero, 0, NULL);
         int m = p[P_CFMODE];
         CGContextSetBlendMode(c, m == 3 ? kCGBlendModeNormal : blend_of(m));
-        CGContextFillRect(c, CGRectInset(area, -2, -2));
-        if (m == 13) {                                  /* MULTIPLY keeps the drawing's own alpha */
-            CGContextSetBlendMode(c, kCGBlendModeDestinationIn);
-        }
+        if (m == 13 && clip) { CGContextSaveGState(c); clip(c, ctx); CGContextFillRect(c, CGRectInset(area, -2, -2)); CGContextRestoreGState(c); }
+        else CGContextFillRect(c, CGRectInset(area, -2, -2));
         CGContextEndTransparencyLayer(c);
     }
     CGContextRestoreGState(c);
+}
+
+struct path_clip { CGPathRef path; bool even_odd; int style; };
+static void clip_path(CGContextRef c, const void *ctx)
+{
+    const struct path_clip *pc = ctx;
+    CGContextAddPath(c, pc->path);
+    if (pc->style == 1) { CGContextReplacePathWithStrokedPath(c); CGContextClip(c); }
+    else if (pc->even_odd) CGContextEOClip(c); else CGContextClip(c);
+}
+struct text_clip { CTLineRef line; CGFloat x, y; };
+static void clip_text(CGContextRef c, const void *ctx)
+{
+    const struct text_clip *tc = ctx;
+    CGContextSetTextDrawingMode(c, kCGTextClip);
+    CGContextSetTextPosition(c, tc->x, tc->y);
+    CTLineDraw(tc->line, c);
+}
+struct image_clip { CGImageRef img; CGAffineTransform t; CGRect r; };
+static void clip_image(CGContextRef c, const void *ctx)
+{
+    const struct image_clip *ic = ctx;
+    CGContextConcatCTM(c, ic->t);
+    CGContextClipToMask(c, ic->r, ic->img);
+    CGContextConcatCTM(c, CGAffineTransformInvert(ic->t));
 }
 
 /* Draw the path now in the context with this paint (fill, stroke or both; through the shader when there is one). */
@@ -521,6 +549,7 @@ static void draw_path(CGContextRef c, CGPathRef path, const int32_t *p, gshader 
     if (!paint_begin(c, p, &layered)) return;
     int style = p[P_STYLE];
     float alpha = (float)((uint32_t)p[P_COLOR] >> 24) / 255.0f;
+    struct path_clip pc = { path, even_odd, style };
     CGRect area = CGPathGetBoundingBox(path);
     area = CGRectInset(area, -pf(p, P_STROKE), -pf(p, P_STROKE));
     if (sh) {
@@ -540,7 +569,7 @@ static void draw_path(CGContextRef c, CGPathRef path, const int32_t *p, gshader 
         CGContextAddPath(c, path);
         CGContextDrawPath(c, style == 1 ? kCGPathStroke : style == 2 ? (even_odd ? kCGPathEOFillStroke : kCGPathFillStroke) : (even_odd ? kCGPathEOFill : kCGPathFill));
     }
-    paint_end(c, p, layered, area);
+    paint_end_clip(c, p, layered, area, clip_path, &pc);
 }
 
 /* ---- Path, as husk.Gfx streams it: op codes and their floats */
@@ -700,7 +729,8 @@ static void draw_text(gcanvas *v, jobj *s, int start, int end, float x, float y,
             if (p[P_FLAGS] & PF_UNDERLINE) CGContextFillRect(c, CGRectMake(x, y + ts / 9, w, th));
             if (p[P_FLAGS] & PF_STRIKE) CGContextFillRect(c, CGRectMake(x, y - ts * 0.3f, w, th));
         }
-        paint_end(c, p, layered, area);
+        struct text_clip tcl = { line, x, y };
+        paint_end_clip(c, p, layered, area, clip_text, &tcl);
     }
     CFRelease(line);
 }
@@ -1113,7 +1143,8 @@ NAT(G_cvDrawBitmap)
         CGContextTranslateCTM(c, dl, db); CGContextScaleCTM(c, 1, -1);
         CGContextDrawImage(c, CGRectMake(0, 0, dr - dl, db - dt), img);
         CGContextRestoreGState(c);
-        paint_end(c, q, layered, CGRectMake(dl, dt, dr - dl, db - dt));
+        struct image_clip icl = { img, CGAffineTransformMake(1, 0, 0, -1, dl, db), CGRectMake(0, 0, dr - dl, db - dt) };
+        paint_end_clip(c, q, layered, CGRectMake(dl, dt, dr - dl, db - dt), clip_image, &icl);
     }
     if (img && !whole) CGImageRelease(img);
     CGImageRelease(full);
@@ -1138,7 +1169,8 @@ NAT(G_cvDrawBitmapM)
         CGContextTranslateCTM(c, 0, b->h); CGContextScaleCTM(c, 1, -1);
         CGContextDrawImage(c, CGRectMake(0, 0, b->w, b->h), img);
         CGContextRestoreGState(c);
-        paint_end(c, q, layered, CGRectApplyAffineTransform(CGRectMake(0, 0, b->w, b->h), CGAffineTransformMake(m[0], m[3], m[1], m[4], m[2], m[5])));
+        struct image_clip icl = { img, CGAffineTransformConcat(CGAffineTransformMake(1, 0, 0, -1, 0, b->h), CGAffineTransformMake(m[0], m[3], m[1], m[4], m[2], m[5])), CGRectMake(0, 0, b->w, b->h) };
+        paint_end_clip(c, q, layered, CGRectApplyAffineTransform(CGRectMake(0, 0, b->w, b->h), CGAffineTransformMake(m[0], m[3], m[1], m[4], m[2], m[5])), clip_image, &icl);
     }
     CGImageRelease(img);
     return true;
