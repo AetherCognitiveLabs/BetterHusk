@@ -33,7 +33,6 @@
 #include <sys/mman.h>
 #include <sys/mount.h>
 #include <sys/select.h>
-#include <malloc/malloc.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/uio.h>
@@ -1093,13 +1092,14 @@ static int b_mprotect(void *a, size_t l, int prot)
         /* the guest's own memory it wrote code into (Meta's and ByteDance's stubs, a JIT): made executable when the system lets a
          * process do that (a debugger attached for JIT, or a Mac), write access dropped if both were asked for (W^X); refused
          * otherwise, which lets a JIT fall back to its interpreter. TL_NO_GUEST_JIT=1 always refuses. */
-        /* memory that is not the guest's to remap: the thread's stack (liblinkernsbypass asks for RWX on the page it keeps a local in)
-         * or the host's heap. Left writable and as it is -- dropping write there for W^X would leave the thread unable to push a frame. */
+        /* the calling thread's own stack (liblinkernsbypass asks for RWX on the page it keeps a local in): left writable and as it
+         * is -- dropping write there for W^X would leave the thread unable to push a frame. Heap pages still get the real attempt
+         * below (a JIT writing into malloc'd memory needs it executable, or EACCES so it falls back). */
         {
             pthread_t me = pthread_self();
             uintptr_t top = (uintptr_t)pthread_get_stackaddr_np(me), low = top - pthread_get_stacksize_np(me);
-            if (((uintptr_t)a >= low && (uintptr_t)a < top) || malloc_zone_from_ptr(a)) {
-                tl_note_once("mprotect asked to make a stack or heap page executable: left as it is");
+            if ((uintptr_t)a >= low && (uintptr_t)a < top) {
+                tl_note_once("mprotect asked to make a stack page executable: left as it is");
                 mm_trace("mprotect", a, l, prot, 0);
                 return 0;
             }
