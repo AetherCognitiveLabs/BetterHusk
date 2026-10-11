@@ -440,6 +440,21 @@ void *tl_ld_sym(tl_lib *lib, const char *name)
     return NULL;
 }
 
+/* dlsym(handle) as bionic's: the library, then what it needs, breadth-first (ART finds a dependency's JNI_OnLoad this way:
+ * Signal loads libringrtc, whose JNI_OnLoad is in the libringrtc_rffi it needs) */
+void *tl_ld_sym_deep(tl_lib *lib, const char *name, tl_lib **found_in)
+{
+    if (!lib) return NULL;
+    const elf_sym *s = lib_find(lib, name);
+    if (s) { if (found_in) *found_in = lib; return sym_value(lib, s); }
+    build_scope(lib);
+    for (int i = 0; i < lib->ndeps; i++) {
+        s = lib_find(lib->deps[i], name);
+        if (s) { if (found_in) *found_in = lib->deps[i]; return sym_value(lib->deps[i], s); }
+    }
+    return NULL;
+}
+
 /* Where the library's vaddr 0 lies in the executable view: what dladdr calls its base. */
 void *tl_ld_lib_base(const tl_lib *L) { return L ? (void *)(L->rx - L->base_vaddr) : NULL; }
 

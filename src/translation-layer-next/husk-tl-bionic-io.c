@@ -1151,6 +1151,21 @@ static int b_gettimeofday(int64_t *tv, void *tz)
 }
 static int b_nanosleep(const struct timespec *req, struct timespec *rem) { TL_ERRNO_BEGIN(); int r = nanosleep(req, rem); TL_ERRNO_END(); return r; }
 static int b_usleep(unsigned us) { return usleep(us); }
+/* clock_nanosleep: relative, or until a time on the clock (TIMER_ABSTIME); returns the error, as POSIX says. Linux's REALTIME 0,
+ * MONOTONIC 1, BOOTTIME 7 (the others are taken as monotonic). */
+static int b_clock_nanosleep(int clock, int flags, const struct timespec *req, struct timespec *rem)
+{
+    struct timespec d = *req;
+    if (flags & 1) {
+        struct timespec now; clock_gettime(clock == 0 ? CLOCK_REALTIME : CLOCK_MONOTONIC, &now);
+        int64_t ns = ((int64_t)req->tv_sec - now.tv_sec) * 1000000000ll + (req->tv_nsec - now.tv_nsec);
+        if (ns <= 0) return 0;
+        d.tv_sec = ns / 1000000000ll; d.tv_nsec = ns % 1000000000ll;
+        rem = NULL;
+    }
+    if (nanosleep(&d, rem)) return tl_errno_to_guest(errno);
+    return 0;
+}
 
 /* ---------------------------------------------------------------- signals */
 
@@ -1501,7 +1516,7 @@ const tl_bionic_entry tl_tab_io[] = {
     TL_WRAP("mmap", b_mmap), TL_WRAP("mmap64", b_mmap), TL_WRAP("readdir64", b_readdir), TL_WRAP("munmap", b_munmap), TL_WRAP("mprotect", b_mprotect), TL_WRAP("madvise", b_madvise),
     TL_WRAP("mremap", b_mremap),
     TL_WRAP("clock_gettime", b_clock_gettime), TL_WRAP("clock_getres", b_clock_getres), TL_WRAP("gettimeofday", b_gettimeofday),
-    TL_WRAP("nanosleep", b_nanosleep), TL_WRAP("usleep", b_usleep),
+    TL_WRAP("nanosleep", b_nanosleep), TL_WRAP("clock_nanosleep", b_clock_nanosleep), TL_WRAP("usleep", b_usleep),
     TL_DIRECT(clock), TL_DIRECT(time), TL_DIRECT(difftime), TL_DIRECT(gmtime), TL_DIRECT(gmtime_r), TL_DIRECT(localtime),
     TL_DIRECT(localtime_r), TL_DIRECT(mktime), TL_DIRECT(strftime), TL_DIRECT(strftime_l), TL_DIRECT(tzset),
     TL_DIRECT(tfind), TL_DIRECT(tsearch), TL_DIRECT(tdelete), TL_DIRECT(twalk), TL_DIRECT(stpcpy),

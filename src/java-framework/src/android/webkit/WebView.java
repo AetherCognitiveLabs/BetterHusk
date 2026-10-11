@@ -124,8 +124,8 @@ public class WebView extends AbsoluteLayout implements android.view.ViewTreeObse
     public static android.content.pm.PackageInfo getCurrentWebViewPackage() {
         android.content.pm.PackageInfo p = new android.content.pm.PackageInfo();
         p.packageName = "com.google.android.webview";
-        p.versionName = "124.0.6367.179";
-        p.versionCode = 636717900;
+        p.versionName = "140.0.7339.207";
+        p.versionCode = 733920700;
         p.applicationInfo = new android.content.pm.ApplicationInfo();
         p.applicationInfo.packageName = p.packageName;
         p.applicationInfo.enabled = true;

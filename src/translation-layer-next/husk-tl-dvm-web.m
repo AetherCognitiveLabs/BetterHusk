@@ -160,7 +160,7 @@ static NSString *bridge_js(void)
     _web = [[WKWebView alloc] initWithFrame:CGRectMake(0, 0, 10, 10) configuration:c];
     _web.navigationDelegate = self;
     _web.UIDelegate = self;
-    _web.customUserAgent = @"Mozilla/5.0 (Linux; Android 14; Husk; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/124.0.0.0 Mobile Safari/537.36";
+    _web.customUserAgent = @"Mozilla/5.0 (Linux; Android 14; Husk; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/140.0.0.0 Mobile Safari/537.36";
     if (@available(iOS 16.4, macOS 13.3, *)) _web.inspectable = YES;
 #if !TARGET_OS_IPHONE
     /* the harness's window is nearly all off screen: without this WebKit calls the page hidden and pages that wait to be seen
