@@ -318,9 +318,6 @@ static int b_getc_unlocked(void *f) { return getc_unlocked(map_stream(f)); }
 static int b_putc_unlocked(int c, void *f) { return putc_unlocked(c, map_stream(f)); }
 static int b_getc(void *f) { TL_ERRNO_BEGIN(); int r = fgetc(map_stream(f)); TL_ERRNO_END(); return r; }
 static int b_ungetc(int c, void *f) { return ungetc(c, map_stream(f)); }
-static wint_t b_getwc(void *f) { return fgetwc(map_stream(f)); }
-static wint_t b_putwc(wchar_t c, void *f) { return fputwc(c, map_stream(f)); }
-static wint_t b_ungetwc(wint_t c, void *f) { return ungetwc(c, map_stream(f)); }
 static int b_vsprintf(char *s, const char *fmt, tl_va_list *ap) { return tl_format(s, (size_t)0x7fffffff, fmt, ap); }
 static int b_feof(void *f) { return feof(map_stream(f)); }
 static int b_ferror(void *f) { return ferror(map_stream(f)); }
@@ -710,8 +707,8 @@ const tl_bionic_entry tl_tab_str[] = {
     TL_WRAP("ftell", b_ftell), TL_WRAP("ftello", b_ftello), TL_WRAP("fgetpos", b_fgetpos), TL_WRAP("fsetpos", b_fsetpos), TL_WRAP("fgetpos64", b_fgetpos), TL_WRAP("fsetpos64", b_fsetpos), TL_WRAP("fflush", b_fflush), TL_WRAP("fputc", b_fputc),
     TL_WRAP("getline", b_getline), TL_WRAP("getdelim", b_getdelim), TL_WRAP("flockfile", b_flockfile), TL_WRAP("funlockfile", b_funlockfile),
     TL_WRAP("getc_unlocked", b_getc_unlocked), TL_WRAP("putc_unlocked", b_putc_unlocked),
-    TL_WRAP("putc", b_putc), TL_WRAP("getc", b_getc), TL_WRAP("fgetc", b_getc), TL_WRAP("ungetc", b_ungetc), TL_WRAP("getwc", b_getwc),
-    TL_WRAP("putwc", b_putwc), TL_WRAP("ungetwc", b_ungetwc), TL_WRAP("vsprintf", b_vsprintf), TL_WRAP("wcsftime", b_wcsftime),
+    TL_WRAP("putc", b_putc), TL_WRAP("getc", b_getc), TL_WRAP("fgetc", b_getc), TL_WRAP("ungetc", b_ungetc),
+    TL_WRAP("vsprintf", b_vsprintf), TL_WRAP("wcsftime", b_wcsftime),
     TL_WRAP("fputs", b_fputs), TL_WRAP("puts", b_puts), TL_WRAP("feof", b_feof), TL_WRAP("ferror", b_ferror),
     TL_WRAP("clearerr", b_clearerr), TL_WRAP("fileno", b_fileno), TL_WRAP("setbuf", b_setbuf), TL_WRAP("setvbuf", b_setvbuf),
     TL_WRAP("remove", b_remove), TL_WRAP("rename", b_rename),
@@ -741,7 +738,63 @@ static void b___FD_CLR_chk(int fd, uint64_t *set, size_t size) { if (fd < 0 || (
 static FILE *g_stdin_var = (FILE *)&g_sF[0], *g_stdout_var = (FILE *)&g_sF[SF_SIZE], *g_stderr_var = (FILE *)&g_sF[2 * SF_SIZE];
 static void b_perror(const char *msg) { tl_log_line("perror: %s: %s", msg ? msg : "", strerror(errno)); }
 static void b_rewind(void *f) { rewind(map_stream(f)); }
-static wint_t b_fputwc(wchar_t c, void *f) { return fputwc(c, map_stream(f)); }
+/* Wide characters through a stream, as bionic's: UTF-8 on the stream whatever the host's locale (Winlator reads Wine's registry with
+ * fgetws), malformed bytes read as U+FFFD. */
+static wint_t wide_get(FILE *f)
+{
+    int c = fgetc(f);
+    if (c == EOF) return WEOF;
+    if (c < 0x80) return (wint_t)c;
+    int more = c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : c >= 0xC0 ? 1 : -1;
+    if (more < 0) return 0xFFFD;
+    uint32_t cp = (uint32_t)c & (0x3Fu >> more);
+    for (int i = 0; i < more; i++) {
+        int d = fgetc(f);
+        if (d == EOF) return 0xFFFD;
+        if ((d & 0xC0) != 0x80) { ungetc(d, f); return 0xFFFD; }
+        cp = (cp << 6) | ((uint32_t)d & 0x3F);
+    }
+    return (wint_t)cp;
+}
+static int wide_put(wchar_t w, FILE *f)
+{
+    uint32_t c = (uint32_t)w; unsigned char b[4]; int n;
+    if (c < 0x80) { b[0] = (unsigned char)c; n = 1; }
+    else if (c < 0x800) { b[0] = (unsigned char)(0xC0 | (c >> 6)); b[1] = (unsigned char)(0x80 | (c & 0x3F)); n = 2; }
+    else if (c < 0x10000) { b[0] = (unsigned char)(0xE0 | (c >> 12)); b[1] = (unsigned char)(0x80 | ((c >> 6) & 0x3F)); b[2] = (unsigned char)(0x80 | (c & 0x3F)); n = 3; }
+    else { b[0] = (unsigned char)(0xF0 | (c >> 18)); b[1] = (unsigned char)(0x80 | ((c >> 12) & 0x3F)); b[2] = (unsigned char)(0x80 | ((c >> 6) & 0x3F)); b[3] = (unsigned char)(0x80 | (c & 0x3F)); n = 4; }
+    return fwrite(b, 1, (size_t)n, f) == (size_t)n ? 0 : -1;
+}
+static wint_t b_fputwc(wchar_t c, void *f) { return wide_put(c, map_stream(f)) ? WEOF : (wint_t)c; }
+static wint_t b_fgetwc(void *f) { return wide_get(map_stream(f)); }
+static wint_t b_ungetwc(wint_t c, void *f)
+{
+    if (c == WEOF) return WEOF;
+    char b[4]; int n = 0; uint32_t cp = (uint32_t)c;
+    if (cp < 0x80) b[n++] = (char)cp;
+    else if (cp < 0x800) { b[n++] = (char)(0xC0 | (cp >> 6)); b[n++] = (char)(0x80 | (cp & 0x3F)); }
+    else { b[n++] = (char)(0xE0 | (cp >> 12)); b[n++] = (char)(0x80 | ((cp >> 6) & 0x3F)); b[n++] = (char)(0x80 | (cp & 0x3F)); }
+    FILE *fp = map_stream(f);
+    for (int i = n - 1; i >= 0; i--) if (ungetc((unsigned char)b[i], fp) == EOF) return WEOF;    /* one character back, as POSIX promises */
+    return c;
+}
+static wchar_t *b_fgetws(wchar_t *s, int n, void *f)
+{
+    if (n <= 0) return NULL;
+    FILE *fp = map_stream(f);
+    int i = 0;
+    while (i < n - 1) {
+        wint_t c = wide_get(fp);
+        if (c == WEOF) break;
+        s[i++] = (wchar_t)c;
+        if (c == L'\n') break;
+    }
+    if (i == 0) return NULL;
+    s[i] = 0;
+    return s;
+}
+static int b_fputws(const wchar_t *s, void *f) { FILE *fp = map_stream(f); for (; *s; s++) if (wide_put(*s, fp)) return -1; return 0; }
+static int b_fwide(void *f, int mode) { (void)f; return mode; }
 /* popen: no shell here, so the commands apps read from are answered directly -- getprop <name> from the system properties,
  * cat <file> from the file -- and anything else reads as empty output (never a null stream: code reads it unchecked). */
 int tl_property_get(const char *name, char *value);
@@ -787,7 +840,8 @@ const tl_bionic_entry tl_tab_str2[] = {
     TL_WRAP("__stpcpy_chk", b___stpcpy_chk), TL_WRAP("putchar", b_putchar), TL_WRAP("__strlcpy_chk", b___strlcpy_chk), TL_WRAP("__strlcat_chk", b___strlcat_chk), TL_WRAP("__strrchr_chk", b___strrchr_chk), TL_WRAP("__fgets_chk", b___fgets_chk), TL_WRAP("__sprintf_chk", tl_va___sprintf_chk), TL_WRAP("__snprintf_chk", tl_va___snprintf_chk), TL_WRAP("__memchr_chk", b___memchr_chk), TL_WRAP("__memrchr_chk", b___memrchr_chk), TL_WRAP("memmem", memmem), TL_WRAP("__stpncpy_chk", b___stpncpy_chk), TL_WRAP("__stpncpy_chk2", b___stpncpy_chk2),
     TL_WRAP("__FD_CLR_chk", b___FD_CLR_chk),
     TL_DATA("stdin", &g_stdin_var), TL_DATA("stdout", &g_stdout_var), TL_DATA("stderr", &g_stderr_var),
-    TL_WRAP("perror", b_perror), TL_WRAP("rewind", b_rewind), TL_WRAP("fputwc", b_fputwc), TL_WRAP("popen", b_popen), TL_WRAP("pclose", b_pclose),
+    TL_WRAP("perror", b_perror), TL_WRAP("rewind", b_rewind), TL_WRAP("fputwc", b_fputwc), TL_WRAP("putwc", b_fputwc), TL_WRAP("fgetwc", b_fgetwc), TL_WRAP("getwc", b_fgetwc), TL_WRAP("ungetwc", b_ungetwc),
+    TL_WRAP("fgetws", b_fgetws), TL_WRAP("fputws", b_fputws), TL_WRAP("fwide", b_fwide), TL_WRAP("popen", b_popen), TL_WRAP("pclose", b_pclose),
     TL_WRAP("tmpfile", b_tmpfile), TL_WRAP("wcsrtombs", b_wcsrtombs),
     TL_DIRECT(strncat), TL_DIRECT(strptime), TL_DIRECT(ldiv), TL_DIRECT(sleep), TL_DIRECT(pause), TL_DIRECT(arc4random_buf), TL_DIRECT(nan), TL_DIRECT(nanf),
     /* the rest of libm a guest may import (most are inlined as instructions, some libraries call them) */
