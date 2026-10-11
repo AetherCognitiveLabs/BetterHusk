@@ -7,6 +7,17 @@ import org.xmlpull.v1.XmlPullParserException;
 
 /** A compiled (binary) XML file: layouts, drawables, the manifest. Its parser is both an XmlPullParser and the AttributeSet of each element. */
 public final class XmlBlock {
+    private static final java.util.concurrent.ConcurrentHashMap<String, Integer> sAttrIds = new java.util.concurrent.ConcurrentHashMap<>();
+    static int androidAttr(String name) {
+        Integer id = sAttrIds.get(name);
+        if (id == null) {
+            int v = 0;
+            try { v = android.R.attr.class.getField(name).getInt(null); } catch (Throwable t) {}
+            sAttrIds.put(name, v); id = v;
+        }
+        return id;
+    }
+
     static final int RES_XML_TYPE = 0x0003, RES_XML_RESOURCE_MAP = 0x0180, RES_XML_START_NAMESPACE = 0x0100, RES_XML_END_NAMESPACE = 0x0101,
         RES_XML_START_ELEMENT = 0x0102, RES_XML_END_ELEMENT = 0x0103, RES_XML_CDATA = 0x0104;
     final ByteBuffer b;
@@ -153,9 +164,16 @@ public final class XmlBlock {
                 if (!name.equals(getAttributeName(i))) continue;
                 if (ns == null || ns.equals(getAttributeNamespace(i))) return i;
             }
+            /* an android: attribute by its resource id: tools that shrink the manifest drop the names and keep only the ids, which
+               is all Android goes by (PayPal's application and providers have no attribute names) */
+            if ("http://schemas.android.com/apk/res/android".equals(ns)) {
+                int id = androidAttr(name);
+                if (id != 0) for (int i = 0; i < attrCount; i++) if (getAttributeNameResource(i) == id) return i;
+            }
             return -1;
         }
         public String getAttributeValue(String ns, String name) { int i = indexOf(ns, name); return i < 0 ? null : getAttributeValue(i); }
+
         public int getAttributeListValue(String ns, String a, String[] opts, int def) { int i = indexOf(ns, a); return i < 0 ? def : getAttributeListValue(i, opts, def); }
         public boolean getAttributeBooleanValue(String ns, String a, boolean def) { int i = indexOf(ns, a); return i < 0 ? def : getAttributeBooleanValue(i, def); }
         public int getAttributeResourceValue(String ns, String a, int def) { int i = indexOf(ns, a); return i < 0 ? def : getAttributeResourceValue(i, def); }

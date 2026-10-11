@@ -997,10 +997,12 @@ bool tl_javaapp_manifest(const char *apk, char *pkg, size_t pn, char *activity, 
     if (application && apn) application[0] = 0;
     if (e && tl_zip_data(&z, e, 8u << 20, &d, &len, &owned, err, sizeof(err)) && len > 8 && rd16le(d) == 0x0003) {
         const uint8_t *pool = NULL; size_t psz = 0;
+        const uint8_t *resmap = NULL; uint32_t nres = 0;              /* string index -> attribute resource id */
         for (size_t off = rd16le(d + 2); off + 8 <= len; ) {
             uint16_t type = rd16le(d + off); uint32_t size = rd32le(d + off + 4);
             if (size < 8 || off + size > len) break;
             if (type == 0x0001) { pool = d + off; psz = size; }
+            else if (type == 0x0180) { resmap = d + off + rd16le(d + off + 2); nres = (size - rd16le(d + off + 2)) / 4; }
             else if (type == 0x0102 && pool && size >= 36) {
                 const uint8_t *el = d + off;
                 char name[64] = "";
@@ -1009,7 +1011,13 @@ bool tl_javaapp_manifest(const char *apk, char *pkg, size_t pn, char *activity, 
                 for (unsigned i = 0; i < acount; i++) {
                     const uint8_t *at = el + 16 + astart + (size_t)i * asize;
                     char an2[64] = "", av[260] = "";
-                    if (!pool_str(pool, psz, rd32le(at + 4), an2, sizeof(an2))) continue;
+                    uint32_t ni = rd32le(at + 4);
+                    if (!pool_str(pool, psz, ni, an2, sizeof(an2))) continue;
+                    /* a shrunk manifest keeps only the attribute's resource id (PayPal's): name and targetActivity by id */
+                    if (!an2[0] && resmap && ni < nres) {
+                        uint32_t id = rd32le(resmap + 4 * ni);
+                        if (id == 0x01010003) snprintf(an2, sizeof(an2), "name"); else if (id == 0x01010202) snprintf(an2, sizeof(an2), "targetActivity");
+                    }
                     if (rd32le(at + 8) != 0xFFFFFFFFu) pool_str(pool, psz, rd32le(at + 8), av, sizeof(av));
                     if (!strcmp(name, "manifest") && !strcmp(an2, "package")) snprintf(pkg, pn, "%s", av);
                     if (!strcmp(name, "application") && !strcmp(an2, "name")) snprintf(app, sizeof(app), "%s", av);
