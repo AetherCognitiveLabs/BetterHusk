@@ -33,6 +33,7 @@
 #include <sys/mman.h>
 #include <sys/mount.h>
 #include <sys/select.h>
+#include <malloc/malloc.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/uio.h>
@@ -1083,13 +1084,26 @@ static int b_mprotect(void *a, size_t l, int prot)
         /* the host's own code (a guest that patches "the linker", which here is Apple's): never touched */
         Dl_info di;
         if (dladdr(a, &di) && di.dli_fname && !tl_xmem_contains(a)) {
-            tl_note_once("mprotect asked to make the host's code writable: refused");
+            { const char *lib = NULL; const void *sa = NULL; const char *sym = tl_ld_symbol_at(__builtin_return_address(0), &lib, &sa);
+              static int said; if (said++ < 4) tl_log_line("bionic: mprotect(%p, %#zx, %d) on the host's code (%s %s) asked by %s %s: refused", a, l, prot,
+                  di.dli_fname ? strrchr(di.dli_fname, '/') + 1 : "?", di.dli_sname ? di.dli_sname : "?", lib ? lib : "?", sym ? sym : "?"); }
             tl_set_guest_errno(13);
             return -1;
         }
         /* the guest's own memory it wrote code into (Meta's and ByteDance's stubs, a JIT): made executable when the system lets a
          * process do that (a debugger attached for JIT, or a Mac), write access dropped if both were asked for (W^X); refused
          * otherwise, which lets a JIT fall back to its interpreter. TL_NO_GUEST_JIT=1 always refuses. */
+        /* memory that is not the guest's to remap: the thread's stack (liblinkernsbypass asks for RWX on the page it keeps a local in)
+         * or the host's heap. Left writable and as it is -- dropping write there for W^X would leave the thread unable to push a frame. */
+        {
+            pthread_t me = pthread_self();
+            uintptr_t top = (uintptr_t)pthread_get_stackaddr_np(me), low = top - pthread_get_stacksize_np(me);
+            if (((uintptr_t)a >= low && (uintptr_t)a < top) || malloc_zone_from_ptr(a)) {
+                tl_note_once("mprotect asked to make a stack or heap page executable: left as it is");
+                mm_trace("mprotect", a, l, prot, 0);
+                return 0;
+            }
+        }
         static int allow = -1;
         if (allow < 0) allow = getenv("TL_NO_GUEST_JIT") ? 0 : 1;
         int r = -1;

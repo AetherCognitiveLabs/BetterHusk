@@ -623,7 +623,12 @@ static void dl_fail(const char *fmt, const char *arg)
     t_dlerr_set = true;
 }
 
-static void *bionic_dlopen(const char *path, int flags)
+static void *dlopen_impl(const char *path, int flags);
+/* __loader_dlopen, which bionic's dlopen calls with its caller: the first call in dlopen's code is to it, as on a phone, because
+ * liblinkernsbypass (GameNative, Turnip loaders) finds __loader_dlopen by walking dlopen's instructions to its first BL */
+__attribute__((noinline)) static void *bionic_loader_dlopen(const char *path, int flags, const void *caller) { (void)caller; return dlopen_impl(path, flags); }
+__attribute__((noinline, disable_tail_calls)) static void *bionic_dlopen(const char *path, int flags) { return bionic_loader_dlopen(path, flags, __builtin_return_address(0)); }
+static void *dlopen_impl(const char *path, int flags)
 {
     if (!path) return &g_sys_handle[0];          /* the global namespace */
     const char *base = strrchr(path, '/');
@@ -651,7 +656,6 @@ static void *bionic_dlopen(const char *path, int flags)
 }
 
 static void *bionic_dlsym(void *handle, const char *name);
-static void *bionic_loader_dlopen(const char *path, int flags, const void *caller) { (void)caller; return bionic_dlopen(path, flags); }
 static void *bionic_loader_android_dlopen_ext(const char *path, int flags, const void *info, const void *caller) { (void)info; (void)caller; return bionic_dlopen(path, flags); }
 static void *bionic_android_dlopen_ext(const char *path, int flags, const void *info) { (void)info; return bionic_dlopen(path, flags); }
 static void *bionic_loader_dlsym(void *handle, const char *name, const void *caller) { (void)caller; return bionic_dlsym(handle, name); }
