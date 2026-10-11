@@ -484,7 +484,9 @@ static void bionic___cxa_finalize(void *dso)
 
 /* -------------------------------------------------------- system queries */
 
-static unsigned long bionic_getauxval(unsigned long type)
+unsigned long tl_bionic_getauxval(unsigned long type);
+static unsigned long bionic_getauxval(unsigned long type) { return tl_bionic_getauxval(type); }
+unsigned long tl_bionic_getauxval(unsigned long type)
 {
     static uint8_t random16[16] = { 0x4a, 0x13, 0x9c, 0x71, 0xe2, 0x05, 0x88, 0x3d, 0xb6, 0x21, 0x5f, 0xc4, 0x90, 0x2e, 0x67, 0xd8 };
     switch (type) {

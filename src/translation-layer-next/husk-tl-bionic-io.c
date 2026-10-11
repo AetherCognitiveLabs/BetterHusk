@@ -76,7 +76,9 @@ void tl_set_data_dir(const char *dir)
 const char *tl_data_dir(void) { return g_data_dir[0] ? g_data_dir : "/tmp"; }
 
 /* A file holding `content`, already unlinked. Where it can be made depends on the host: iOS gives an app no /tmp. */
-static int synth_file(const char *content)
+static int synth_file_n(const void *content, size_t n);
+static int synth_file(const char *content) { return synth_file_n(content, strlen(content)); }
+static int synth_file_n(const void *content, size_t n)
 {
     const char *dirs[3] = { g_data_dir[0] ? g_data_dir : NULL, getenv("TMPDIR"), "/tmp" };
     char tmpl[1100];
@@ -88,7 +90,6 @@ static int synth_file(const char *content)
     }
     if (fd < 0) { tl_log_line("bionic: no writable directory for a synthetic file (%s)", strerror(errno)); return -1; }
     unlink(tmpl);
-    size_t n = strlen(content);
     if (write(fd, content, n) != (ssize_t)n) { close(fd); return -1; }
     lseek(fd, 0, SEEK_SET);
     return fd;
@@ -130,6 +131,14 @@ static const char *synth_content(const char *path, char *buf, size_t n)
 /* A file for a path whose contents are made up (/proc/cpuinfo ...), or -1 when the path is real. */
 int tl_synth_open(const char *path)
 {
+    /* the auxiliary vector, as the kernel gives it (Go's runtime in a library reads its page size here): the values getauxval answers */
+    if (!strcmp(path, "/proc/self/auxv") || (!strncmp(path, "/proc/", 6) && strstr(path, "/auxv") && !strcmp(strstr(path, "/auxv"), "/auxv"))) {
+        unsigned long tl_bionic_getauxval(unsigned long type);
+        static uint8_t random16[16]; static int made; if (!made) { arc4random_buf(random16, 16); made = 1; }
+        uint64_t v[] = { 6, 16384, 16, tl_bionic_getauxval(16), 26, tl_bionic_getauxval(26), 17, 100, 25, (uint64_t)(uintptr_t)random16,
+                         23, 0, 51, 4096, 0, 0 };
+        return synth_file_n(v, sizeof(v));
+    }
     static __thread char content[65536];
     const char *s = synth_content(path, content, sizeof(content));
     return s ? synth_file(s) : -1;
@@ -495,6 +504,7 @@ static int b_open(const char *path, int flags, unsigned mode)
         return fd;
     }
     const char *real = tl_path_resolve(path, buf, sizeof(buf));
+    if (strstr(path, "/auxv")) { int afd = tl_synth_open(path); if (afd >= 0) return afd; }   /* binary, not text */
     const char *s = synth_content(path, content, sizeof(content));
     if (s) {
         int fd = synth_file(s);
