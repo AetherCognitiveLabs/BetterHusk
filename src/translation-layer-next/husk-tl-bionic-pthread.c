@@ -415,10 +415,22 @@ typedef struct { void *(*fn)(void *); void *arg; } start_ctx;
 const char *tl_ld_symbol_at(const void *addr, const char **lib_name, const void **sym_addr);
 
 static int g_thread_trace = -1;
+/* A stack of its own for fault handlers, for the calling thread: a crash that leaves the thread's stack unusable (a guest's runaway
+ * recursion) is then still reported -- macOS kills a thread it can not deliver a signal to with SIGILL, and nothing is said. */
+void tl_thread_altstack(void)
+{
+    stack_t old;
+    if (sigaltstack(NULL, &old) == 0 && !(old.ss_flags & SS_DISABLE)) return;
+    stack_t ss = { .ss_sp = malloc(64 << 10), .ss_size = 64 << 10, .ss_flags = 0 };
+    if (ss.ss_sp) sigaltstack(&ss, NULL);
+}
 static void *start_thunk(void *p)
 {
     start_ctx c = *(start_ctx *)p;
     free(p);
+    /* a stack of its own for fault handlers: a crash that leaves the thread's stack unusable is then still reported (macOS kills a
+       thread it can not deliver a signal to with SIGILL, and nothing is said) */
+    tl_thread_altstack();
     if (g_thread_trace < 0) g_thread_trace = getenv("TL_THREAD_TRACE") ? 1 : 0;
     if (g_thread_trace) {
         const char *ln = NULL; const void *sa = NULL;

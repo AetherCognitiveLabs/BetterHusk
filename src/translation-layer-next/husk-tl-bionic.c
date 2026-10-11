@@ -879,6 +879,8 @@ bool tl_bionic_is_system_lib(const char *soname)
         "libc.so", "libm.so", "libdl.so", "liblog.so", "libandroid.so", "libEGL.so", "libGLESv1_CM.so",
         "libGLESv2.so", "libGLESv3.so", "libz.so", "libmediandk.so", "libOpenSLES.so", "libaaudio.so",
         "libvulkan.so", "libnativewindow.so", "libjnigraphics.so", "libcamera2ndk.so", "libstdc++.so",
+        /* the rest of the NDK's libraries an app may list as needed without calling much in them (Roblox needs OpenMAX AL) */
+        "libOpenMAXAL.so", "libneuralnetworks.so", "libbinder_ndk.so", "libsync.so", "libamidi.so", "libicu.so",
         /* the Java runtime's: answered by Husk (husk-tl-dvm-jvm.c), never loaded */ "libopenjdkjvm.so", "libdl_android.so", "libart.so", NULL };
     for (int i = 0; sys[i]; i++) if (!strcmp(sys[i], soname)) return true;
     return false;

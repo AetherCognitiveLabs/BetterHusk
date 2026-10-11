@@ -639,6 +639,7 @@ NAT(Thread_holdsLock)
 typedef struct { jobj *thread; } start_arg;
 static void *thread_main(void *p)
 {
+    void tl_thread_altstack(void); tl_thread_altstack();
     start_arg *s = p;
     t_thread = s->thread;
     free(s);

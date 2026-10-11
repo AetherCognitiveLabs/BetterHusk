@@ -160,6 +160,7 @@ typedef struct { int argc; char **argv; } job;
 static void *run(void *p)
 {
     job *j = p; char **argv = j->argv; int argc = j->argc;
+    { stack_t ss = { .ss_sp = malloc(64 << 10), .ss_size = 64 << 10, .ss_flags = 0 }; sigaltstack(&ss, NULL); }   /* a crash here is reported even when the stack is spent */
     const char *art = getenv("TL_ART") ? getenv("TL_ART") : "/Volumes/GTAV/husk2/root/apex/com.android.art";
     static const char *const jars[] = { "core-oj", "core-libart", "okhttp", "bouncycastle", "apache-xml" };
     static char paths[10][700]; const char *boot[10]; int nb = 0;

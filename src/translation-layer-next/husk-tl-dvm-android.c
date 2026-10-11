@@ -437,6 +437,7 @@ NAT(N_insets)
 static void *gl_main(void *arg);
 NAT(N_startGL)
 {
+    void tl_thread_altstack(void); tl_thread_altstack();
     (void)self; (void)ret;
     if (A.gl_started) return true;
     A.gl_version = a[2].i; A.gl_view = a[0].l;
@@ -1066,6 +1067,7 @@ static void log_pending_stack(void)
 
 static void *app_main(void *arg)
 {
+    void tl_thread_altstack(void); tl_thread_altstack();
     (void)arg;
     pthread_setname_np("main");
     jvalue a[2] = { L(dvm_new_string_utf8(A.activity)), L(A.application[0] ? dvm_new_string_utf8(A.application) : NULL) };

@@ -968,8 +968,35 @@ static int x18_rewrite(tl_lib *L, uint32_t *site_rw, const uint8_t *pc, ptrdiff_
         bool pair = (insn & 0x3A000000u) == 0x28000000u, single = (insn & 0x3B000000u) == 0x38000000u;
         unsigned mode = pair ? (insn >> 23) & 3u : (insn >> 10) & 3u;
         if ((pair || (single && !((insn >> 21) & 1u))) && ((insn >> 5) & 31u) == 31 && (mode == 1 || mode == 3)) {
-            tl_log_line("ld: %s: x18 instruction %08x at +%#llx writes back sp", L->name, insn, (unsigned long long)(pc - L->rx));
-            return X18_FAILED;
+            /* stp x17, x18, [sp, #-16]! / ldp x17, x18, [sp], #16 (a function that keeps x18 across a call): the stack pointer moves
+             * on its own (before the access for pre-index, after it for post-index) and the access becomes one at [sp] that does not
+             * write back, which is rewritten as any other; its scratch saves go below sp, clear of the access. */
+            int64_t moved;
+            uint32_t plain;
+            if (pair) {
+                int64_t imm7 = (int64_t)((insn >> 15) & 0x7Fu); if (imm7 & 0x40) imm7 -= 0x80;
+                unsigned opc = insn >> 30;
+                moved = imm7 * (opc == 2 ? 8 : 4);
+                plain = (insn & ~((3u << 23) | (0x7Fu << 15))) | (2u << 23);             /* signed offset 0 */
+            } else {
+                int64_t imm9 = (int64_t)((insn >> 12) & 0x1FFu); if (imm9 & 0x100) imm9 -= 0x200;
+                moved = imm9;
+                plain = insn & ~((3u << 10) | (0x1FFu << 12));                            /* unscaled offset 0 (stur / ldur) */
+            }
+            if (moved <= -4096 || moved >= 4096 || moved == 0) return X18_FAILED;
+            uint32_t adjust = moved < 0 ? 0xD10003FFu | ((uint32_t)(-moved) << 10) : 0x910003FFu | ((uint32_t)moved << 10);   /* sub / add sp, sp, #n */
+            uint32_t pused = a64_gpr_mask(plain);
+            unsigned S = pick_scratch(pused, 0), T = pick_scratch(pused, S);
+            if (!S || !T) return X18_FAILED;
+            if (mode == 3) EMIT(adjust);
+            EMIT(e_stur(S, -16)); EMIT(e_stur(T, -8));
+            EMIT(e_mrs_tsd(S)); EMIT(e_and_tsd(S)); EMIT(e_ldr_slot(S, S));
+            EMIT(a64_subst_gpr(plain, 18, S));
+            EMIT(e_mrs_tsd(T)); EMIT(e_and_tsd(T)); EMIT(e_str_slot(S, T));
+            EMIT(e_ldur(T, -8)); EMIT(e_ldur(S, -16));
+            if (mode == 1) EMIT(adjust);
+            EMIT_B(back);
+            goto emitted;
         }
         unsigned S = pick_scratch(used, 0), T = pick_scratch(used, S);
         if (!S || !T) return X18_FAILED;
@@ -980,6 +1007,7 @@ static int x18_rewrite(tl_lib *L, uint32_t *site_rw, const uint8_t *pc, ptrdiff_
         EMIT(e_ldur(T, -8)); EMIT(e_ldur(S, -16));
         EMIT_B(back);
     }
+emitted:
 #undef EMIT
 #undef EMIT_B
     if (!in_range_b(pc, rx)) return X18_FAILED;
