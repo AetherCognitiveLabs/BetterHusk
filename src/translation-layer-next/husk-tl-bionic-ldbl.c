@@ -15,6 +15,7 @@
 #include <math.h>
 #include <signal.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/time.h>
@@ -125,6 +126,33 @@ static q128 b_nextafterl(q128 x, q128 y)
 /* ---- POSIX odds and ends */
 
 static int b_posix_ok(void) { return 0; }
+/* Clang CFI's out-of-line check: a library built with it asks whether an indirect call's target is the right type. Nothing here keeps
+ * the shadow it consults; Android's also lets calls into code without it through, which is all of ours. */
+static void b_cfi_slowpath(uint64_t id, void *ptr) { (void)id; (void)ptr; }
+static void b_cfi_slowpath_diag(uint64_t id, void *ptr, void *diag) { (void)id; (void)ptr; (void)diag; }
+/* dirname as bionic's: the input is left alone, the answer is in a buffer of the thread's */
+static char *b_dirname(const char *p)
+{
+    static _Thread_local char buf[1024];
+    if (!p || !*p) return strcpy(buf, ".");
+    size_t n = strlen(p);
+    while (n > 1 && p[n - 1] == '/') n--;
+    while (n > 0 && p[n - 1] != '/') n--;
+    if (n == 0) return strcpy(buf, ".");
+    while (n > 1 && p[n - 1] == '/') n--;
+    if (n >= sizeof(buf)) { buf[0] = 0; return NULL; }
+    memcpy(buf, p, n); buf[n] = 0;
+    return buf;
+}
+static long b_getrandom(void *buf, size_t n, unsigned flags) { (void)flags; arc4random_buf(buf, n); return (long)n; }
+static long b_random(void) { return random(); }
+static void b_srandom(unsigned seed) { srandom(seed); }
+/* POSIX timers (Facebook's profilers and watchdogs make them): made, never fired -- delivering their signals into the guest is not done */
+static int b_timer_create(int clock, void *sev, void **out) { (void)clock; (void)sev; static int next = 1; if (out) *out = (void *)(intptr_t)__atomic_fetch_add(&next, 1, __ATOMIC_RELAXED); return 0; }
+static int b_timer_settime(void *t, int flags, const void *nv, void *old) { (void)t; (void)flags; (void)nv; if (old) memset(old, 0, 32); return 0; }
+static int b_timer_gettime(void *t, void *cur) { (void)t; if (cur) memset(cur, 0, 32); return 0; }
+static int b_timer_delete(void *t) { (void)t; return 0; }
+static int b_timer_getoverrun(void *t) { (void)t; return 0; }
 /* posix_fallocate: the file must really be that long afterwards -- Realm maps its database at the new size and touches it (a no-op
  * left the pages past the end, and the first write there was a SIGBUS). Returns the error number, as POSIX says. */
 static int b_posix_fallocate(int fd, long off, long len)
@@ -172,6 +200,10 @@ const tl_bionic_entry tl_tab_ldbl[] = {
     TL_DIRECT(deflateCopy), TL_DIRECT(inflateCopy),
     TL_WRAP("fpathconf", b_fpathconf), TL_WRAP("fstatvfs", b_enosys), TL_WRAP("dup3", b_dup3),
     TL_WRAP("getresuid", b_getresid), TL_WRAP("getresgid", b_getresid), TL_WRAP("setresuid", b_eperm), TL_WRAP("setresgid", b_eperm),
+    TL_WRAP("__cfi_slowpath", b_cfi_slowpath), TL_WRAP("__cfi_slowpath_diag", b_cfi_slowpath_diag), TL_WRAP("dirname", b_dirname),
+    TL_WRAP("getrandom", b_getrandom), TL_WRAP("random", b_random), TL_WRAP("srandom", b_srandom),
+    TL_WRAP("timer_create", b_timer_create), TL_WRAP("timer_settime", b_timer_settime), TL_WRAP("timer_gettime", b_timer_gettime),
+    TL_WRAP("timer_delete", b_timer_delete), TL_WRAP("timer_getoverrun", b_timer_getoverrun),
     TL_WRAP("siginterrupt", b_posix_ok), TL_WRAP("sigpending", b_sigpending), TL_WRAP("sigwait", b_enosys),
     TL_WRAP("ttyname_r", b_ttyname_r), TL_WRAP("hstrerror", b_hstrerror), TL_WRAP("getprotobyname", b_null_lookup),
     TL_WRAP("getservbyport", b_null_lookup), TL_WRAP("getpwnam_r", b_getpwnam_r),

@@ -12,6 +12,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <stdarg.h>
+#include <dlfcn.h>
 #include <stdio.h>
 #include <dirent.h>
 #include <sys/stat.h>
@@ -47,7 +48,14 @@ static void describe(const char *label, const void *addr)
     const char *lib = NULL; const void *sa = NULL;
     const char *sym = tl_ld_symbol_at(addr, &lib, &sa);
     if (lib) fprintf(stderr, "  %-6s %p  %s  %s+%#lx\n", label, addr, lib, sym ? sym : "?", sa ? (unsigned long)((const char *)addr - (const char *)sa) : 0ul);
-    else fprintf(stderr, "  %-6s %p\n", label, addr);
+    else {
+        /* host code: the image and the address as atos -l 0x100000000 takes it (the binary is slid) */
+        Dl_info di;
+        if (dladdr(addr, &di) && di.dli_fbase)
+            fprintf(stderr, "  %-6s %p  %s  %s (atos addr %#lx)\n", label, addr, strrchr(di.dli_fname, '/') ? strrchr(di.dli_fname, '/') + 1 : di.dli_fname,
+                    di.dli_sname ? di.dli_sname : "?", (unsigned long)((const char *)addr - (const char *)di.dli_fbase) + 0x100000000ul);
+        else fprintf(stderr, "  %-6s %p\n", label, addr);
+    }
 }
 
 static int safe_read(uintptr_t addr, void *out, size_t n)

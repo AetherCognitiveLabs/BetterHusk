@@ -756,6 +756,8 @@ static mon *monitor_of(jobj *o)
     return o->monitor;
 }
 static bool mon_mine(mon *m) { pthread_t w = atomic_load(&m->owner); return w && pthread_equal(w, pthread_self()); }
+/* Thread.holdsLock: whether this thread is inside a synchronized block on o (Facebook's loader asserts it is not before taking a file lock) */
+bool dvm_holds_lock(jobj *o) { mon *m = o ? o->monitor : NULL; return m && mon_mine(m); }
 void dvm_monitor_enter(jobj *o)
 {
     mon *m = monitor_of(o);

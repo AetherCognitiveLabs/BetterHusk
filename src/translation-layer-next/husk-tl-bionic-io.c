@@ -775,6 +775,18 @@ static int b_statfs(const char *p, guest_statfs *g)
     return r;
 }
 
+static int b_fstatfs(int fd, guest_statfs *g)
+{
+    struct statfs s;
+    TL_ERRNO_BEGIN(); int r = fstatfs(fd, &s); TL_ERRNO_END();
+    if (r == 0) {
+        memset(g, 0, sizeof(*g));
+        g->f_type = 0xEF53; g->f_bsize = s.f_bsize; g->f_blocks = s.f_blocks; g->f_bfree = s.f_bfree;
+        g->f_bavail = s.f_bavail; g->f_files = s.f_files; g->f_ffree = s.f_ffree; g->f_namelen = 255; g->f_frsize = s.f_bsize;
+    }
+    return r;
+}
+
 /* fcntl / ioctl */
 typedef struct { int16_t l_type, l_whence; int pad; int64_t l_start, l_len; int32_t l_pid; } guest_flock;
 
@@ -1473,7 +1485,7 @@ const tl_bionic_entry tl_tab_io[] = {
     TL_WRAP("readlink", b_readlink), TL_WRAP("realpath", b_realpath), TL_WRAP("getcwd", b_getcwd), TL_WRAP("__getcwd_chk", b___getcwd_chk),
     TL_WRAP("utimes", b_utimes), TL_WRAP("utime", b_utime), TL_WRAP("futimens", b_futimens),
     TL_WRAP("__umask_chk", b___umask_chk), TL_WRAP("sendfile", b_sendfile), TL_WRAP("sendfile64", b_sendfile),
-    TL_WRAP("stat", b_stat), TL_WRAP("fstatat", b_fstatat), TL_WRAP("fstatat64", b_fstatat), TL_WRAP("lstat", b_lstat), TL_WRAP("fstat", b_fstat), TL_WRAP("lstat64", b_lstat), TL_WRAP("fstat64", b_fstat), TL_WRAP("statfs", b_statfs),
+    TL_WRAP("stat", b_stat), TL_WRAP("fstatat", b_fstatat), TL_WRAP("fstatat64", b_fstatat), TL_WRAP("lstat", b_lstat), TL_WRAP("fstat", b_fstat), TL_WRAP("lstat64", b_lstat), TL_WRAP("fstat64", b_fstat), TL_WRAP("statfs", b_statfs), TL_WRAP("statfs64", b_statfs), TL_WRAP("fstatfs", b_fstatfs), TL_WRAP("fstatfs64", b_fstatfs),
     TL_WRAP("fcntl", b_fcntl), TL_WRAP("ioctl", b_ioctl),
     TL_WRAP("scandir", b_scandir), TL_WRAP("alphasort", b_alphasort), TL_WRAP("versionsort", b_alphasort), TL_WRAP("opendir", b_opendir), TL_WRAP("fdopendir", b_fdopendir), TL_WRAP("dirfd", b_dirfd), TL_WRAP("rewinddir", b_rewinddir), TL_WRAP("readdir", b_readdir), TL_WRAP("closedir", b_closedir),
     TL_WRAP("mmap", b_mmap), TL_WRAP("mmap64", b_mmap), TL_WRAP("readdir64", b_readdir), TL_WRAP("munmap", b_munmap), TL_WRAP("mprotect", b_mprotect), TL_WRAP("madvise", b_madvise),

@@ -22,8 +22,19 @@ public final class AssetManager implements AutoCloseable {
         return new ByteArrayInputStream(b);
     }
     public String[] list(String path) throws IOException { String[] l = husk.Native.listAssets(norm(path)); return l == null ? new String[0] : l; }
-    public AssetFileDescriptor openFd(String name) throws IOException {
-        String n = norm(name);
+    public AssetFileDescriptor openFd(String name) throws IOException { return fd(norm(name), name); }
+    /** A file from the APK's root rather than assets/ (SoLoader reads lib/<abi>/*.so this way) */
+    public AssetFileDescriptor openNonAssetFd(String name) throws IOException { return fd("/" + norm(name), name); }
+    public AssetFileDescriptor openNonAssetFd(int cookie, String name) throws IOException { return openNonAssetFd(name); }
+    public InputStream openNonAsset(String name) throws IOException {
+        byte[] b = husk.Native.readAsset("/" + norm(name));
+        if (b == null) throw new FileNotFoundException(name);
+        return new ByteArrayInputStream(b);
+    }
+    public InputStream openNonAsset(int cookie, String name) throws IOException { return openNonAsset(name); }
+    public InputStream openNonAsset(String name, int mode) throws IOException { return openNonAsset(name); }
+    public InputStream openNonAsset(int cookie, String name, int mode) throws IOException { return openNonAsset(name); }
+    private AssetFileDescriptor fd(String n, String name) throws IOException {
         long fdoff = husk.Native.assetFd(n);
         if (fdoff == -1) throw new FileNotFoundException("This file can not be opened as a file descriptor; it is probably compressed: " + name);
         long len = husk.Native.assetLength(n);
@@ -31,7 +42,6 @@ public final class AssetManager implements AutoCloseable {
         try { java.lang.reflect.Field f = FileDescriptor.class.getDeclaredField("descriptor"); f.setAccessible(true); f.setInt(fd, (int) (fdoff >>> 40)); } catch (Exception e) { }
         return new AssetFileDescriptor(n, fd, fdoff & 0xFFFFFFFFFFL, len);
     }
-    public AssetFileDescriptor openNonAssetFd(String name) throws IOException { return openFd(name); }
     public String[] getLocales() { return new String[] { "en-US" }; }
 
     /** An uncompressed asset read in place from the APK through its own descriptor. */
@@ -97,11 +107,6 @@ public final class AssetManager implements AutoCloseable {
     public java.util.Map getOverlayableMap(java.lang.String p0) { return new java.util.HashMap(); }
     public java.lang.String getOverlayablesToString(java.lang.String p0) { return null; }
     public boolean isUpToDate() { return false; }
-    public java.io.InputStream openNonAsset(int p0, java.lang.String p1) { return null; }
-    public java.io.InputStream openNonAsset(int p0, java.lang.String p1, int p2) { return null; }
-    public java.io.InputStream openNonAsset(java.lang.String p0) { return null; }
-    public java.io.InputStream openNonAsset(java.lang.String p0, int p1) { return null; }
-    public android.content.res.AssetFileDescriptor openNonAssetFd(int p0, java.lang.String p1) { return null; }
     public android.content.res.XmlResourceParser openXmlResourceParser(int p0, java.lang.String p1) { return null; }
     public android.content.res.XmlResourceParser openXmlResourceParser(int p0, java.lang.String p1, boolean p2) { return null; }
     public android.content.res.XmlResourceParser openXmlResourceParser(java.lang.String p0) { return null; }

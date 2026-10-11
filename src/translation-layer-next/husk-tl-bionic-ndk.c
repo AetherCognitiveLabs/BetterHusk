@@ -16,6 +16,7 @@
 #include <string.h>
 #include <stdbool.h>
 #include <time.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <zlib.h>
 
@@ -567,6 +568,21 @@ static int b_AAsset_openFileDescriptor(tl_asset *a, long *start, long *len)
     return fd;
 }
 
+/* ASharedMemory: an unnamed file of the size asked, as a descriptor to map (Android's is ashmem / memfd) */
+static int b_ASharedMemory_create(const char *name, size_t size)
+{
+    (void)name;
+    char path[] = "/tmp/husk-ashmem-XXXXXX";
+    int fd = mkstemp(path);
+    if (fd < 0) return -1;
+    unlink(path);
+    if (ftruncate(fd, (off_t)size)) { close(fd); return -1; }
+    return fd;
+}
+static size_t b_ASharedMemory_getSize(int fd) { struct stat st; return fstat(fd, &st) ? 0 : (size_t)st.st_size; }
+static int b_ASharedMemory_setProt(int fd, int prot) { (void)fd; (void)prot; return 0; }
+static int b_ASharedMemory_dupFromJava(void *env, void *obj) { (void)env; (void)obj; return -1; }
+
 /* ---------------------------------------------------------------- windows */
 
 /*
@@ -912,6 +928,8 @@ const tl_bionic_entry tl_tab_ndk[] = {
     TL_WRAP("AAsset_getLength64", b_AAsset_getLength), TL_WRAP("AAsset_getRemainingLength", b_AAsset_getRemainingLength),
     TL_WRAP("AAsset_getRemainingLength64", b_AAsset_getRemainingLength), TL_WRAP("AAsset_getBuffer", b_AAsset_getBuffer),
     TL_WRAP("AAsset_seek", b_AAsset_seek), TL_WRAP("AAsset_seek64", b_AAsset_seek), TL_WRAP("AAsset_isAllocated", b_AAsset_isAllocated),
+    TL_WRAP("ASharedMemory_create", b_ASharedMemory_create), TL_WRAP("ASharedMemory_getSize", b_ASharedMemory_getSize),
+    TL_WRAP("ASharedMemory_setProt", b_ASharedMemory_setProt), TL_WRAP("ASharedMemory_dupFromJava", b_ASharedMemory_dupFromJava),
     TL_WRAP("AAsset_openFileDescriptor", b_AAsset_openFileDescriptor), TL_WRAP("AAsset_openFileDescriptor64", b_AAsset_openFileDescriptor64),
     /* systrace (libandroid): nothing records traces here */
     TL_WRAP("ATrace_beginSection", b_atrace_noop), TL_WRAP("ATrace_endSection", b_atrace_noop), TL_WRAP("ATrace_isEnabled", b_atrace_false),

@@ -18,6 +18,21 @@ public class ApplicationInfo extends PackageItemInfo implements android.os.Parce
     public java.util.UUID storageUuid;
     public ApplicationInfo() {}
     public ApplicationInfo(ApplicationInfo o) { super(o); taskAffinity = o.taskAffinity; processName = o.processName; className = o.className; sourceDir = o.sourceDir; publicSourceDir = o.publicSourceDir; dataDir = o.dataDir; nativeLibraryDir = o.nativeLibraryDir; theme = o.theme; flags = o.flags; uid = o.uid; targetSdkVersion = o.targetSdkVersion; minSdkVersion = o.minSdkVersion; enabled = o.enabled; }
+    /** A split under the name Android installs it as (split_config.arm64_v8a.apk): SoLoader picks the split holding native code
+     *  by that name. A link to the file Husk has, in the app's data folder; the file itself when a link cannot be made. */
+    private static String androidSplitPath(String dataDir, String real, String name) {
+        try {
+            java.io.File dir = new java.io.File(dataDir, ".husk-splits"); dir.mkdirs();
+            java.io.File link = new java.io.File(dir, "split_" + name + ".apk");
+            java.nio.file.Path target = java.nio.file.Paths.get(real);
+            if (java.nio.file.Files.isSymbolicLink(link.toPath())) {
+                if (java.nio.file.Files.readSymbolicLink(link.toPath()).equals(target)) return link.getPath();
+                link.delete();
+            }
+            java.nio.file.Files.createSymbolicLink(link.toPath(), target);
+            return link.getPath();
+        } catch (Throwable t) { return real; }
+    }
     public static synchronized ApplicationInfo self() {
         if (sSelf == null) {
             husk.Manifest.read();
@@ -28,13 +43,23 @@ public class ApplicationInfo extends PackageItemInfo implements android.os.Parce
             // the splits, as Android lists them: SoLoader and Play's libraries look for native code and assets in them
             String[] sp = husk.Native.splitPaths();
             if (sp != null && sp.length > 0) {
-                a.splitSourceDirs = sp.clone(); a.splitPublicSourceDirs = sp.clone();
+                a.splitSourceDirs = new String[sp.length];
                 a.splitNames = new String[sp.length];
                 for (int i = 0; i < sp.length; i++) {
                     String n = new java.io.File(sp[i]).getName(); if (n.endsWith(".apk")) n = n.substring(0, n.length() - 4);
                     if (n.startsWith(a.packageName + ".")) n = n.substring(a.packageName.length() + 1);
+                    if (n.startsWith("split_")) n = n.substring(6);
                     a.splitNames[i] = n;
+                    a.splitSourceDirs[i] = androidSplitPath(a.dataDir, sp[i], n);
                 }
+                // sorted by name, as Android keeps them (apps binary-search splitNames)
+                Integer[] order = new Integer[sp.length]; for (int i = 0; i < order.length; i++) order[i] = i;
+                final String[] names = a.splitNames;
+                java.util.Arrays.sort(order, (x, y) -> names[x].compareTo(names[y]));
+                String[] n2 = new String[sp.length], d2 = new String[sp.length];
+                for (int i = 0; i < order.length; i++) { n2[i] = names[order[i]]; d2[i] = a.splitSourceDirs[order[i]]; }
+                a.splitNames = n2; a.splitSourceDirs = d2;
+                a.splitPublicSourceDirs = a.splitSourceDirs.clone();
             }
             a.nativeLibraryDir = a.dataDir + "/lib";
             a.className = husk.Manifest.applicationClass;

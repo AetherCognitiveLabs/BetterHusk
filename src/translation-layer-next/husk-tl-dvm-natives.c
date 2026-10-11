@@ -613,7 +613,13 @@ NAT(Thread_status)
     *ret = I(alive ? 1 : a[0].z ? 5 : 0);
     return true;
 }
-NAT(Thread_holdsLock) { UNUSED; *ret = Z(true); return true; }
+NAT(Thread_holdsLock)
+{
+    UNUSED;
+    bool dvm_holds_lock(jobj *o);
+    if (!a[0].l) return dvm_throw("java/lang/NullPointerException", "holdsLock(null)");
+    *ret = Z(dvm_holds_lock(a[0].l)); return true;
+}
 
 typedef struct { jobj *thread; } start_arg;
 static void *thread_main(void *p)

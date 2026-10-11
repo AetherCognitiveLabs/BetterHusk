@@ -136,6 +136,15 @@ struct AppDiagnosis: Identifiable, Equatable {
             return googleDiagnosis(l)
         }
 
+        // An app that only works signed in to a Google account: it asked Android's account picker, got none, and closed
+        if let l = lines.last(where: { $0.contains("ChooseTypeAndAccountActivity") || $0.contains("AccountManager.newChooseAccountIntent") }),
+           lines.contains(where: { $0.contains("the app finished") }) {
+            return AppDiagnosis(kind: .needsGoogle, title: "Needs a Google account",
+                                detail: "This app only works signed in to a Google account. It asked Android to pick one, and Husk has no Google "
+                                    + "accounts to offer, so the app closed.",
+                                evidence: l)
+        }
+
         // A game whose data comes as an expansion file the store did not install
         if let l = lines.first(where: { $0.contains("expansion file (OBB) is missing") }) {
             return AppDiagnosis(kind: .missingSplits, title: "Missing game data",
