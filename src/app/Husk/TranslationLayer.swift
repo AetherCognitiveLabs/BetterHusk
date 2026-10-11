@@ -63,7 +63,11 @@ extension TLReport {
         // the cocos2d-x driver is Geometry Dash's (FMOD, RobTop's activity); other cocos2d-x games run their Java activity on the Java runtime
         if engine == "Cocos" { return libraries.contains(where: { $0.name == "libfmod.so" }) ? .cocos : .java }
         if engine == "Minecraft" { return .minecraft }
-        if engine == "SDL" || engine == "Python" { return .sdl }
+        // SDL games run their own Java activity on the Java runtime: many prepare their data there first (Wesnoth unpacks it, OpenTTD
+        // and Luanti copy theirs, launchers come before the game) and SDLActivity's Java drives the native side as on a phone.
+        // python-for-android's bootstrap still goes through the SDL driver.
+        if engine == "SDL" { return .java }
+        if engine == "Python" { return .sdl }
         if engine == "Unreal Engine" { return .ue4 }
         if engine == "Rockstar" { return .gta }
         if engine == "Godot" { return .godot }
@@ -83,7 +87,7 @@ extension TLReport {
     var runsOnNativeRuntime: Bool { nativeEngine != nil }
 
     /// "Unity" or "Cocos2d-x", for words on screen.
-    var nativeEngineName: String { engine == "Python" ? "Python (Kivy)" : nativeEngine == .cocos ? "Cocos2d-x" : nativeEngine == .minecraft ? "Minecraft" : nativeEngine == .sdl ? "SDL" : nativeEngine == .ue4 ? "Unreal Engine" : nativeEngine == .gta ? "Rockstar" : nativeEngine == .godot ? "Godot" : nativeEngine == .nativeactivity ? "NativeActivity" : nativeEngine == .flutter ? "Flutter" : nativeEngine == .gamemaker ? "GameMaker" : nativeEngine == .java ? (engine == "libGDX" ? "libGDX" : "Android") : "Unity" }
+    var nativeEngineName: String { engine == "Python" ? "Python (Kivy)" : nativeEngine == .cocos ? "Cocos2d-x" : nativeEngine == .minecraft ? "Minecraft" : nativeEngine == .sdl ? "SDL" : nativeEngine == .ue4 ? "Unreal Engine" : nativeEngine == .gta ? "Rockstar" : nativeEngine == .godot ? "Godot" : nativeEngine == .nativeactivity ? "NativeActivity" : nativeEngine == .flutter ? "Flutter" : nativeEngine == .gamemaker ? "GameMaker" : nativeEngine == .java ? (engine == "libGDX" ? "libGDX" : engine == "SDL" ? "SDL" : "Android") : "Unity" }
 
     var displaySummary: String {
         guard runsOnNativeRuntime else { return summary }

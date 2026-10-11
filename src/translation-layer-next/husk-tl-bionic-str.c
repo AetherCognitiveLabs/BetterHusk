@@ -19,6 +19,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 #include <string.h>
 #include <strings.h>
 #include <time.h>
@@ -569,7 +570,50 @@ static int cat_to_darwin(int c)
     switch (c) { case 0: return LC_CTYPE; case 1: return LC_NUMERIC; case 2: return LC_TIME; case 3: return LC_COLLATE;
                  case 4: return LC_MONETARY; case 5: return LC_MESSAGES; default: return LC_ALL; }
 }
-static char *b_setlocale(int cat, const char *name) { return setlocale(cat_to_darwin(cat), name); }
+/* nl_langinfo as bionic's: the C locale's answers, by bionic's item numbers (CODESET 1 ... CRNCYSTR 55) */
+static const char *b_nl_langinfo(int item)
+{
+    static const char *const days[] = { "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" };
+    static const char *const abdays[] = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
+    static const char *const mons[] = { "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December" };
+    static const char *const abmons[] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+    switch (item) {
+    case 1: return "UTF-8";
+    case 2: return "%F %T %z";
+    case 3: return "%F";
+    case 4: return "%T";
+    case 5: return "%I:%M:%S %p";
+    case 6: return "AM";
+    case 7: return "PM";
+    case 51: return ".";
+    case 52: return "";
+    case 53: return "^[yY]";
+    case 54: return "^[nN]";
+    case 55: return "";
+    }
+    if (item >= 8 && item <= 14) return days[item - 8];
+    if (item >= 15 && item <= 21) return abdays[item - 15];
+    if (item >= 22 && item <= 33) return mons[item - 22];
+    if (item >= 34 && item <= 45) return abmons[item - 34];
+    return "";
+}
+static const char *b_nl_langinfo_l(int item, void *loc) { (void)loc; return b_nl_langinfo(item); }
+/* setlocale as bionic's: the C locale, in UTF-8 or not; "", "C", "POSIX", "C.UTF-8" and "en_US.UTF-8" are the names it knows, and
+ * it answers "C.UTF-8" or "C" (Qt reads the answer back: macOS's NULL for an unknown name crashed it) */
+static char *b_setlocale(int cat, const char *name)
+{
+    static _Atomic int utf8 = 1;
+    if (name) {
+        bool u;
+        if (!*name || !strcmp(name, "C.UTF-8") || !strcmp(name, "en_US.UTF-8") || !strcmp(name, "C.utf8")) u = true;
+        else if (!strcmp(name, "C") || !strcmp(name, "POSIX")) u = false;
+        else { tl_set_guest_errno(2 /* ENOENT */); return NULL; }
+        if (cat == 0 || cat == 6) atomic_store(&utf8, u);                         /* LC_CTYPE, LC_ALL */
+        if (cat == 6) { setlocale(LC_ALL, "C"); if (u) setlocale(LC_CTYPE, "UTF-8"); }
+        else setlocale(cat_to_darwin(cat), cat == 0 && u ? "UTF-8" : "C");
+    }
+    return atomic_load(&utf8) ? "C.UTF-8" : "C";
+}
 static locale_t b_newlocale(int mask, const char *name, locale_t base)
 {
     int dm = 0;
@@ -654,7 +698,7 @@ const tl_bionic_entry tl_tab_str[] = {
     TL_DIRECT(acoshf), TL_DIRECT(atanhf), TL_DIRECT(expm1f), TL_DIRECT(log1pf),
     TL_WRAP("__isnanf", b___isnanf), TL_WRAP("__fpclassifyd", b___fpclassifyd),
     /* locale.h */
-    TL_WRAP("setlocale", b_setlocale), TL_WRAP("newlocale", b_newlocale), TL_DIRECT(freelocale), TL_DIRECT(uselocale),
+    TL_WRAP("setlocale", b_setlocale), TL_WRAP("nl_langinfo", b_nl_langinfo), TL_WRAP("nl_langinfo_l", b_nl_langinfo_l), TL_WRAP("newlocale", b_newlocale), TL_DIRECT(freelocale), TL_DIRECT(uselocale),
     TL_DIRECT(localeconv),
     /* time zone data */
     TL_DATA("daylight", &g_daylight), TL_DATA("timezone", &g_timezone), TL_DATA("tzname", g_tzname),

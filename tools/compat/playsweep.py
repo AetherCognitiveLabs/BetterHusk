@@ -16,7 +16,7 @@ JAVA = '/Volumes/GTAV/husk2/java/javaapp-test'
 SCAN = '/Volumes/GTAV/husk2/tl-scan'
 # the harness of the driver the app picks for each engine (TranslationLayer.swift's nativeEngine)
 NATIVE = {'Unity (IL2CPP)': 'unity-test', 'Unity': 'unity-test', 'Unity (Mono)': 'unity-test', 'Flutter': 'flutter-test',
-          'Cocos': 'cocos-test', 'SDL': 'sdl-test', 'Python': 'sdl-test', 'Godot': 'godot-test', 'GameMaker': 'gamemaker-test',
+          'Cocos': 'cocos-test', 'Python': 'sdl-test', 'Godot': 'godot-test', 'GameMaker': 'gamemaker-test',
           'NativeActivity': 'ue-test', 'Unreal Engine': 'ue-test', 'Rockstar': 'gta-test', 'Minecraft': 'ga-test'}
 # harnesses that take a screenshot when told to (TL_CTL), rather than leaving frames in a folder
 
@@ -54,7 +54,7 @@ def main():
         rep = json.loads(subprocess.run([SCAN, base] + splits, capture_output=True, text=True).stdout or '{}')
         engine = rep.get('engine') or ''
         log, shot = os.path.join(a.out, pkg + '.log'), os.path.join(a.out, pkg + '.png')
-        for f in (log, shot):
+        for f in (log, shot, shot[:-4] + '.web.png'):
             if os.path.exists(f): os.remove(f)
         env = dict(os.environ, TL_AUDIO_MUTE='1', TL_PACKAGE=pkg, TL_PKG=pkg, TMPDIR='/Volumes/GTAV/husk2/tmp')
         abis = rep.get('abis') or []
@@ -72,7 +72,12 @@ def main():
             env['TL_CTL'] = ctl
         else:
             harness = 'javaapp-test'
-            cmd = [JAVA, d, str(a.secs)]
+            cmd = [JAVA, d, str(a.secs + 10)]
+            # the screenshot through the control file too: it also saves a web view's own picture (<pkg>.web.png), which the
+            # frames of the app's views do not show
+            ctl = os.path.join(a.out, pkg + '.ctl')
+            open(ctl, 'w').write('wait %d\nshot %s\nwait 3000\nquit\n' % (a.secs * 1000, shot))
+            env['TL_CTL'] = ctl
         try:
             r = subprocess.run(cmd, env=env, capture_output=True, text=True, errors='replace', timeout=a.secs + 90, cwd='/Volumes/GTAV/husk2/java')
             text = r.stdout + r.stderr; rc = r.returncode
@@ -82,7 +87,7 @@ def main():
         fm = re.search(r'^frames: (\S+)', text, re.M)
         if fm:
             bmps = sorted(glob.glob(os.path.join(fm.group(1), '*.bmp')), key=os.path.getmtime)
-            if bmps: subprocess.run(['sips', '-s', 'format', 'png', bmps[-1], '--out', shot], capture_output=True)
+            if bmps and not os.path.exists(shot): subprocess.run(['sips', '-s', 'format', 'png', bmps[-1], '--out', shot], capture_output=True)
             subprocess.run(['rm', '-rf', fm.group(1)])
         dm = re.search(r'^data: (\S+)', text, re.M)
         if dm and dm.group(1).startswith('/Volumes/GTAV/husk2/tmp/'): subprocess.run(['rm', '-rf', dm.group(1)])

@@ -145,6 +145,7 @@ static char *b_dirname(const char *p)
     return buf;
 }
 static long b_getrandom(void *buf, size_t n, unsigned flags) { (void)flags; arc4random_buf(buf, n); return (long)n; }
+static int b_getentropy(void *buf, size_t n) { if (n > 256) { tl_set_guest_errno(5 /* EIO */); return -1; } arc4random_buf(buf, n); return 0; }
 static long b_random(void) { return random(); }
 static void b_srandom(unsigned seed) { srandom(seed); }
 /* POSIX timers (Facebook's profilers and watchdogs make them): made, never fired -- delivering their signals into the guest is not done */
@@ -201,7 +202,7 @@ const tl_bionic_entry tl_tab_ldbl[] = {
     TL_WRAP("fpathconf", b_fpathconf), TL_WRAP("fstatvfs", b_enosys), TL_WRAP("dup3", b_dup3),
     TL_WRAP("getresuid", b_getresid), TL_WRAP("getresgid", b_getresid), TL_WRAP("setresuid", b_eperm), TL_WRAP("setresgid", b_eperm),
     TL_WRAP("__cfi_slowpath", b_cfi_slowpath), TL_WRAP("__cfi_slowpath_diag", b_cfi_slowpath_diag), TL_WRAP("dirname", b_dirname),
-    TL_WRAP("getrandom", b_getrandom), TL_WRAP("random", b_random), TL_WRAP("srandom", b_srandom),
+    TL_WRAP("getrandom", b_getrandom), TL_WRAP("getentropy", b_getentropy), TL_WRAP("random", b_random), TL_WRAP("srandom", b_srandom),
     TL_WRAP("timer_create", b_timer_create), TL_WRAP("timer_settime", b_timer_settime), TL_WRAP("timer_gettime", b_timer_gettime),
     TL_WRAP("timer_delete", b_timer_delete), TL_WRAP("timer_getoverrun", b_timer_getoverrun),
     TL_WRAP("siginterrupt", b_posix_ok), TL_WRAP("sigpending", b_sigpending), TL_WRAP("sigwait", b_enosys),

@@ -61,7 +61,13 @@ public final class ViewRoot implements ViewParent {
         scheduleFrame();
         return r;
     }
+    private WindowInsets computeInsets() {
+        boolean full = mLp.type == WindowManager.LayoutParams.TYPE_BASE_APPLICATION || mLp.type == WindowManager.LayoutParams.TYPE_APPLICATION;
+        return full ? screenInsets() : WindowInsets.huskOf(0, 0, 0, 0, Math.max(0, sImeBottom - (screenH() - mY - mH)), null);
+    }
     private void attach() {
+        // as ViewRootImpl: the window's insets are known by the time its views hear they are attached (getRootWindowInsets)
+        if (mWindowInsets == null) mWindowInsets = computeInsets();
         mView.huskAttach(this);
         mObserver.huskAttached(true);
     }
@@ -200,8 +206,7 @@ public final class ViewRoot implements ViewParent {
         int sw = screenW(), sh = screenH();
         if (mInsetsDirty || mFirst) {
             mInsetsDirty = false;
-            boolean full = mLp.type == WindowManager.LayoutParams.TYPE_BASE_APPLICATION || mLp.type == WindowManager.LayoutParams.TYPE_APPLICATION;
-            mWindowInsets = full ? screenInsets() : WindowInsets.huskOf(0, 0, 0, 0, Math.max(0, sImeBottom - (sh - mY - mH)), null);
+            mWindowInsets = computeInsets();
             mView.dispatchApplyWindowInsets(mWindowInsets);
             mLayoutRequested = true;
         }

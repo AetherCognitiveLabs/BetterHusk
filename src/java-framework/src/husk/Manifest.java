@@ -74,6 +74,7 @@ public final class Manifest {
                     appIcon = p.getAttributeResourceValue(NS, "icon", 0);
                     debuggable = p.getAttributeBooleanValue(NS, "debuggable", false);
                     largeHeap = p.getAttributeBooleanValue(NS, "largeHeap", false);
+                    extractNativeLibs = p.getAttributeBooleanValue(NS, "extractNativeLibs", true);
                     hardwareAccelerated = p.getAttributeBooleanValue(NS, "hardwareAccelerated", true);
                     appComponentFactory = full(p.getAttributeValue(NS, "appComponentFactory"));
                     break;

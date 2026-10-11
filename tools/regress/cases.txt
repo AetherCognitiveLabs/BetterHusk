@@ -14,3 +14,4 @@ pocketbroomball | godot-test | fdroid:com.simondalvai.pocketbroomball_100       
 burgers    | godot-test | fdroid:org.xolatgames.burgers_7                              | 15 | 1748 804 | TL_PACKAGE=org.xolatgames.burgers | Godot Engine v4.6
 bytelife   | gamemaker-test | $HUSK_ENGINES/ByteLife.Simulator.apk                     | 10 | 1748 804 | | gamemaker: started
 kivy-ttt   | sdl-test   | $HUSK_ENGINES/TicTacToe-v1.0.0-Android.apk                   | 35 | 804 1748 | | Start application main loop
+rnd-java   | javaapp-test | fdroid:org.artsoft.rocksndiamonds_4020200                  | 50 | 1748 804 | TL_PACKAGE=org.artsoft.rocksndiamonds TL_FRAMEWORK=$R/build/java-runtime/husk-framework.dex | nativeRunMain

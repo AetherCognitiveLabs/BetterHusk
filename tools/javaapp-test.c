@@ -170,6 +170,8 @@ static void *run(void *p)
     if (!tl_dvm_start(boot, nb)) { fprintf(stderr, "dvm start failed\n"); _exit(1); }
     { char d[800]; snprintf(d, sizeof(d), "%s/../com.android.i18n/lib64", art); tl_ld_add_search_dir(d); }
     { char d[800]; snprintf(d, sizeof(d), "%s/../com.android.conscrypt/lib64", art); tl_ld_add_search_dir(d); }
+    /* the system's fonts and their list (/system/fonts, fonts.xml), as the app ships them: Qt and Skia read them by path */
+    { void tl_set_system_fonts_dir(const char *); tl_set_system_fonts_dir(getenv("TL_SYSFONTS") ? getenv("TL_SYSFONTS") : "/Volumes/GTAV/husk2/root/system"); }
     { void tl_set_cacerts_dir(const char *); static char d[800]; snprintf(d, sizeof(d), "%s/../com.android.conscrypt/cacerts", art); tl_set_cacerts_dir(d); }   /* the trusted roots, as the app ships them */
     { char d[800]; snprintf(d, sizeof(d), "%s/lib64", art); tl_dvm_load_natives(d); }
     char tmp[600] = "/Volumes/GTAV/husk2/tmp/husk-javaapp-XXXXXX";
