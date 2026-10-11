@@ -41,7 +41,10 @@ struct AppDiagnosis: Identifiable, Equatable {
     /// Libraries of commercial app protectors: they check the device and the app's own files, and stop the app off a real phone.
     private static let protectorLibraries = ["libjiagu", "libDexHelper", "libsecexe", "libsecmain", "libprotectClass", "libdexprotector",
                                              "libapp_shield", "libNSaferOnly", "libshell-super", "libtup", "libAppGuard", "libxloader",
-                                             "libarmour", "libnesec", "libSecShell", "libkwscmm", "libmobisec"]
+                                             "libarmour", "libnesec", "libSecShell", "libkwscmm", "libmobisec",
+                                             // seen in Play apps: ByteDance's metasec (TikTok, CapCut), Netflix's, Akamai's bot manager
+                                             // (eBay), and games whose own library refuses uncertified devices (Clash Royale, HCR2)
+                                             "libmetasec", "libcf2a", "libakamaibap", "libsupercell_", "libfingersoft_hcr2"]
 
     static func preflight(_ app: TLApp) -> AppDiagnosis? {
         guard let r = app.report else { return nil }

@@ -47,6 +47,9 @@ public final class AppRunner {
         KeyStoreProvider.install();
         Looper.prepareMainLooper();
         sHandler = new Handler(Looper.getMainLooper());
+        /* as RuntimeInit: there is always a default handler (apps wrap it and call through). Android's kills the app; this one
+           reports the exception and lets the thread end, as Husk did before. */
+        if (Thread.getDefaultUncaughtExceptionHandler() == null) Thread.setDefaultUncaughtExceptionHandler(new UncaughtLogger());
         Manifest.read();
         installClassLoader();
         ContextImpl base = ContextImpl.app();
@@ -70,6 +73,12 @@ public final class AppRunner {
         Looper.loop();
     }
     public static Application application() { return sApp; }
+    static final class UncaughtLogger implements Thread.UncaughtExceptionHandler {
+        public void uncaughtException(Thread t, Throwable e) {
+            android.util.Log.e("AndroidRuntime", "FATAL EXCEPTION: " + t.getName(), e);
+            if (t == Looper.getMainLooper().getThread()) { if (e instanceof RuntimeException) throw (RuntimeException) e; if (e instanceof Error) throw (Error) e; throw new RuntimeException(e); }
+        }
+    }
 
     private static void installProviders(Application app) {
         /* as ActivityThread: providers with a higher initOrder first (Reddit builds its object graph in one that the startup
@@ -162,6 +171,16 @@ public final class AppRunner {
             return;
         }
         if ("android.intent.action.CHOOSER".equals(action)) { Intent inner = i.getParcelableExtra("android.intent.extra.INTENT"); if (inner != null) startActivity(from, inner, request, opts); return; }
+        /* a screen of the system's (the account chooser, Settings pages, the permission dialog): Husk has none of them -- asked for a
+           result, the caller hears the user backed out, as it would on a phone; otherwise nothing opens */
+        String pkg = i.getComponent() != null ? i.getComponent().getPackageName() : i.getPackage();
+        boolean system = "android".equals(pkg) || "com.android.settings".equals(pkg) || "com.android.permissioncontroller".equals(pkg)
+            || (action != null && (action.startsWith("android.settings.") || action.startsWith("android.provider.Settings")));
+        if (system) {
+            final Activity caller = from instanceof Activity ? (Activity) from : top();
+            if (request >= 0 && caller != null) sHandler.post(() -> caller.huskActivityResult(request, Activity.RESULT_CANCELED, null));
+            return;
+        }
         throw new ActivityNotFoundException("No Activity found to handle " + i);
     }
     /** Activity.finish: the one below comes back (with the result when it asked for one). */
