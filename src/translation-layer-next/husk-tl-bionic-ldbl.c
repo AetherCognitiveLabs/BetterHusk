@@ -16,6 +16,7 @@
 #include <signal.h>
 #include <stdint.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/uio.h>
 #include <sys/wait.h>
@@ -124,6 +125,16 @@ static q128 b_nextafterl(q128 x, q128 y)
 /* ---- POSIX odds and ends */
 
 static int b_posix_ok(void) { return 0; }
+/* posix_fallocate: the file must really be that long afterwards -- Realm maps its database at the new size and touches it (a no-op
+ * left the pages past the end, and the first write there was a SIGBUS). Returns the error number, as POSIX says. */
+static int b_posix_fallocate(int fd, long off, long len)
+{
+    struct stat st;
+    if (off < 0 || len <= 0) return 22;                                         /* EINVAL */
+    if (fstat(fd, &st)) return tl_errno_to_guest(errno);
+    if (st.st_size >= off + len) return 0;
+    return ftruncate(fd, off + len) ? tl_errno_to_guest(errno) : 0;
+}
 static int b_enosys(void) { tl_set_guest_errno(38); return -1; }
 static int b_eperm(void) { tl_set_guest_errno(1); return -1; }
 static long b_fpathconf(int fd, int name) { (void)fd; return name == 3 /* _PC_NAME_MAX */ ? 255 : 4096; }
@@ -163,8 +174,8 @@ const tl_bionic_entry tl_tab_ldbl[] = {
     TL_WRAP("getresuid", b_getresid), TL_WRAP("getresgid", b_getresid), TL_WRAP("setresuid", b_eperm), TL_WRAP("setresgid", b_eperm),
     TL_WRAP("siginterrupt", b_posix_ok), TL_WRAP("sigpending", b_sigpending), TL_WRAP("sigwait", b_enosys),
     TL_WRAP("ttyname_r", b_ttyname_r), TL_WRAP("hstrerror", b_hstrerror), TL_WRAP("getprotobyname", b_null_lookup),
-    TL_WRAP("getservbyport", b_null_lookup), TL_WRAP("getpwnam_r", b_getpwnam_r), TL_WRAP("mkfifo", b_eperm),
-    TL_WRAP("mknod", b_eperm), TL_WRAP("mknodat", b_eperm), TL_WRAP("posix_fadvise", b_posix_ok), TL_WRAP("posix_fallocate", b_posix_ok), TL_WRAP("posix_fallocate64", b_posix_ok),
+    TL_WRAP("getservbyport", b_null_lookup), TL_WRAP("getpwnam_r", b_getpwnam_r),
+    TL_WRAP("posix_fadvise", b_posix_ok), TL_WRAP("posix_fallocate", b_posix_fallocate), TL_WRAP("posix_fallocate64", b_posix_fallocate),
     TL_WRAP("clock_settime", b_eperm),
     TL_END
 };

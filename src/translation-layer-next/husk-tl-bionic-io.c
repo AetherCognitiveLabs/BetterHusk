@@ -621,6 +621,20 @@ static int b_flock(int fd, int op) { TL_ERRNO_BEGIN(); int r = flock(fd, op); TL
 PATH1(int, unlink, unlink)
 PATH1(int, rmdir, rmdir)
 static int b_mkdir(const char *p, unsigned mode) { char b[1024]; TL_ERRNO_BEGIN(); int r = mkdir(tl_path_resolve(p, b, sizeof(b)), (mode_t)mode); TL_ERRNO_END(); return r; }
+/* FIFOs (Realm signals between its threads through one in its .realm.temp folder); other device nodes are refused, as for an app */
+static int b_mkfifo(const char *p, unsigned mode) { char b[1024]; TL_ERRNO_BEGIN(); int r = mkfifo(tl_path_resolve(p, b, sizeof(b)), (mode_t)(mode & 0777)); TL_ERRNO_END(); return r; }
+static int b_mknod(const char *p, unsigned mode, unsigned long dev)
+{
+    (void)dev;
+    if ((mode & 0170000) == 0010000) return b_mkfifo(p, mode);
+    tl_set_guest_errno(1 /* EPERM */); return -1;
+}
+static int b_mknodat(int dirfd, const char *p, unsigned mode, unsigned long dev)
+{
+    if (dirfd != -100 /* AT_FDCWD */ && p && p[0] != '/') { tl_set_guest_errno(95 /* EOPNOTSUPP */); return -1; }
+    return b_mknod(p, mode, dev);
+}
+static int b_mkfifoat(int dirfd, const char *p, unsigned mode) { return b_mknodat(dirfd, p, (mode & 0777) | 0010000, 0); }
 /* TL_FILE_TRACE also says what is asked of the file system without opening anything: which paths a game probes for, and whether they are there. */
 static void ftrace(const char *what, const char *path, int r, int e)
 {
@@ -1452,6 +1466,7 @@ const tl_bionic_entry tl_tab_io[] = {
     TL_WRAP("__read_chk", b___read_chk), TL_WRAP("write", b_write), TL_WRAP("__write_chk", b___write_chk), TL_WRAP("writev", b_writev),
     TL_WRAP("pread64", b_pread64), TL_WRAP("pwrite64", b_pwrite64), TL_WRAP("pread", b_pread64), TL_WRAP("pwrite", b_pwrite64), TL_WRAP("__pread64_chk", b___pread64_chk), TL_WRAP("__pwrite64_chk", b___pwrite64_chk), TL_WRAP("__pwrite_chk", b___pwrite64_chk), TL_WRAP("__pread_chk", b___pread64_chk), TL_WRAP("lseek", b_lseek), TL_WRAP("lseek64", b_lseek),
     TL_WRAP("dup", b_dup), TL_WRAP("dup2", b_dup2), TL_WRAP("pipe", b_pipe), TL_WRAP("fsync", b_fsync), TL_WRAP("fdatasync", b_fsync),
+    TL_WRAP("mkfifo", b_mkfifo), TL_WRAP("mknod", b_mknod), TL_WRAP("mknodat", b_mknodat), TL_WRAP("mkfifoat", b_mkfifoat),
     TL_WRAP("ftruncate", b_ftruncate), TL_WRAP("ftruncate64", b_ftruncate), TL_WRAP("truncate", b_truncate), TL_WRAP("isatty", b_isatty), TL_WRAP("flock", b_flock),
     TL_WRAP("unlink", b_unlink), TL_WRAP("rmdir", b_rmdir), TL_WRAP("mkdir", b_mkdir), TL_WRAP("access", b_access),
     TL_WRAP("chmod", b_chmod), TL_WRAP("fchmod", b_fchmod), TL_WRAP("link", b_link), TL_WRAP("symlink", b_symlink),

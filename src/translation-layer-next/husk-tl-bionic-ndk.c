@@ -287,7 +287,7 @@ static int b_AConfiguration_getSdkVersion(tl_aconfig *c) { (void)c; return 34; }
 
 /* ---------------------------------------------------------------- assets */
 
-typedef struct { const uint8_t *data; size_t len; size_t pos; uint8_t *owned; } tl_asset;
+typedef struct { const uint8_t *data; size_t len; size_t pos; uint8_t *owned; char name[400]; } tl_asset;
 
 static void *b_AAssetManager_fromJava(void *env, void *obj) { (void)env; (void)obj; static int mgr; return &mgr; }
 
@@ -329,6 +329,7 @@ static void *b_AAssetManager_open(void *mgr, const char *name, int mode)
         tl_asset *a = calloc(1, sizeof(*a));
         a->data = data; a->len = n;
         if (owned) a->owned = (uint8_t *)data;
+        snprintf(a->name, sizeof(a->name), "%s", name);
         return a;
     }
     return NULL;
@@ -549,6 +550,22 @@ static long b_AAsset_seek(tl_asset *a, long off, int whence)
     return np;
 }
 static int b_AAsset_isAllocated(tl_asset *a) { return a->owned != NULL; }
+/* a descriptor on the APK and the asset's place in it, for an asset stored uncompressed; -1 for a compressed one (as Android does) */
+bool tl_assetstream_stored(const char *name, int *fd, int64_t *off, int64_t *len);
+static int b_AAsset_openFileDescriptor64(tl_asset *a, int64_t *start, int64_t *len)
+{
+    int fd; int64_t o, l;
+    if (!a || !a->name[0] || !tl_assetstream_stored(a->name, &fd, &o, &l)) return -1;
+    if (start) *start = o;
+    if (len) *len = l;
+    return fd;
+}
+static int b_AAsset_openFileDescriptor(tl_asset *a, long *start, long *len)
+{
+    int64_t o = 0, l = 0; int fd = b_AAsset_openFileDescriptor64(a, &o, &l);
+    if (fd >= 0) { if (start) *start = (long)o; if (len) *len = (long)l; }
+    return fd;
+}
 
 /* ---------------------------------------------------------------- windows */
 
@@ -895,6 +912,7 @@ const tl_bionic_entry tl_tab_ndk[] = {
     TL_WRAP("AAsset_getLength64", b_AAsset_getLength), TL_WRAP("AAsset_getRemainingLength", b_AAsset_getRemainingLength),
     TL_WRAP("AAsset_getRemainingLength64", b_AAsset_getRemainingLength), TL_WRAP("AAsset_getBuffer", b_AAsset_getBuffer),
     TL_WRAP("AAsset_seek", b_AAsset_seek), TL_WRAP("AAsset_seek64", b_AAsset_seek), TL_WRAP("AAsset_isAllocated", b_AAsset_isAllocated),
+    TL_WRAP("AAsset_openFileDescriptor", b_AAsset_openFileDescriptor), TL_WRAP("AAsset_openFileDescriptor64", b_AAsset_openFileDescriptor64),
     /* systrace (libandroid): nothing records traces here */
     TL_WRAP("ATrace_beginSection", b_atrace_noop), TL_WRAP("ATrace_endSection", b_atrace_noop), TL_WRAP("ATrace_isEnabled", b_atrace_false),
     TL_WRAP("ATrace_beginAsyncSection", b_atrace_noop), TL_WRAP("ATrace_endAsyncSection", b_atrace_noop), TL_WRAP("ATrace_setCounter", b_atrace_noop),
