@@ -75,6 +75,18 @@ if ! grep -q "BUILD SUCCEEDED" "$DD/build.log"; then
 fi
 
 APP="$DD/Build/Products/Release-iphoneos/Husk.app"
+
+# The Java runtime in the app must be the one just built (build_java_runtime.sh): copied again here, and checked, so an IPA can
+# never carry an older one -- which looks exactly like Java fixes that did not work.
+JRT="$HUSK_ROOT/build/java-runtime"
+if [ -f "$JRT/husk-framework.dex" ]; then
+    rsync -a --delete "$JRT/" "$APP/java-runtime/"
+    if ! cmp -s "$JRT/husk-framework.dex" "$APP/java-runtime/husk-framework.dex"; then
+        echo "the app's Java framework is not build/java-runtime's; refusing to package" >&2
+        exit 1
+    fi
+    echo "==> java runtime: $(stat -f '%z bytes, %Sm' "$JRT/husk-framework.dex")"
+fi
 [ -d "$APP" ] || { echo "no app bundle at $APP" >&2; exit 1; }
 
 # Stamp the build's identity into the bundle so its logs can name themselves.
