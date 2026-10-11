@@ -211,6 +211,8 @@ static void *run(void *p)
         for (int i = 0; i < n; i++) if (i != bi) { char sp[1400]; snprintf(sp, sizeof(sp), "%s/%s", apk, names[i]); tl_ld_queue_split(sp); fprintf(stderr, "javaapp: split %s\n", names[i]); }
         apk = base;
     }
+    /* no size given: the screen turned the way the manifest asks, as the app turns it before starting a landscape game */
+    if (argc <= 4) { int tl_manifest_orientation(const char *); if (tl_manifest_orientation(apk) == 0) { int t = w; w = h; h = t; fprintf(stderr, "javaapp: landscape (the manifest asks for it)\n"); } }
     if (getenv("TL_SPLITS")) { char *l = strdup(getenv("TL_SPLITS")); for (char *t = strtok(l, ":"); t; t = strtok(NULL, ":")) tl_ld_queue_split(t); }
     tl_javaapp_config cfg = { .apk_path = apk, .data_dir = tmp, .package_name = getenv("TL_PACKAGE"), .width = w, .height = h, .density = 2.625f,
                               .angle_egl = getenv("TL_ANGLE_EGL") ? getenv("TL_ANGLE_EGL") : egl, .angle_gles = getenv("TL_ANGLE_GLES") ? getenv("TL_ANGLE_GLES") : gles,
