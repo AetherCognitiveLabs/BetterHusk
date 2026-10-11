@@ -85,6 +85,27 @@ final class MassTest: ObservableObject {
         runCurrent()
     }
 
+    /// The apps the last test found not running (anything but "Runs…", and "Runs, but drew nothing"), still in the folder.
+    var failures: [String] {
+        guard let s = state else { return [] }
+        let present = Set(Self.apks() ?? [])
+        return s.results.filter { !$0.outcome.hasPrefix("Runs") || $0.outcome.hasPrefix("Runs, but drew nothing") }
+                        .map(\.file).filter { present.contains($0) }
+    }
+
+    /// A new test of only those.
+    func retestFailures() {
+        let files = failures
+        guard !files.isEmpty else { status = "No failures to retest."; return }
+        guard !ranThisProcess, husk_native_loaded_apk() == nil else { status = "Close Husk and open it again to start: a game was already loaded in this run."; return }
+        ranThisProcess = true
+        let ids = state?.appIDs ?? [:]
+        state = State(queue: files, index: 0, results: [], appIDs: ids, launched: false, startedAt: Date())
+        save()
+        HuskLog.log("masstest", "retesting \(files.count) failures")
+        runCurrent()
+    }
+
     func stop() {
         HuskLog.log("masstest", "stopped by the user")
         if var s = state { s.queue = Array(s.queue.prefix(s.index)); s.launched = false; state = s; save() }
@@ -290,6 +311,9 @@ struct MassTestView: View {
                     Button("Stop", role: .destructive) { test.stop() }
                 } else {
                     Button("Start Mass Test") { test.start() }.disabled((files ?? []).isEmpty)
+                    if !test.failures.isEmpty {
+                        Button("Retest \(test.failures.count) Failures") { test.retestFailures() }
+                    }
                 }
                 if FileManager.default.fileExists(atPath: MassTest.resultsURL.path) {
                     Button("Share Results") { test.writeReport(); share = true }
