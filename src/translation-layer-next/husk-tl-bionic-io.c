@@ -210,6 +210,18 @@ const char *tl_path_resolve(const char *path, char *buf, size_t n)
             }
         }
     }
+    /* /data/user/0/<package> and /data/data/<package>: the app's own folder, as Android names it -- short, where the real one on a
+       phone is ~150 characters (p4a's launcher allows its script path 128) */
+    {
+        static const char *const roots[] = { "/data/user/0/", "/data/data/" };
+        for (int i = 0; i < 2; i++) {
+            size_t l = strlen(roots[i]);
+            if (strncmp(path, roots[i], l) || !path[l] || path[l] == '/') continue;
+            const char *rest = strchr(path + l, '/');
+            snprintf(buf, n, "%s%s", tl_data_dir(), rest ? rest : "");
+            return buf;
+        }
+    }
     /* /data/local/tmp: the world-writable scratch folder (JNA unpacks itself there): a folder of the app's own */
     if (!strncmp(path, "/data/local/tmp", 15) && (path[15] == 0 || path[15] == '/')) {
         snprintf(buf, n, "%s/cache/local-tmp", tl_data_dir());

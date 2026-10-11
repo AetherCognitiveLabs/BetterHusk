@@ -65,9 +65,8 @@ extension TLReport {
         if engine == "Minecraft" { return .minecraft }
         // SDL games run their own Java activity on the Java runtime: many prepare their data there first (Wesnoth unpacks it, OpenTTD
         // and Luanti copy theirs, launchers come before the game) and SDLActivity's Java drives the native side as on a phone.
-        // python-for-android's bootstrap still goes through the SDL driver.
-        if engine == "SDL" { return .java }
-        if engine == "Python" { return .sdl }
+        // python-for-android (Kivy) too: pyjnius needs real Java (proxies, string identity), which only the Java runtime has.
+        if engine == "SDL" || engine == "Python" { return .java }
         if engine == "Unreal Engine" { return .ue4 }
         if engine == "Rockstar" { return .gta }
         if engine == "Godot" { return .godot }
