@@ -10,9 +10,34 @@ import UIKit
 final class CompatibilityStore: ObservableObject {
     static let shared = CompatibilityStore()
 
-    /// The site. A different one can be set for testing (defaults write com.husk.app husk.compatURL http://…).
-    static var site: URL {
-        UserDefaults.standard.string(forKey: "husk.compatURL").flatMap(URL.init(string:)) ?? URL(string: "https://antiweb.lol")!
+    /// The site, then its Render address for when the domain does not answer. A different one can be put first for testing
+    /// (defaults write com.husk.app husk.compatURL http://…).
+    static var sites: [URL] {
+        let custom = UserDefaults.standard.string(forKey: "husk.compatURL").flatMap(URL.init(string:))
+        return [custom, URL(string: "https://antiweb.lol"), URL(string: "https://antiweb-website.onrender.com")].compactMap { $0 }
+    }
+    /// The one that answered last, for links.
+    static var site: URL { shared.workingSite ?? sites[0] }
+    @Published private(set) var workingSite: URL?
+
+    /// The request on each site in turn until one answers with a status below 500 (a 4xx is the site's answer, not an outage).
+    private func call(_ path: String, _ prepare: (inout URLRequest) -> Void = { _ in }) async throws -> (Data, HTTPURLResponse) {
+        var last: Error = URLError(.cannotConnectToHost)
+        for site in Self.sites {
+            var request = URLRequest(url: site.appendingPathComponent(path))
+            request.timeoutInterval = 15
+            prepare(&request)
+            do {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let http = response as? HTTPURLResponse, http.statusCode < 500 else { throw URLError(.badServerResponse) }
+                if workingSite != site { workingSite = site; HuskLog.log("compat", "using \(site.host ?? site.absoluteString)") }
+                return (data, http)
+            } catch {
+                HuskLog.log("compat", "\(site.host ?? "?") did not answer: \(error.localizedDescription)")
+                last = error
+            }
+        }
+        throw last
     }
     /// Whether Husk asks how a game ran after playing it (Settings).
     static let askKey = "husk.compatAsk"
@@ -92,10 +117,8 @@ final class CompatibilityStore: ObservableObject {
         defer { fetching = false }
         struct Response: Decodable { let apps: [Entry] }
         do {
-            var request = URLRequest(url: Self.site.appendingPathComponent("api/apps"))
-            request.timeoutInterval = 15
-            let (data, response) = try await URLSession.shared.data(for: request)
-            guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
+            let (data, response) = try await call("api/apps")
+            guard response.statusCode == 200 else { throw URLError(.badServerResponse) }
             let list = try JSONDecoder().decode(Response.self, from: data).apps
             entries = Dictionary(list.map { ($0.package, $0) }, uniquingKeysWith: { a, _ in a })
             updated = Date()
@@ -133,13 +156,14 @@ final class CompatibilityStore: ObservableObject {
             "notes": notes, "author": author,
         ]
         if body["author"]?.isEmpty == true { body["author"] = nil }
-        var request = URLRequest(url: Self.site.appendingPathComponent("api/reports"))
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        request.timeoutInterval = 20
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+        let payload = try JSONSerialization.data(withJSONObject: body)
+        let (data, http) = try await call("api/reports") {
+            $0.httpMethod = "POST"
+            $0.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            $0.httpBody = payload
+            $0.timeoutInterval = 20
+        }
+        guard (200..<300).contains(http.statusCode) else {
             let message = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? String
             throw NSError(domain: "Compatibility", code: 1, userInfo: [NSLocalizedDescriptionKey: message ?? "The compatibility list could not be reached."])
         }
@@ -156,7 +180,7 @@ final class CompatibilityStore: ObservableObject {
     }
     func markAsked(_ package: String) { UserDefaults.standard.set(Self.build, forKey: askedKey(package)) }
 
-    func pageURL(_ package: String) -> URL { Self.site.appendingPathComponent("app").appendingPathComponent(package) }
+    func pageURL(_ package: String) -> URL { (workingSite ?? Self.sites[0]).appendingPathComponent("app").appendingPathComponent(package) }
 }
 
 /// What a report is about, for the sheet.
