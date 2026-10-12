@@ -105,7 +105,7 @@ struct GamePage: View {
     private var runs: Bool { app.report?.canRun == true }
 
     private var compatSubject: CompatSubject? {
-        app.packageName.map { CompatSubject(package: $0, name: app.label, isGame: LibraryItem.game(app).isGame) }
+        app.packageName.map { CompatSubject(package: $0, name: app.label, isGame: LibraryItem.game(app).isGame, iconPath: app.iconPath) }
     }
 
     /// Another game already loaded in this run of Husk: engines cannot be unloaded, so this one cannot start until Husk is

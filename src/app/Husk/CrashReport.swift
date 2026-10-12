@@ -170,7 +170,7 @@ struct CrashReportSheet: View {
     /// The game, for a report to the compatibility list.
     private var subject: CompatSubject? {
         guard let app = TranslationLayerStore.shared.apps.first(where: { $0.id == report.appID }), let pkg = app.packageName else { return nil }
-        return CompatSubject(package: pkg, name: app.label, isGame: LibraryItem.game(app).isGame,
+        return CompatSubject(package: pkg, name: app.label, isGame: LibraryItem.game(app).isGame, iconPath: app.iconPath,
                              crash: "\(report.cause.title). \(report.cause.detail)")
     }
 

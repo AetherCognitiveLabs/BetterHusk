@@ -81,6 +81,7 @@ final class CompatibilityStore: ObservableObject {
     struct Entry: Codable {
         let package: String
         let name: String
+        let icon: String?
         let official: Official?
         let community: Community
         struct Official: Codable { let status: Status; let note: String }
@@ -149,13 +150,24 @@ final class CompatibilityStore: ObservableObject {
     }
     static var build: String { (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? "" }
 
-    func send(package: String, name: String, isGame: Bool, status: Status, notes: String, author: String) async throws {
+    /// The app's launcher icon as a small PNG, for a first report on an app the list has no icon for.
+    static func iconPNG(_ path: String?) -> String? {
+        guard let path, let image = UIImage(contentsOfFile: path) else { return nil }
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let size = CGSize(width: 128, height: 128)
+        let png = UIGraphicsImageRenderer(size: size, format: format).pngData { _ in image.draw(in: CGRect(origin: .zero, size: size)) }
+        return png.count <= 60_000 ? png.base64EncodedString() : nil
+    }
+
+    func send(package: String, name: String, isGame: Bool, status: Status, notes: String, author: String, iconPath: String? = nil) async throws {
         var body: [String: String] = [
             "package": package, "name": name, "type": isGame ? "game" : "app", "status": status.rawValue,
             "device": Self.device, "ios": UIDevice.current.systemVersion, "build": Self.build, "jit": Self.jitMethod,
             "notes": notes, "author": author,
         ]
         if body["author"]?.isEmpty == true { body["author"] = nil }
+        if entry(package)?.icon == nil, let icon = Self.iconPNG(iconPath) { body["icon"] = icon }
         let payload = try JSONSerialization.data(withJSONObject: body)
         let (data, http) = try await call("api/reports") {
             $0.httpMethod = "POST"
@@ -188,6 +200,8 @@ struct CompatSubject: Identifiable {
     let package: String
     let name: String
     let isGame: Bool
+    /// The icon Husk shows for it, sent along when the list has none.
+    var iconPath: String? = nil
     /// Filled in from a crash: it did not work, and why.
     var crash: String? = nil
     /// After playing, rather than from the page's button.
@@ -308,7 +322,7 @@ struct CompatReportSheet: View {
         Task {
             do {
                 try await CompatibilityStore.shared.send(package: subject.package, name: subject.name, isGame: subject.isGame,
-                                                         status: status, notes: notes, author: author)
+                                                         status: status, notes: notes, author: author, iconPath: subject.iconPath)
                 sent = true
                 try? await Task.sleep(nanoseconds: 600_000_000)
                 dismiss()
