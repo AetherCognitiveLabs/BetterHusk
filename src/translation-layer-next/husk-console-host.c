@@ -80,6 +80,44 @@ static void task_usage(uint64_t *virtual_bytes, unsigned *threads)
 #endif
 }
 
+/* iOS gives large mappings one window from 0x70_0000_0000. What is in it: bytes in use, the highest end, the largest
+ * gap below that end, and the biggest users by VM tag (0 untagged, 240-255 app-specific, the rest Apple's). */
+#define CONSOLE_WINDOW_BASE 0x7000000000ull
+static void window_usage(char *out, size_t outlen)
+{
+    out[0] = 0;
+#if defined(__APPLE__)
+    uint64_t by_tag[256] = {0}, used = 0, top = CONSOLE_WINDOW_BASE, gap = 0, prev_end = CONSOLE_WINDOW_BASE;
+    vm_address_t addr = (vm_address_t)CONSOLE_WINDOW_BASE;
+    for (;;) {
+        vm_size_t size = 0;
+        vm_region_extended_info_data_t info;
+        mach_msg_type_number_t count = VM_REGION_EXTENDED_INFO_COUNT;
+        mach_port_t object = MACH_PORT_NULL;
+        if (vm_region_64(mach_task_self(), &addr, &size, VM_REGION_EXTENDED_INFO, (vm_region_info_t)&info, &count, &object) != KERN_SUCCESS) break;
+        if (object != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), object);
+        uint64_t start = addr, end = addr + size;
+        if (start > prev_end && start - prev_end > gap) gap = start - prev_end;
+        prev_end = end;
+        used += size;
+        by_tag[info.user_tag & 0xff] += size;
+        if (end > top) top = end;
+        addr = (vm_address_t)end;
+    }
+    int n = snprintf(out, outlen, "window used %llu MiB, top 0x%llx, largest gap %llu MiB, tags", (unsigned long long)(used >> 20),
+                     (unsigned long long)top, (unsigned long long)(gap >> 20));
+    for (int k = 0; k < 5 && n > 0 && (size_t)n < outlen; k++) {
+        int best = -1;
+        for (int t = 0; t < 256; t++) if (by_tag[t] && (best < 0 || by_tag[t] > by_tag[best])) best = t;
+        if (best < 0) break;
+        n += snprintf(out + n, outlen - (size_t)n, " %d:%llu", best, (unsigned long long)(by_tag[best] >> 20));
+        by_tag[best] = 0;
+    }
+#else
+    (void)outlen;
+#endif
+}
+
 static void host_log_line(const char *line)
 {
     struct timespec t;
@@ -121,6 +159,9 @@ static void log_usage(void)
     host_log("console: footprint %llu MiB, %llu MiB available, %llu MiB address space, %u threads",
              (unsigned long long)(host_footprint() >> 20), (unsigned long long)(host_available_memory() >> 20),
              (unsigned long long)(virtual_bytes >> 20), threads);
+    char window[256];
+    window_usage(window, sizeof(window));
+    if (window[0]) host_log("console: %s", window);
 }
 
 static void *pad_loop(void *arg)
