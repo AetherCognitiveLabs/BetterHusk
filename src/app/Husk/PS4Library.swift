@@ -67,7 +67,15 @@ struct PS4Game: Identifiable, Hashable {
     func reload() {
         let fm = FileManager.default
         try? fm.createDirectory(at: Self.root, withIntermediateDirectories: true)
-        let folders = (try? fm.contentsOfDirectory(at: Self.root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
+        func list(_ dir: URL) -> [URL] {
+            (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
+        }
+        // Game folders, and one level down: Files unzips an archive of game folders into a folder named after it.
+        var folders: [URL] = []
+        for top in list(Self.root) {
+            if fm.fileExists(atPath: top.appendingPathComponent("eboot.bin").path) { folders.append(top) }
+            else { folders += list(top) }
+        }
         var found: [PS4Game] = []
         for folder in folders where !folder.lastPathComponent.uppercased().hasSuffix("-UPDATE") {
             guard fm.fileExists(atPath: folder.appendingPathComponent("eboot.bin").path),
