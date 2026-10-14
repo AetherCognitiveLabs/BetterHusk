@@ -185,6 +185,7 @@ void *husk_jit_arena_rw_of(const void *rx)
     return husk_jit_arena_is_open() && p >= b && p - b < g_a.size ? (void *)(g_a.rw + (p - b)) : NULL;
 }
 
+uint8_t *husk_jit_arena_rw_base(void) { return g_a.rw; }
 size_t husk_jit_arena_held_bytes(void) { return g_a.size; }
 size_t husk_jit_arena_ceiling_bytes(void) { return g_a.ceiling_pages * HUSK_JIT_ARENA_PAGE; }
 size_t husk_jit_arena_used_bytes(void) { return g_a.used_pages * HUSK_JIT_ARENA_PAGE; }

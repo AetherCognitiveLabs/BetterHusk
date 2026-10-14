@@ -48,6 +48,7 @@ intptr_t husk_jit_arena_delta(void);
 void *husk_jit_arena_rx_of(const void *rw);
 void *husk_jit_arena_rw_of(const void *rx);
 
+uint8_t *husk_jit_arena_rw_base(void);      /* the region's writable start */
 size_t husk_jit_arena_held_bytes(void);    /* the region's size */
 size_t husk_jit_arena_ceiling_bytes(void);
 size_t husk_jit_arena_used_bytes(void);
