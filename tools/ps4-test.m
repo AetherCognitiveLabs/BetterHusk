@@ -3,7 +3,7 @@
  * bare CAMetalLayer, MoltenVK loaded by path, pads through the module -- on a Mac.
  *
  *   clang -fobjc-arc -O1 -o /tmp/ps4-test tools/ps4-test.m src/translation-layer-next/husk-console-host.c \
- *       src/translation-layer-next/husk-jit-arena.c -Isrc/translation-layer-next -framework Foundation -framework QuartzCore -framework Metal
+ *       src/translation-layer-next/husk-jit-arena.c -Isrc/translation-layer-next -Isrc/translation-layer -framework Foundation -framework QuartzCore -framework Metal
  *   /tmp/ps4-test <libhuskps4.dylib> <eboot.bin or game folder> [seconds]
  *
  * Environment: PS4_PAD_SCRIPT="T:buttons:D,..." holds buttons (cross circle square triangle up down left right l1 r1 l2 r2
@@ -23,11 +23,17 @@
 
 #include "husk-console-host.h"
 #include "husk-jit-arena.h"
+#include "husk-tl-gamepad.h"
 
 void tl_log_line(const char *fmt, ...)
 {
     (void)fmt; /* the console host already wrote the line to the log */
 }
+
+/* No Husk controllers here: PS4_PAD_SCRIPT drives the pad through husk_console_set_pad instead. */
+bool tl_pad_read(int slot, tl_pad_state *out) { (void)slot; (void)out; return false; }
+/* No Android engine here either. */
+const char *husk_native_loaded_apk(void) { return NULL; }
 
 typedef struct { double start, end; uint32_t buttons; } pad_event;
 
@@ -78,7 +84,7 @@ int main(int argc, char **argv)
         size_t region = getenv("TL_XMEM_MIB") ? 0 : (size_t)192 << 20;
 
         husk_console_launch_args a = {
-            .module_path = argv[1], .game = argv[2], .game_args = NULL, .user_dir = user.UTF8String, .log_path = log.UTF8String,
+            .module_path = argv[1], .game_id = "ps4:test", .game = argv[2], .game_args = NULL, .user_dir = user.UTF8String, .log_path = log.UTF8String,
             .vulkan_path = mvk, .metal_layer = (__bridge void *)layer, .width_px = w, .height_px = h, .scale = 1.0f, .region_bytes = region,
         };
         char err[512] = "";

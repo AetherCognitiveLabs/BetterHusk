@@ -22,6 +22,7 @@ extern "C" {
 
 typedef struct husk_console_launch_args {
     const char *module_path;  /* .../Frameworks/libhuskps4.dylib */
+    const char *game_id;      /* "ps4:CUSA07023": what husk_native_loaded_apk reports while it runs */
     const char *game;         /* eboot.bin, or the folder holding it */
     const char *game_args;    /* extra launch arguments joined by '\n', or NULL */
     const char *user_dir;     /* the module's settings, saves, system modules, caches */
@@ -44,6 +45,8 @@ void husk_console_resize(int width_px, int height_px);
 void husk_console_stop(void);
 /* After the game asked to start another executable: its path and args, for the next launch. */
 bool husk_console_take_pending_restart(char *path, int path_size, char *args, int args_size);
+/* The game_id of the console game started in this process, or NULL. */
+const char *husk_console_loaded_game(void);
 
 #ifdef __cplusplus
 }
