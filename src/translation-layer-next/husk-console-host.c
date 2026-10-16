@@ -24,7 +24,8 @@
 
 void tl_log_line(const char *fmt, ...);
 /* The Android side's gate (husk-tl-unity-app.c). */
-const char *husk_native_loaded_apk(void);
+/* weak: the Mac harnesses are built without the app glue that defines it (tools/regress/build.sh) */
+const char *husk_native_loaded_apk(void) __attribute__((weak_import));
 
 static const HuskConsoleModuleV1 *g_module;
 static HuskHostV1 g_host;
@@ -223,7 +224,7 @@ bool husk_console_launch(const husk_console_launch_args *a, char *err, size_t er
         return false;
     }
     /* One game per process: an Android game's engine holds the same JIT region. */
-    if (husk_native_loaded_apk()) {
+    if (husk_native_loaded_apk && husk_native_loaded_apk()) {
         snprintf(err, errlen, "another game is already loaded in this session; close Husk and open it again");
         return false;
     }
