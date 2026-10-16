@@ -1174,6 +1174,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback {
     public android.view.inputmethod.InputConnection onCreateInputConnection(android.view.inputmethod.EditorInfo o) { return null; }
     public boolean checkInputConnectionProxy(View v) { return false; }
     public void cancelPendingInputEvents() { removeCallbacks(mPendingLongPress); mPrivateFlags &= ~PFLAG_PREPRESSED; }
+    public void cancelLongPress() { removeCallbacks(mPendingLongPress); }
     public void setPointerIcon(PointerIcon p) {}
     public PointerIcon getPointerIcon() { return null; }
     public PointerIcon onResolvePointerIcon(MotionEvent e, int i) { return null; }
