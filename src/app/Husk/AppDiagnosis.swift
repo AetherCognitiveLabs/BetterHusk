@@ -10,7 +10,7 @@ import SwiftUI
 struct AppDiagnosis: Identifiable, Equatable {
     enum Kind: String {
         case badAPK, unsupportedCPU, missingSplits, protected, needsGoogle, missingFeature, javaCrash, nativeCrash, closedItself,
-             missingFunction, noProgress
+             missingFunction, noProgress, noJIT
     }
     let id = UUID()
     let kind: Kind
@@ -33,6 +33,7 @@ struct AppDiagnosis: Identifiable, Equatable {
         case .missingFeature, .missingFunction: return "puzzlepiece"
         case .javaCrash, .nativeCrash: return "exclamationmark.triangle.fill"
         case .noProgress: return "hourglass"
+        case .noJIT: return "bolt.slash"
         }
     }
 
@@ -79,6 +80,15 @@ struct AppDiagnosis: Identifiable, Equatable {
     /// The reason a run stopped, from its log; nil when nothing in it explains the end (the app closed the normal way).
     static func fromLog(_ text: String) -> AppDiagnosis? {
         let lines = text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+
+        // No executable memory: on iOS with TXM only a debugger can grant it, and without it the loader cannot load Android's own
+        // libraries, so everything after (java.lang.System failing to initialise, missing natives) follows from this
+        if let l = lines.first(where: { $0.contains("no StikDebug JIT region") }) {
+            return AppDiagnosis(kind: .noJIT, title: "JIT is not enabled",
+                                detail: "This iPhone only lets an app run translated code while a debugger enables JIT for it. Open Husk "
+                                    + "through StikDebug, or tap Turn On JIT in Husk, then start the app again.",
+                                evidence: l)
+        }
 
         // A native crash: the runtime's crash handler names the library the bad instruction was in
         if let i = lines.lastIndex(where: { $0.contains("=== CRASH:") || $0.contains("*** FATAL SIGNAL") }) {
