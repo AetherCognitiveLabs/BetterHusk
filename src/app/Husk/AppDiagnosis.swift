@@ -90,6 +90,14 @@ struct AppDiagnosis: Identifiable, Equatable {
                                 evidence: l)
         }
 
+        // The JIT region is shared: Android (QEMU) holds its top half while it runs, an app's libraries fill it from the bottom
+        if let l = lines.first(where: { $0.contains("but QEMU holds its top") || $0.contains("of TCG") && $0.contains("no room for") }) {
+            return AppDiagnosis(kind: .noJIT, title: "Not enough JIT memory",
+                                detail: "Android and this app share the memory Husk runs translated code in, and together they do not fit. "
+                                    + "Close Husk and open it again, then start only the app (or only Android).",
+                                evidence: l)
+        }
+
         // A native crash: the runtime's crash handler names the library the bad instruction was in
         if let i = lines.lastIndex(where: { $0.contains("=== CRASH:") || $0.contains("*** FATAL SIGNAL") }) {
             let head = lines[i]
