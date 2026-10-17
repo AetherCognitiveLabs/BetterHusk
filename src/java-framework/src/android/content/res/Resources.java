@@ -282,7 +282,18 @@ public class Resources {
     /** A drawable value: a colour, an image file, or a drawable XML file. */
     public Drawable loadDrawable(TypedValue v, int id, Theme theme) {
         if (v.type >= TypedValue.TYPE_FIRST_COLOR_INT && v.type <= TypedValue.TYPE_LAST_COLOR_INT) return new android.graphics.drawable.ColorDrawable(v.data);
-        if (v.type == TypedValue.TYPE_ATTRIBUTE && theme != null) { TypedValue r = new TypedValue(); if (theme.resolveAttribute(v.data, r, true)) return loadDrawable(r, r.resourceId, theme); }
+        if (v.type == TypedValue.TYPE_ATTRIBUTE && theme != null) {
+            // follow ?attr references as far as the theme takes them, but not round a loop (an attribute that resolves to itself
+            // overflowed the stack: Codeword's theme); 20 is the depth the platform's own resolution stops at
+            TypedValue r = new TypedValue(), cur = v;
+            for (int depth = 0; cur.type == TypedValue.TYPE_ATTRIBUTE && depth < 20; depth++) {
+                if (!theme.resolveAttribute(cur.data, r, true)) return null;
+                if (r.type == TypedValue.TYPE_ATTRIBUTE && r.data == cur.data) return null;
+                TypedValue next = new TypedValue(); next.setTo(r); cur = next;
+            }
+            if (cur.type == TypedValue.TYPE_ATTRIBUTE) return null;
+            return loadDrawable(cur, cur.resourceId, theme);
+        }
         if (v.type != TypedValue.TYPE_STRING || v.string == null) {
             if (v.type == TypedValue.TYPE_NULL) return null;
             throw new NotFoundException("Resource ID #0x" + Integer.toHexString(id) + " type #0x" + Integer.toHexString(v.type) + " is not valid");
