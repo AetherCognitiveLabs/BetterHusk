@@ -54,6 +54,8 @@ def main():
         if a.resume and os.path.exists(os.path.join(a.out, pkg + '.log')): continue
         # another GPU job (a PS5 run) wants the GPU to itself: wait between apps while this file exists
         while os.path.exists('/tmp/aw/pause'): time.sleep(10)
+        # the external drive the apps and harness live on drops out when it overheats: wait for it rather than fail every app
+        while not os.path.isdir(os.path.dirname(a.out.rstrip('/'))) or not os.path.isdir(a.folder): time.sleep(30)
         if not glob.glob(os.path.join(d, '*.apk')): continue
         base, splits = apks(d)
         rep = json.loads(subprocess.run([SCAN, base] + splits, capture_output=True, text=True).stdout or '{}')
