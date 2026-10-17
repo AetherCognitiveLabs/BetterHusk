@@ -87,9 +87,14 @@ enum PlayAPI {
 
         req.httpBody = try? JSONSerialization.data(withJSONObject: deviceProps)
 
-        let (data, response) = try await urlSession.data(for: req)
+        // The dispenser is a free service of the Aurora Store project; when Google refuses its shared accounts it answers 5xx for
+        // hours, so the message says what is down and that signing in still works
+        let unavailable = "The anonymous login service (Aurora's token dispenser) is not working right now"
+        let advice = "Sign in with a Google account instead, or try again later."
+        let data: Data, response: URLResponse
+        do { (data, response) = try await urlSession.data(for: req) } catch { throw PlayError("\(unavailable) (\(error.localizedDescription)). \(advice)") }
         guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-            throw PlayError("Aurora token dispenser returned HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0).")
+            throw PlayError("\(unavailable) (HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)). \(advice)")
         }
 
         struct DispenserResponse: Decodable {
