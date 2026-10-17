@@ -607,7 +607,8 @@ static void *make_stub(const char *name)
  * the host might clobber, calls tl_svc_common, and branches back to the instruction
  * after the site. tl_svc_common saves everything else the C handler may disturb --
  * the kernel preserves all registers but x0 across a system call, so code around a
- * raw `svc` relies on that -- and calls tl_linux_syscall with the arguments and number.
+ * raw `svc` relies on that, the condition flags and all of q8-q15 included (C keeps
+ * only their low halves) -- and calls tl_linux_syscall with the arguments and number.
  */
 long tl_linux_syscall(long a0, long a1, long a2, long a3, long a4, long a5, long nr);
 
@@ -617,7 +618,7 @@ __attribute__((naked, used)) void tl_svc_common(void)
     __asm__ volatile(
         "stp x29, x30, [sp, #-16]!\n"
         "mov x29, sp\n"
-        "sub sp, sp, #512\n"
+        "sub sp, sp, #640\n"
         "stp x1, x2, [sp, #0]\n"
         "stp x3, x4, [sp, #16]\n"
         "stp x5, x6, [sp, #32]\n"
@@ -626,6 +627,12 @@ __attribute__((naked, used)) void tl_svc_common(void)
         "stp x11, x12, [sp, #80]\n"
         "stp x13, x14, [sp, #96]\n"
         "str x15, [sp, #112]\n"
+        "mrs x9, nzcv\n"
+        "str x9, [sp, #120]\n"
+        "stp q8, q9, [sp, #512]\n"
+        "stp q10, q11, [sp, #544]\n"
+        "stp q12, q13, [sp, #576]\n"
+        "stp q14, q15, [sp, #608]\n"
         "stp q0, q1, [sp, #128]\n"
         "stp q2, q3, [sp, #160]\n"
         "stp q4, q5, [sp, #192]\n"
@@ -640,6 +647,12 @@ __attribute__((naked, used)) void tl_svc_common(void)
         "stp q30, q31, [sp, #480]\n"
         "mov x6, x8\n"
         "bl _tl_linux_syscall\n"
+        "ldr x9, [sp, #120]\n"
+        "msr nzcv, x9\n"
+        "ldp q8, q9, [sp, #512]\n"
+        "ldp q10, q11, [sp, #544]\n"
+        "ldp q12, q13, [sp, #576]\n"
+        "ldp q14, q15, [sp, #608]\n"
         "ldp x1, x2, [sp, #0]\n"
         "ldp x3, x4, [sp, #16]\n"
         "ldp x5, x6, [sp, #32]\n"
@@ -2023,9 +2036,17 @@ static bool init_locked(tl_lib *L)
     if (L->init_array) {
         const uint64_t *fns = at(L, L->init_array);
         size_t n = L->init_arraysz / 8;
+        static int trace = -1;
+        if (trace < 0) trace = getenv("TL_INIT_TRACE") ? 1 : 0;   /* each constructor before and after it runs */
         for (size_t i = 0; i < n; i++) {
             uint64_t f = fns[i];
-            if (f && f != ~0ull) ((init_fn)(uintptr_t)f)(argc, argv, envp);
+            if (!f || f == ~0ull) continue;
+            if (trace) tl_log_line("ld: %s: constructor %zu at +%#llx", L->name, i, (unsigned long long)(f - (uint64_t)(uintptr_t)L->rx + L->base_vaddr));
+            /* TL_INIT_BREAK=<library>: a debugger stops here with the constructor's address in x0 and the image base in x1 */
+            { const char *b = getenv("TL_INIT_BREAK");
+              if (b && !strcmp(b, L->name)) __asm__ volatile("mov x0, %0\n mov x1, %1\n brk #0xf00d" :: "r"(f), "r"((uint64_t)(uintptr_t)L->rx) : "x0", "x1"); }
+            ((init_fn)(uintptr_t)f)(argc, argv, envp);
+            if (trace) tl_log_line("ld: %s: constructor %zu returned", L->name, i);
         }
     }
     L->state = 4;
