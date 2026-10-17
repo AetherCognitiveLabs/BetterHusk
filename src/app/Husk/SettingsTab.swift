@@ -834,9 +834,8 @@ struct AppearanceSettings: View {
             } header: {
                 Text("Theme")
             } footer: {
-                Text("Home, the Library, the Store and Settings are always dark, like a console's home screen. This sets "
-                   + "the rest, such as the welcome screens and some sheets: System follows the phone. "
-                   + "The guest's own screen stays dark either way. "
+                Text("System follows the phone: light by day, dark by night. The guest's own "
+                   + "screen stays dark either way — it is a picture of another phone. "
                    + "Holiday decorations appear from December to early January.")
             }
 

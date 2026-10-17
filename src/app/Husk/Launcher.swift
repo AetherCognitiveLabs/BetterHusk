@@ -186,9 +186,12 @@ struct HomeView: View {
                             topBar
                                 .padding(.horizontal, 20)
                                 .padding(.top, 6)
+                                .environment(\.colorScheme, .dark)
                             notices
                                 .padding(.horizontal, 20)
                                 .padding(.top, 10)
+                                // over the artwork: drawn as on dark in either appearance
+                                .environment(\.colorScheme, .dark)
 
                             if let selected {
                                 Color.clear.frame(height: max(12, heroHeight - geo.safeAreaInsets.top - 62 - 150))
@@ -272,7 +275,7 @@ struct HomeView: View {
                                 Image(systemName: "square.grid.2x2.fill").font(.system(size: 20, weight: .semibold))
                                 Text("All").font(.system(size: 12, weight: .semibold))
                             }
-                            .foregroundStyle(.white.opacity(0.8))
+                            .foregroundStyle(Console.text.opacity(0.8))
                             .frame(width: 72, height: 72)
                             .background(Console.card, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
                         }
@@ -311,7 +314,7 @@ struct HomeView: View {
             }
             Text(item.title)
                 .font(.system(size: 32, weight: .heavy))
-                .foregroundStyle(.white)
+                .foregroundStyle(Console.text)
                 .lineLimit(2)
                 .minimumScaleFactor(0.7)
                 .fixedSize(horizontal: false, vertical: true)
@@ -346,7 +349,7 @@ struct HomeView: View {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Recently added")
                     .font(.system(size: 20, weight: .bold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Console.text)
                     .padding(.horizontal, 20)
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 12) {
@@ -371,7 +374,7 @@ struct HomeView: View {
             VStack(alignment: .leading, spacing: 10) {
                 Text(router.platform == .ps4 ? "No PS4 games yet" : "No Android games or apps yet")
                     .font(.system(size: 26, weight: .heavy))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Console.text)
                 Text(router.platform == .ps4
                      ? "Put an extracted PS4 game folder in Files, in Husk's PS4 Games folder, or add one with the + in the menu."
                      : "Add an APK or a bundle from the menu, or share one to Husk.")
@@ -398,7 +401,7 @@ private struct HomeHero: View {
 
     var body: some View {
         ZStack {
-            Console.page
+            Color.black
             if let item {
                 art(item)
                     .id(item.id)
@@ -407,7 +410,7 @@ private struct HomeHero: View {
             Color.black.opacity(0.45)
             VStack(spacing: 0) {
                 Spacer(minLength: 0)
-                LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
+                LinearGradient(colors: [.clear, Console.page], startPoint: .top, endPoint: .bottom)
                     .frame(height: height * 0.32)
             }
         }
@@ -447,7 +450,7 @@ private struct ShelfTile: View {
             .overlay {
                 if selected {
                     RoundedRectangle(cornerRadius: size * 0.225 + 4, style: .continuous)
-                        .strokeBorder(Color.white, lineWidth: 3)
+                        .strokeBorder(Console.text, lineWidth: 3)
                 }
             }
             .shadow(color: .black.opacity(selected ? 0.5 : 0.3), radius: selected ? 12 : 6, y: 4)
@@ -493,10 +496,10 @@ struct ConsolePlayButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 17, weight: .bold))
-            .foregroundStyle(.black)
+            .foregroundStyle(Console.onText)
             .frame(maxWidth: .infinity)
             .frame(height: 52)
-            .background(Color.white, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .background(Console.text, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             .opacity(configuration.isPressed ? 0.85 : 1)
             .scaleEffect(configuration.isPressed ? 0.98 : 1)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
@@ -515,7 +518,7 @@ private struct HomeMoreButton: View {
         } label: {
             Image(systemName: "ellipsis")
                 .font(.system(size: 18, weight: .bold))
-                .foregroundStyle(.white)
+                .foregroundStyle(Console.text)
                 .frame(width: 52, height: 52)
                 .background(Console.raised, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
@@ -658,13 +661,13 @@ private struct WelcomeCard: View {
         VStack(alignment: .leading, spacing: 16) {
             Image(systemName: "gamecontroller.fill")
                 .font(.system(size: 28, weight: .semibold))
-                .foregroundStyle(.white)
+                .foregroundStyle(Console.text)
                 .frame(width: 60, height: 60)
                 .background(Console.raised, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             VStack(alignment: .leading, spacing: 6) {
                 Text("Add your first game")
                     .font(.system(size: 26, weight: .heavy))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Console.text)
                 Text("Pick an APK or a bundle (.xapk, .apkm, .apks), or share one to Husk from Files or Safari. Games run "
                    + "straight on your iPhone. Other apps run inside Android. PS4 games are extracted folders put in "
                    + "Husk's PS4 Games folder.")
@@ -791,14 +794,6 @@ struct LibraryScreen: View {
         NavigationStack(path: $router.library) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    HStack(alignment: .center) {
-                        Text("Library")
-                            .font(.system(size: 34, weight: .heavy))
-                            .foregroundStyle(.white)
-                        Spacer()
-                        HeaderButton(systemImage: "plus") { router.addSomething() }
-                            .accessibilityLabel("Add a Game or App")
-                    }
                     HStack(spacing: 8) {
                         PlatformChips(selection: $router.platform)
                         Spacer(minLength: 0)
@@ -810,7 +805,7 @@ struct LibraryScreen: View {
                             Image(systemName: router.libraryFilter == .all ? "line.3.horizontal.decrease.circle"
                                                                             : "line.3.horizontal.decrease.circle.fill")
                                 .font(.system(size: 22, weight: .regular))
-                                .foregroundStyle(router.libraryFilter == .all ? Color.white.opacity(0.7) : Theme.accent)
+                                .foregroundStyle(router.libraryFilter == .all ? Console.textDim : Theme.accent)
                                 .frame(width: 36, height: 36)
                         }
                         .accessibilityLabel("Games or Apps")
@@ -846,7 +841,14 @@ struct LibraryScreen: View {
             .huskHideScrollIndicators()
             .huskDismissKeyboardOnScroll()
             .background(Console.page.ignoresSafeArea())
-            .huskNavigationBar(hidden: true)
+            .navigationTitle("Library")
+            .navigationBarTitleDisplayMode(.large)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button { router.addSomething() } label: { Image(systemName: "plus") }
+                        .accessibilityLabel("Add a Game or App")
+                }
+            }
             .libraryDestinations()
         }
     }
@@ -856,7 +858,7 @@ struct LibraryScreen: View {
         if !items.isEmpty || empty != nil {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(title).font(.system(size: 21, weight: .bold)).foregroundStyle(.white)
+                    Text(title).font(.system(size: 21, weight: .bold)).foregroundStyle(Console.text)
                     Text("\(items.count)").font(.system(size: 15, weight: .medium)).foregroundStyle(Console.textDim)
                 }
                 if items.isEmpty, let empty {
@@ -907,13 +909,13 @@ private struct LibraryCell: View {
                 .overlay { GeometryReader { geo in ItemIcon(item: item, size: geo.size.width) } }
                 .overlay(alignment: .topTrailing) { if item.runsInAndroid { AndroidBadge().padding(6) } }
                 .snowCap(height: 7)
-                .shadow(color: .black.opacity(0.4), radius: 8, y: 4)
+                .shadow(color: .black.opacity(0.25), radius: 6, y: 3)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 5) {
                     if let status = item.status { StatusDot(status: status) }
                     Text(item.title)
                         .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Console.text)
                         .lineLimit(1)
                 }
                 if let caption {

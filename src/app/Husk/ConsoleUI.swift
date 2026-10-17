@@ -1,21 +1,31 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// The console-style shell: the floating dock that replaces the tab bar, the platform chips, the status dot, and what Home and
-// the Library need to know about an item's platform. Flat dark surfaces throughout -- no glass, no coloured washes.
+// The console look's pieces: its palette (dark or light, as Settings > Appearance says), the platform chips, the status dot,
+// and what Home and the Library need to know about an item's platform. Flat surfaces throughout -- no glass, no coloured washes.
 import SwiftUI
 import UIKit
 
 // MARK: - palette
 
 enum Console {
-    /// The page: plain black.
-    static let page = Color.black
+    /// A colour for each appearance.
+    private static func adaptive(dark: UIColor, light: UIColor) -> Color {
+        Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? dark : light })
+    }
+
+    /// The page: black, or near-white.
+    static let page = adaptive(dark: .black, light: UIColor(white: 0.965, alpha: 1))
     /// Cards and wells on the page.
-    static let card = Color(white: 0.11)
-    /// One step up from a card: the dock, buttons on artwork.
-    static let raised = Color(white: 0.16)
-    static let hairline = Color.white.opacity(0.08)
-    static let textDim = Color.white.opacity(0.6)
-    static let dockHeight: CGFloat = 60
+    static let card = adaptive(dark: UIColor(white: 0.11, alpha: 1), light: UIColor(white: 0.905, alpha: 1))
+    /// One step up from a card: buttons beside Play.
+    static let raised = adaptive(dark: UIColor(white: 0.16, alpha: 1), light: UIColor(white: 0.865, alpha: 1))
+    /// An unselected chip.
+    static let chip = adaptive(dark: UIColor(white: 1, alpha: 0.12), light: UIColor(white: 0, alpha: 0.07))
+    static let hairline = adaptive(dark: UIColor(white: 1, alpha: 0.08), light: UIColor(white: 0, alpha: 0.08))
+    /// Text, and the fill of what is selected: white in dark, black in light.
+    static let text = adaptive(dark: .white, light: .black)
+    /// What sits on `text` as a fill: the selected chip's label, Play's label.
+    static let onText = adaptive(dark: .black, light: .white)
+    static let textDim = adaptive(dark: UIColor(white: 1, alpha: 0.6), light: UIColor(white: 0, alpha: 0.55))
 }
 
 // MARK: - platform
@@ -134,10 +144,10 @@ struct ConsoleChip: View {
         Button(action: action) {
             Text(title)
                 .font(.system(size: compact ? 13 : 14, weight: .semibold))
-                .foregroundStyle(selected ? Color.black : Color.white.opacity(0.85))
+                .foregroundStyle(selected ? Console.onText : Console.text.opacity(0.85))
                 .padding(.horizontal, compact ? 11 : 14)
                 .frame(height: compact ? 28 : 32)
-                .background(selected ? Color.white : Color.white.opacity(0.12), in: Capsule())
+                .background(selected ? Console.text : Console.chip, in: Capsule())
                 .contentShape(Capsule())
         }
         .buttonStyle(.plain)
@@ -156,145 +166,6 @@ struct PlatformChips: View {
                     withAnimation(.easeOut(duration: 0.18)) { selection = f }
                 }
             }
-        }
-    }
-}
-
-// MARK: - dock
-
-/// Whether the keyboard is up: the dock steps aside for it rather than riding on top of it.
-@MainActor final class KeyboardWatch: ObservableObject {
-    static let shared = KeyboardWatch()
-    @Published private(set) var visible = false
-    private var tokens: [NSObjectProtocol] = []
-
-    private init() {
-        let nc = NotificationCenter.default
-        tokens.append(nc.addObserver(forName: UIResponder.keyboardWillShowNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.visible = true }
-        })
-        tokens.append(nc.addObserver(forName: UIResponder.keyboardWillHideNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.visible = false }
-        })
-    }
-}
-
-extension HuskTab {
-    var title: String {
-        switch self {
-        case .home: return "Home"
-        case .library: return "Library"
-        case .store: return "Store"
-        case .settings: return "Settings"
-        }
-    }
-    var symbol: String {
-        switch self {
-        case .home: return "house.fill"
-        case .library: return "square.grid.2x2.fill"
-        case .store: return "bag.fill"
-        case .settings: return "gearshape.fill"
-        }
-    }
-}
-
-/// The floating dock: a dark capsule with the four tabs, the selected one lifted onto a lighter pill.
-struct ConsoleDock: View {
-    @ObservedObject private var router = Router.shared
-    @ObservedObject private var theme = AppTheme.shared
-
-    var body: some View {
-        HStack(spacing: 4) {
-            ForEach(HuskTab.allCases) { tab in
-                let selected = router.tab == tab
-                Button {
-                    if selected {
-                        // Tapping the tab you are on goes back to its top, as a tab bar does.
-                        switch tab {
-                        case .home: router.home = []
-                        case .library: router.library = []
-                        default: break
-                        }
-                    } else {
-                        router.tab = tab
-                    }
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: tab.symbol)
-                            .font(.system(size: 16, weight: .semibold))
-                            .foregroundStyle(selected ? theme.accentColor : Color.white.opacity(0.55))
-                        if selected {
-                            Text(tab.title)
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundStyle(.white)
-                                .lineLimit(1)
-                                .fixedSize()
-                        }
-                    }
-                    .padding(.horizontal, selected ? 14 : 12)
-                    .frame(height: 42)
-                    .frame(minWidth: 48)
-                    .background(selected ? Console.raised.opacity(1) : Color.clear, in: Capsule())
-                    .overlay(Capsule().stroke(selected ? Color.white.opacity(0.10) : .clear, lineWidth: 0.5))
-                    .contentShape(Capsule())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(tab.title)
-                .accessibilityAddTraits(selected ? .isSelected : [])
-            }
-        }
-        .padding(5)
-        .background(Color(white: 0.07), in: Capsule())
-        .overlay(Capsule().stroke(Console.hairline, lineWidth: 0.5))
-        .shadow(color: .black.opacity(0.5), radius: 14, y: 6)
-        .animation(.snappy(duration: 0.22), value: router.tab)
-    }
-}
-
-// MARK: - shell
-
-/// The four tabs without the system's tab bar: each is mounted the first time it is shown and then kept, hidden, so its
-/// pushed pages survive switching away -- what TabView did, minus the bar.
-struct ConsoleShell: View {
-    @ObservedObject private var router = Router.shared
-    @ObservedObject private var keyboard = KeyboardWatch.shared
-    @State private var visited: Set<HuskTab> = [Router.shared.tab]
-
-    var body: some View {
-        ZStack {
-            Console.page.ignoresSafeArea()
-            ForEach(HuskTab.allCases) { tab in
-                if visited.contains(tab) || router.tab == tab {
-                    page(tab)
-                        .opacity(router.tab == tab ? 1 : 0)
-                        .allowsHitTesting(router.tab == tab)
-                        .accessibilityHidden(router.tab != tab)
-                        .zIndex(router.tab == tab ? 1 : 0)
-                }
-            }
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            if !keyboard.visible {
-                ConsoleDock()
-                    .padding(.top, 6)
-                    .padding(.bottom, 4)
-                    .frame(maxWidth: .infinity)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
-        }
-        .animation(.easeOut(duration: 0.2), value: keyboard.visible)
-        .onChange(of: router.tab) { visited.insert($0) }
-        // Husk's console look is dark whatever the phone is set to: artwork on black.
-        .environment(\.colorScheme, .dark)
-    }
-
-    @ViewBuilder
-    private func page(_ tab: HuskTab) -> some View {
-        switch tab {
-        case .home: HomeView()
-        case .library: LibraryScreen()
-        case .store: StoreView()
-        case .settings: SettingsTab()
         }
     }
 }

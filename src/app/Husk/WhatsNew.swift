@@ -16,7 +16,7 @@ enum WhatsNew {
     static let version = "3.0.0"
     static let items: [Item] = [
         Item(symbol: "gamecontroller.fill", title: "A new Husk",
-             detail: "A console-style home: your games on a shelf, the one you pick fills the screen with its artwork, and Play is one tap away. Android and PS4 games side by side, a new library, and a dock for Home, Library, Store and Settings."),
+             detail: "A console-style home: your games on a shelf, the one you pick fills the screen with its artwork, and Play is one tap away. Android and PS4 games side by side, a new library, in light or dark as Settings › Appearance says."),
         Item(symbol: "playstation.logo", title: "PS4 games",
              detail: "Add a PS4 game with the + button, as a fake package (.pkg), a folder of them, or an extracted game folder, and play it from your library. Updates install beside their game, shaders are kept between launches, and games that ask for a name bring up the keyboard."),
         Item(symbol: "square.stack.3d.up.fill", title: "Hundreds more Android games",

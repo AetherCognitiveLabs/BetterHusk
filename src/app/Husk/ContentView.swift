@@ -50,8 +50,23 @@ struct ContentView: View {
             // with the tabs is the arrangement that survives that. Showing
             // Android is then a matter of hiding what is over it, which is also
             // why it appears instantly rather than reloading.
-            // The tabs, under the floating dock (ConsoleUI.swift) rather than the system's tab bar.
-            ConsoleShell()
+            TabView(selection: tabSelection) {
+                HomeView()
+                    .tabItem { Label("Home", systemImage: "house.fill") }
+                    .tag(HuskTab.home)
+
+                LibraryScreen()
+                    .tabItem { Label("Library", systemImage: "square.grid.2x2.fill") }
+                    .tag(HuskTab.library)
+
+                StoreView()
+                    .tabItem { Label("Store", systemImage: "cart.fill") }
+                    .tag(HuskTab.store)
+
+                SettingsTab()
+                    .tabItem { Label("Settings", systemImage: "gearshape.fill") }
+                    .tag(HuskTab.settings)
+            }
             .opacity(showGuestScreen && started && runner.isRunning ? 0 : 1)
 
             // Christmas: snow over the tabs (never over Android or an app's window, which come after it)
@@ -71,7 +86,7 @@ struct ContentView: View {
                     Spacer()
                     ToastView(toast: toast) { host.toast = nil }
                         .padding(.horizontal, 16)
-                        .padding(.bottom, 8 + Console.dockHeight)
+                        .padding(.bottom, 8)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
                 .task(id: toast.id) {
@@ -210,6 +225,20 @@ struct ContentView: View {
             // foreground is the moment worth re-checking, not first launch.
             if phase == .active { evaluate() }
         }
+    }
+
+    /// The selected tab. Choosing the tab already shown takes Home or the Library back to its top, as a tab bar does.
+    private var tabSelection: Binding<HuskTab> {
+        Binding(get: { router.tab }, set: { tab in
+            if tab == router.tab {
+                switch tab {
+                case .home: router.home = []
+                case .library: router.library = []
+                default: break
+                }
+            }
+            router.tab = tab
+        })
     }
 
     /// Every package Husk holds, from both sides: what the picture index is read for.
