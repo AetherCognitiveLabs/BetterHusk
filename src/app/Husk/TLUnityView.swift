@@ -279,6 +279,7 @@ final class TLUnityUIView: UIView, UIKeyInput {
         if let sys = Bundle.main.resourcePath.map({ $0 + "/android-system" }), FileManager.default.fileExists(atPath: sys) {
             husk_native_set_system_files(sys + "/cacerts", sys)
         }
+        husk_native_set_extra_fonts(CJKFonts.directory.path)
         let started: Bool
         switch engine {
         case .sdl:

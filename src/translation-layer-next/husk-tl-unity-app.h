@@ -102,6 +102,8 @@ bool husk_flutter_text_multiline(void);
 void husk_flutter_set_keyboard_inset(int bottom);                     /* pixels of the view the keyboard covers */
 void husk_flutter_back(void);                                         /* Android's back button */
 void husk_flutter_set_close_handler(void (*fn)(void));                /* the app closed itself */
+/* Where fonts downloaded after install are (the CJK ones): /system/fonts files the bundle lacks are looked for there. */
+void husk_native_set_extra_fonts(const char *dir);
 void husk_native_set_system_files(const char *cacerts_dir, const char *fonts_root);
 /* Another APK of the app about to be launched (a split, an asset pack). Before the launch call; at most three. */
 void husk_native_add_package(const char *apk);

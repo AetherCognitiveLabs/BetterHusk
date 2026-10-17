@@ -546,6 +546,8 @@ void husk_flutter_set_close_handler(void (*fn)(void)) { tl_flutter_set_close_han
 void tl_set_cacerts_dir(const char *dir);
 void tl_set_system_fonts_dir(const char *dir);
 /* The certificates and fonts Android keeps under /system, as copies the app carries (cacerts/, and fonts/ + etc/fonts.xml). */
+void tl_set_extra_fonts_dir(const char *dir);
+void husk_native_set_extra_fonts(const char *dir) { tl_set_extra_fonts_dir(dir); }
 void husk_native_set_system_files(const char *cacerts_dir, const char *fonts_root)
 {
     if (cacerts_dir) tl_set_cacerts_dir(cacerts_dir);

@@ -158,12 +158,24 @@ void tl_set_cacerts_dir(const char *dir) { snprintf(g_cacerts, sizeof(g_cacerts)
  * typeface (Skia, in Flutter apps): a copy the app carries, laid out as fonts/ and etc/ under one directory. */
 static char g_sysfonts[1024];
 void tl_set_system_fonts_dir(const char *dir) { snprintf(g_sysfonts, sizeof(g_sysfonts), "%s", dir ? dir : ""); }
+/* Fonts the app downloaded later (the Chinese, Japanese and Korean ones the bundle leaves out, #95): a /system/fonts file the bundle
+ * does not have is looked for here too, and fonts.xml already names them. */
+static char g_extrafonts[1024];
+void tl_set_extra_fonts_dir(const char *dir) { snprintf(g_extrafonts, sizeof(g_extrafonts), "%s", dir ? dir : ""); }
 
 const char *tl_path_resolve(const char *path, char *buf, size_t n)
 {
     if (!path) return path;
     if (g_sysfonts[0]) {
-        if (!strncmp(path, "/system/fonts", 13) && (path[13] == 0 || path[13] == '/')) { snprintf(buf, n, "%s/fonts%s", g_sysfonts, path + 13); return buf; }
+        if (!strncmp(path, "/system/fonts", 13) && (path[13] == 0 || path[13] == '/')) {
+            snprintf(buf, n, "%s/fonts%s", g_sysfonts, path + 13);
+            if (g_extrafonts[0] && path[13] == '/' && access(buf, F_OK) != 0) {
+                char extra[1100];
+                snprintf(extra, sizeof(extra), "%s%s", g_extrafonts, path + 13);
+                if (access(extra, F_OK) == 0) snprintf(buf, n, "%s", extra);
+            }
+            return buf;
+        }
         if (!strcmp(path, "/system/etc/fonts.xml") || !strcmp(path, "/system/etc/font_fallback.xml")) { snprintf(buf, n, "%s/etc%s", g_sysfonts, path + 11); return buf; }
     }
     if (g_cacerts[0]) {
