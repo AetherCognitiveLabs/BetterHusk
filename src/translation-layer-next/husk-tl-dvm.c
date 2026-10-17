@@ -330,6 +330,24 @@ static tl_jclass *class_for_desc(const char *desc)
     return jc ? jc : tl_jni_class(name);        /* not defined anywhere: a framework class Husk may implement */
 }
 
+/*
+ * A class no DEX file defines (the app's, the framework's, libcore's) and Husk's C side does not implement either, outside the
+ * platform's packages: the app names a class it does not ship, and ART says NoClassDefFoundError when the code reaches it. Libraries
+ * probe for optional parts that way (slf4j looks for a binding, StaticLoggerBinder, and falls back to a no-op logger without one);
+ * a stand-in whose methods return zero tells them the part is there, and they fail on its null answers instead.
+ */
+static bool class_missing(tl_jclass *jc)
+{
+    if (!jc || jc->in_dex || dvm_class_of(jc) || jc->name[0] == '[') return false;
+    static const char *const platform[] = { "android/", "java/", "javax/", "dalvik/", "com/android/", "libcore/", "sun/", "org/apache/http/",
+                                            "org/json/", "org/xml/", "org/w3c/", "org/xmlpull/", "org/ccil/", "junit/", "husk/", NULL };
+    for (int i = 0; platform[i]; i++) if (!strncmp(jc->name, platform[i], strlen(platform[i]))) return false;
+    if (!strchr(jc->name, '/')) return false;                                   /* primitives, the default package */
+    return !tl_jni_class_known(jc);
+}
+
+static bool throw_missing(tl_jclass *jc) { return dvm_throw("java/lang/NoClassDefFoundError", "Failed resolution of: L%s;", jc->name); }
+
 static tl_jclass *resolve_type(dvm_dex *d, uint32_t idx)
 {
     tl_jclass *c = __atomic_load_n(&d->tcache[idx], __ATOMIC_ACQUIRE);
@@ -1195,6 +1213,7 @@ typedef struct mref {
     int nparams;
     dvm_method *dm;                 /* resolved in an interpreted class */
     tl_jmeth *hm;                   /* or Husk's own */
+    bool missing;                   /* or its class exists nowhere (class_missing) */
 } mref;
 
 static mref *resolve_mref(dvm_dex *d, uint32_t idx, bool is_static)
@@ -1210,7 +1229,8 @@ static mref *resolve_mref(dvm_dex *d, uint32_t idx, bool is_static)
     { char sg[8192], sh[300]; proto_sig(d, rd16(mi + 2), sg, sizeof(sg), sh, sizeof(sh), &r->nparams); r->sig = strdup(sg); r->shorty = strdup(sh); }
     dvm_class *c = dvm_class_of(r->cls);
     if (c) r->dm = dvm_find_method(c, r->name, r->sig, is_static);
-    if (!r->dm && !c) r->hm = tl_jni_method(r->cls, r->name, r->sig, is_static);
+    r->missing = !c && class_missing(r->cls);
+    if (!r->dm && !c && !r->missing) r->hm = tl_jni_method(r->cls, r->name, r->sig, is_static);
     if (!r->dm && c && !r->hm) {
         /* an interpreted class whose framework superclass declares it */
         for (tl_jclass *k = r->cls; k; k = k->super) if (!dvm_class_of(k)) { r->hm = tl_jni_method(k, r->name, r->sig, is_static); break; }
@@ -1223,7 +1243,7 @@ static mref *resolve_mref(dvm_dex *d, uint32_t idx, bool is_static)
 
 /* ---- fields */
 
-typedef struct fref { dvm_field *df; tl_jfield *hf; tl_jclass *cls; char type; } fref;
+typedef struct fref { dvm_field *df; tl_jfield *hf; tl_jclass *cls; char type; bool missing; } fref;
 
 static fref *resolve_fref(dvm_dex *d, uint32_t idx, bool is_static)
 {
@@ -1236,7 +1256,8 @@ static fref *resolve_fref(dvm_dex *d, uint32_t idx, bool is_static)
     r->type = type[0] == '[' ? 'L' : type[0];
     dvm_class *c = dvm_class_of(cls);
     if (c) r->df = dvm_find_field(c, name, is_static);
-    if (!r->df) r->hf = tl_jni_field(cls, name, type, is_static);
+    r->missing = !c && class_missing(cls);
+    if (!r->df && !r->missing) r->hf = tl_jni_field(cls, name, type, is_static);
     r->cls = r->df ? r->df->cls->jc : cls;
     pthread_mutex_lock(&g_lock);
     if (!d->fcache[idx]) __atomic_store_n(&d->fcache[idx], (dvm_field *)r, __ATOMIC_RELEASE); else { free(r); r = (fref *)d->fcache[idx]; }
@@ -1350,6 +1371,7 @@ static bool invoke_regs(dvm_method *caller, int kind, uint32_t midx, int count, 
     dvm_dex *d = caller->cls->dex;
     bool is_static = kind == 3;
     mref *r = resolve_mref(d, midx, is_static);
+    if (r->missing) return throw_missing(r->cls);
     uint16_t areg[256];
     for (int i = 0; i < count && i < 256; i++) areg[i] = range ? (uint16_t)(first + i) : argregs[i];
     int ai = 0;
@@ -1640,6 +1662,7 @@ dispatch:;
     case 0x22: {                                                   /* new-instance */
         tl_jclass *c = resolve_type(dex, FETCH(1));
         dvm_class *dc = dvm_class_of(c);
+        if (!dc && class_missing(c)) { throw_missing(c); goto exception; }
         if (dc && !dvm_ensure_init(dc)) goto exception;
         jobj *o = dvm_new_object(c);
         if (dc) dvm_slots(o);
@@ -1795,6 +1818,7 @@ dispatch:;
     case 0x60: case 0x61: case 0x62: case 0x63: case 0x64: case 0x65: case 0x66:     /* sget* */
     case 0x67: case 0x68: case 0x69: case 0x6a: case 0x6b: case 0x6c: case 0x6d: {   /* sput* */
         fref *f = resolve_fref(dex, FETCH(1), true);
+        if (f->missing) { throw_missing(f->cls); goto exception; }
         bool put = (w & 0xFF) >= 0x67;
         jvalue *slot;
         if (f->df) {
