@@ -16,7 +16,7 @@ enum WhatsNew {
     static let version = "3.0.0"
     static let items: [Item] = [
         Item(symbol: "playstation.logo", title: "PS4 games",
-             detail: "Add an extracted PS4 game folder with the + button and play it from your library. Games that ask for a name now bring up the keyboard."),
+             detail: "Add a PS4 game with the + button, as a fake package (.pkg), a folder of them, or an extracted game folder, and play it from your library. Updates install beside their game. Games that ask for a name now bring up the keyboard."),
         Item(symbol: "square.stack.3d.up.fill", title: "More Android apps",
              detail: "Many more games and apps start in the Translation Layer, from protected apps to ones built with Go."),
         Item(symbol: "arrow.down.circle.fill", title: "Complete Store downloads",

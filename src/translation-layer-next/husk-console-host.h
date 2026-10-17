@@ -53,6 +53,11 @@ typedef int (*husk_console_text_requester)(const char *title, const char *initia
 void husk_console_set_text_requester(husk_console_text_requester fn);
 const char *husk_console_loaded_game(void);
 
+/* Extracts a package file (a PS4 .pkg) into dest_dir through the module at module_path, on the caller's thread; no game needs
+ * to be running. false with a message in err when the module refuses it (a retail package) or the extraction failed. */
+bool husk_console_install_package(const char *module_path, const char *package, const char *dest_dir,
+                                  void (*progress)(void *ctx, uint64_t done, uint64_t total), void *ctx, char *err, size_t errlen);
+
 #ifdef __cplusplus
 }
 #endif

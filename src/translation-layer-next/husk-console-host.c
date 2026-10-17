@@ -243,7 +243,7 @@ bool husk_console_launch(const husk_console_launch_args *a, char *err, size_t er
     if (!lib) { snprintf(err, errlen, "could not load %s: %s", a->module_path, dlerror()); return false; }
     husk_console_module_v1_fn entry = (husk_console_module_v1_fn)dlsym(lib, "husk_console_module_v1");
     const HuskConsoleModuleV1 *m = entry ? entry() : NULL;
-    if (!m || m->version != HUSK_CONSOLE_ABI_VERSION || m->struct_size < sizeof(HuskConsoleModuleV1)) {
+    if (!m || m->version != HUSK_CONSOLE_ABI_VERSION || m->struct_size < offsetof(HuskConsoleModuleV1, install_package)) {
         snprintf(err, errlen, "%s is not a console module this Husk understands", a->module_path);
         return false;
     }
@@ -297,4 +297,20 @@ void husk_console_stop(void) { if (g_module) g_module->stop(); }
 bool husk_console_take_pending_restart(char *path, int path_size, char *args, int args_size)
 {
     return g_module && g_module->take_pending_restart(path, path_size, args, args_size) != 0;
+}
+
+bool husk_console_install_package(const char *module_path, const char *package, const char *dest_dir,
+                                  void (*progress)(void *ctx, uint64_t done, uint64_t total), void *ctx, char *err, size_t errlen)
+{
+    /* The same handle launch gets later: dlopen counts references to one image. */
+    void *lib = dlopen(module_path, RTLD_NOW | RTLD_LOCAL);
+    if (!lib) { snprintf(err, errlen, "could not load %s: %s", module_path, dlerror()); return false; }
+    husk_console_module_v1_fn entry = (husk_console_module_v1_fn)dlsym(lib, "husk_console_module_v1");
+    const HuskConsoleModuleV1 *m = entry ? entry() : NULL;
+    if (!m || m->version != HUSK_CONSOLE_ABI_VERSION || m->struct_size < offsetof(HuskConsoleModuleV1, install_package) + sizeof(void *)
+        || !m->install_package) {
+        snprintf(err, errlen, "this build's console module cannot install packages");
+        return false;
+    }
+    return m->install_package(package, dest_dir, progress, ctx, err, (int)errlen) == 0;
 }
