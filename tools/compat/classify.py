@@ -10,7 +10,13 @@ from playsweep import summarise
 
 def signature(log):
     """The first thing in a log that explains a failure, reduced to something shared across apps."""
+    # Google Play's own protection (PairIP): a license check Husk can't pass, or its VM refusing to run. Not a Husk bug.
+    if 'com.pairip.licensecheck.LicenseActivity' in log or 'libpairipcore.so' in log and '=== CRASH' in log:
+        return 'protected: Play license check (PairIP)'
     for line in log.splitlines():
+        m = re.search(r'bionic: exit\((\d+)\) called from (\S+\.so)', line)
+        if m and m.group(1) != '0':
+            return 'exit(%s) by the app\'s %s' % (m.group(1), re.sub(r'[\w]+_', '', m.group(2)) if 0 else m.group(2))
         m = re.search(r'=== CRASH: signal (\d+)', line)
         if m:
             lib = re.search(r'pc\s+\S+\s+(\S+\.so)', log)
