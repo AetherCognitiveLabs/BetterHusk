@@ -8,7 +8,7 @@ harness of the engine the app would choose, and record how far each got.
 
 Writes <out>/<pkg>.log and <pkg>.png per app and <out>/summary.json; prints one line per app.
 """
-import argparse, glob, json, os, re, subprocess, sys
+import time, argparse, glob, json, os, re, subprocess, sys
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 BIN = '/Volumes/GTAV/husk2/bin'
@@ -41,13 +41,19 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('folder'); ap.add_argument('--out', default='/Volumes/GTAV/husk2/sweep'); ap.add_argument('--secs', type=int, default=45)
     ap.add_argument('--only', nargs='*')
+    ap.add_argument('--resume', action='store_true', help='skip apps that already have a log in --out, and add to its summary.json')
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     rows = []
+    summary = os.path.join(a.out, 'summary.json')
+    if a.resume and os.path.exists(summary): rows = json.load(open(summary))
     for d in sorted(glob.glob(os.path.join(a.folder, '*'))):
         if not os.path.isdir(d): continue
         pkg = os.path.basename(d)
         if a.only and pkg not in a.only: continue
+        if a.resume and os.path.exists(os.path.join(a.out, pkg + '.log')): continue
+        # another GPU job (a PS5 run) wants the GPU to itself: wait between apps while this file exists
+        while os.path.exists('/tmp/aw/pause'): time.sleep(10)
         if not glob.glob(os.path.join(d, '*.apk')): continue
         base, splits = apks(d)
         rep = json.loads(subprocess.run([SCAN, base] + splits, capture_output=True, text=True).stdout or '{}')
@@ -92,7 +98,8 @@ def main():
         if dm and dm.group(1).startswith('/Volumes/GTAV/husk2/tmp/'): subprocess.run(['chmod', '-R', 'u+w', dm.group(1)], capture_output=True); subprocess.run(['rm', '-rf', dm.group(1)])
         row = {'pkg': pkg, 'engine': engine or 'Java', 'harness': harness, 'rc': rc}
         row.update(summarise(text))
-        rows.append(row)
+        rows = [r for r in rows if r.get('pkg') != pkg] + [row]
+        json.dump(rows, open(summary, 'w'), indent=1)
         print('%-40s %-16s rc=%-7s frames=%-5s %s' % (pkg, (engine or 'Java')[:16], rc, row['frames'], row['java_error'] or row['crash'] or row['exit'] or ('finished' if row['finished'] else '')), flush=True)
     json.dump(rows, open(os.path.join(a.out, 'summary.json'), 'w'), indent=1)
 
