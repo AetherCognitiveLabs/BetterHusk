@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """classify.py <sweep dir> [--min-frames N] -- groups a playsweep run by what went wrong.
 
-Reads <sweep dir>/summary.json and each <pkg>.log, gives every app one verdict (works, opens, or the first fatal
+Reads each <pkg>.log in <sweep dir>, gives every app one verdict (works, opens, or the first fatal
 signature in its log), and prints the signatures most apps share first: the fixes worth making first.
 """
-import argparse, collections, json, os, re
+import argparse, collections, glob, json, os, re, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from playsweep import summarise
 
 def signature(log):
     """The first thing in a log that explains a failure, reduced to something shared across apps."""
@@ -33,17 +35,16 @@ def main():
     ap.add_argument('dir')
     ap.add_argument('--min-frames', type=int, default=30, help='frames in the run that count as working')
     a = ap.parse_args()
-    rows = json.load(open(os.path.join(a.dir, 'summary.json')))
+    # from the logs, not summary.json: a summary written after a drive drop lists only the apps swept since
     verdicts = {}
-    for r in rows:
-        pkg = r.get('pkg')
-        if not pkg or pkg.startswith('PlayDownload_'):
+    for path in sorted(glob.glob(os.path.join(a.dir, '*.log'))):
+        pkg = os.path.basename(path)[:-4]
+        if pkg.startswith('PlayDownload_'):
             continue
+        log = open(path, errors='replace').read()
+        r = summarise(log)
+        r['rc'] = 0 if not r.get('crash') else 139
         frames = r.get('frames') or 0
-        try:
-            log = open(os.path.join(a.dir, pkg + '.log'), errors='replace').read()
-        except OSError:
-            log = ''
         sig = signature(log)
         if frames >= a.min_frames and not (sig or '').startswith('crash'):
             verdicts[pkg] = 'works'
