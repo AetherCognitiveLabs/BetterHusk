@@ -39,7 +39,7 @@ struct SettingsTab: View {
                             }
                         } icon: {
                             RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .fill(Color.purple.gradient)
+                                .fill(Color.purple.huskGradient)
                                 .frame(width: 30, height: 30)
                                 .overlay {
                                     Image(systemName: "macwindow.on.rectangle")
@@ -64,7 +64,7 @@ struct SettingsTab: View {
                             }
                         } icon: {
                             RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .fill(Color.green.gradient)
+                                .fill(Color.green.huskGradient)
                                 .frame(width: 30, height: 30)
                                 .overlay {
                                     Image(systemName: "list.bullet.clipboard")
@@ -117,7 +117,7 @@ struct SettingsTab: View {
                 }
             } icon: {
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(tint.gradient)
+                    .fill(tint.huskGradient)
                     .frame(width: 30, height: 30)
                     .overlay {
                         Image(systemName: icon)
@@ -900,7 +900,7 @@ struct AppearanceSettings: View {
             .overlay {
                 if selected {
                     Image(systemName: "checkmark")
-                        .font(.caption.bold())
+                        .font(.caption.weight(.bold))
                         .foregroundStyle(color.isLight ? .black : .white)
                 }
             }

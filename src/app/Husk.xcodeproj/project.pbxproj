@@ -178,6 +178,7 @@
 		EADD1EF85B20E4623B582BBF /* husk-tl-jni-godot.c in Sources */ = {isa = PBXBuildFile; fileRef = 9C254830956F062F72F2EF2D /* husk-tl-jni-godot.c */; };
 		EBA260CEB1E1AD0D117CE0D5 /* husk-tl-unity.c in Sources */ = {isa = PBXBuildFile; fileRef = 2C2AAB4C0C1CD9F4CC69E4E8 /* husk-tl-unity.c */; };
 		EBC8548011E6708CF09F8386 /* TLAppSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EBCB1A1B865B14C76096042 /* TLAppSettings.swift */; };
+		A15C0115C0115C0115C01151 /* Compat15.swift in Sources */ = {isa = PBXBuildFile; fileRef = A15C0115C0115C0115C01152 /* Compat15.swift */; };
 		EBDBC46EF4E65E1DA2342F6B /* DiscoverTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48DA17A30AE793049F358717 /* DiscoverTab.swift */; };
 		EC8B11F723C188F32B5D9DCA /* libqemu-aarch64-softmmu.dylib in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 1B29247002CE43A3B9DEC633 /* libqemu-aarch64-softmmu.dylib */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		EDD9BF5E120ED2453CB023FA /* icon-default.png in Resources */ = {isa = PBXBuildFile; fileRef = 555112D0E3895EBE37A68FEB /* icon-default.png */; };
@@ -338,6 +339,7 @@
 		5D01B6F6F9B57E73E4B319F2 /* SaveBackup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SaveBackup.swift; sourceTree = "<group>"; };
 		5EB0AF32D5E40E753DDD85DA /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		5EBCB1A1B865B14C76096042 /* TLAppSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TLAppSettings.swift; sourceTree = "<group>"; };
+		A15C0115C0115C0115C01152 /* Compat15.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Compat15.swift; sourceTree = "<group>"; };
 		60B6DEB5B27C73D8E79DC5BA /* husk-tl-dvm-gles10ext.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "husk-tl-dvm-gles10ext.c"; sourceTree = "<group>"; };
 		6146DAE69D6D6462FB1FB771 /* HuskFilePicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HuskFilePicker.swift; sourceTree = "<group>"; };
 		619394B1069242D8750E7F33 /* Husk.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Husk.entitlements; sourceTree = "<group>"; };
@@ -568,6 +570,7 @@
 				319324C01D99446B862A6278 /* TechnicalDetails.swift */,
 				5EB0AF32D5E40E753DDD85DA /* Theme.swift */,
 				5EBCB1A1B865B14C76096042 /* TLAppSettings.swift */,
+				A15C0115C0115C0115C01152 /* Compat15.swift */,
 				66DDBC0AF7BE5742AA867515 /* TLScreenView.swift */,
 				211CC4F06EC722E5972D7F3B /* TLUnityView.swift */,
 				4BD6ABD20471B2CACF60ABD4 /* TranslationLayer.swift */,
@@ -1098,6 +1101,7 @@
 				6F6142A042D5107E3F35FBB4 /* Showcase.swift in Sources */,
 				14F4718B87230D502748C4D3 /* StoreView.swift in Sources */,
 				EBC8548011E6708CF09F8386 /* TLAppSettings.swift in Sources */,
+				A15C0115C0115C0115C01151 /* Compat15.swift in Sources */,
 				945DD86A7A210B74B2C7FF17 /* TLScreenView.swift in Sources */,
 				0BB57A13C0D48446CB4FBCD5 /* TLUnityView.swift in Sources */,
 				206FBBD23AB53FE21214C71A /* TechnicalDetails.swift in Sources */,
@@ -1442,7 +1446,7 @@
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				HUSK_BUNDLE_IDENTIFIER = com.husk.app;
 				HUSK_ENTITLEMENTS = Husk/Husk.entitlements;
-				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.5;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -1509,7 +1513,7 @@
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				HUSK_BUNDLE_IDENTIFIER = com.husk.app;
 				HUSK_ENTITLEMENTS = Husk/Husk.entitlements;
-				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.5;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;

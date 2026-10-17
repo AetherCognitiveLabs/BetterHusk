@@ -274,8 +274,12 @@ struct CompatReportSheet: View {
                     Text(subject.afterPlaying ? "How did \(subject.name) run?" : "How does \(subject.name) run?")
                 }
                 Section("Notes") {
-                    TextField("What worked, what didn\u{2019}t, how far you got", text: $notes, axis: .vertical)
-                        .lineLimit(3...8)
+                    if #available(iOS 16, *) {
+                        TextField("What worked, what didn\u{2019}t, how far you got", text: $notes, axis: .vertical)
+                            .lineLimit(3...8)
+                    } else {
+                        TextEditor(text: $notes).frame(minHeight: 80)
+                    }
                 }
                 Section {
                     TextField("Anonymous", text: $author)
@@ -312,7 +316,7 @@ struct CompatReportSheet: View {
                 if notes.isEmpty { notes = crash }
             }
         }
-        .presentationDetents([.medium, .large])
+        .huskDetents([.medium, .large])
     }
 
     private func send() {

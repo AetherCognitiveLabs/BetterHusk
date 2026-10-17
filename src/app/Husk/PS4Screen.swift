@@ -179,8 +179,8 @@ struct PS4PlayView: View {
             }
         }
         .statusBarHidden(true)
-        .persistentSystemOverlays(.hidden)
-        .defersSystemGestures(on: .all)
+        .huskHideSystemOverlays()
+        .huskDefersSystemGestures(on: .all)
         .onTapGesture(count: 3) { withAnimation { showBar.toggle() } }
         .onAppear {
             HuskOrientation.set(.landscape)
