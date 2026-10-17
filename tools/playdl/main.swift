@@ -54,6 +54,12 @@ func run() async -> Int32 {
         switch cmd {
         case "search":
             for a in try await PlayAPI.search(query: args.dropFirst().joined(separator: " "), session: s) { print("\(a.id)\t\(a.title)") }
+        case "purchase":
+            for pkg in args.dropFirst() {
+                guard let app = try await PlayAPI.details(packageName: pkg, session: s) else { print("\(pkg)\tno details"); continue }
+                do { print("\(pkg)\tvc \(app.versionCode)\tdelivery token \(try await PlayAPI.purchase(packageName: pkg, versionCode: app.versionCode, session: s) != nil)") }
+                catch { print("\(pkg)\tpurchase failed: \(error)") }
+            }
         case "browse":
             for a in try await PlayAPI.browse(session: s) { print("\(a.id)\t\(a.title)") }
         case "get":
