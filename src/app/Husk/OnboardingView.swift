@@ -33,7 +33,7 @@ enum Onboarding {
     }
 }
 
-/// First run: the startup animation, then setup in the manner of the iPhone's own -- language, region, time zone, the
+/// First run: setup in the manner of the iPhone's own -- language, region, time zone, the
 /// optional settings, JIT -- and an offer of a walkthrough. Shown once; people who set up an older Husk get What's New instead.
 struct OnboardingView: View {
     let onDone: () -> Void
@@ -42,7 +42,6 @@ struct OnboardingView: View {
         case welcome, language, region, timeZone, options, jit, ask, tour
     }
 
-    @State private var intro = true
     @State private var step: Step = .welcome
     @State private var forward = true
     @State private var tourPage = 0
@@ -64,12 +63,7 @@ struct OnboardingView: View {
     var body: some View {
         ZStack {
             Theme.backdrop
-            if intro {
-                StartupAnimation { withAnimation(.easeInOut(duration: 0.4)) { intro = false } }
-                    .transition(.opacity)
-            } else {
-                setup.transition(.opacity)
-            }
+            setup
         }
         .sheet(isPresented: $settingUpJIT) { JITSetupFlow() }
     }
@@ -469,88 +463,3 @@ struct OnboardingView: View {
 
 /// One row of a setup list: what is stored, and what is shown.
 struct SetupChoice: Identifiable { let id: String; let name: String }
-
-// MARK: - startup animation
-
-/// First run only: Husk and AetherPS4 side by side, a pulse running between them, then "Husk 3.0". Tap to skip.
-struct StartupAnimation: View {
-    let onDone: () -> Void
-    @State private var tilesIn = false
-    @State private var linked: CGFloat = 0
-    @State private var pulse = false
-    @State private var settled = false
-    @State private var titleIn = false
-    @State private var finished = false
-
-    var body: some View {
-        ZStack {
-            Theme.backdrop
-            VStack(spacing: 36) {
-                HStack(spacing: 0) {
-                    tile(label: "Husk") { HuskMark(size: 84) }
-                    ZStack {
-                        Capsule().fill(Color.secondary.opacity(0.2)).frame(height: 3)
-                        Capsule().fill(Theme.text)
-                            .frame(height: 3)
-                            .scaleEffect(x: linked, y: 1, anchor: .leading)
-                        Circle().fill(Theme.text)
-                            .frame(width: 10, height: 10)
-                            .scaleEffect(pulse ? 1.6 : 0.6)
-                            .opacity(linked > 0.99 ? (pulse ? 0.25 : 1) : 0)
-                    }
-                    .frame(width: settled ? 44 : 84)
-                    .padding(.bottom, 26)
-                    tile(label: "AetherPS4") {
-                        Image(systemName: "playstation.logo")
-                            .font(.system(size: 40, weight: .medium))
-                            .foregroundStyle(Theme.text)
-                            .frame(width: 84, height: 84)
-                            .background(Theme.surface, in: RoundedRectangle(cornerRadius: 84 * 0.26, style: .continuous))
-                            .overlay(RoundedRectangle(cornerRadius: 84 * 0.26, style: .continuous).stroke(Theme.hairline, lineWidth: 0.5))
-                    }
-                }
-                Text("Husk 3.0")
-                    .font(.system(size: 40, weight: .heavy, design: .rounded))
-                    .foregroundStyle(Theme.text)
-                    .opacity(titleIn ? 1 : 0)
-                    .offset(y: titleIn ? 0 : 12)
-            }
-        }
-        .contentShape(Rectangle())
-        .onTapGesture { done() }
-        .onAppear(perform: run)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Husk 3.0")
-        .accessibilityAddTraits(.isButton)
-    }
-
-    private func tile<Icon: View>(label: String, @ViewBuilder _ icon: () -> Icon) -> some View {
-        VStack(spacing: 10) {
-            icon()
-            Text(label).font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary)
-        }
-        .opacity(tilesIn ? 1 : 0)
-        .scaleEffect(tilesIn ? 1 : 0.85)
-    }
-
-    private func run() {
-        withAnimation(.easeOut(duration: 0.5)) { tilesIn = true }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-            withAnimation(.easeInOut(duration: 0.7)) { linked = 1 }
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.35) {
-            withAnimation(.easeInOut(duration: 0.5).repeatCount(3, autoreverses: true)) { pulse = true }
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-            withAnimation(.snappy(duration: 0.45)) { settled = true }
-            withAnimation(.easeOut(duration: 0.5).delay(0.15)) { titleIn = true }
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.4) { done() }
-    }
-
-    private func done() {
-        guard !finished else { return }
-        finished = true
-        onDone()
-    }
-}
