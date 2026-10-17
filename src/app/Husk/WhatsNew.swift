@@ -20,7 +20,7 @@ enum WhatsNew {
         Item(symbol: "playstation.logo", title: "PS4 games",
              detail: "Add a PS4 game with the + button, as a fake package (.pkg), a folder of them, or an extracted game folder, and play it from your library. Updates install beside their game, shaders are kept between launches, and games that ask for a name bring up the keyboard."),
         Item(symbol: "square.stack.3d.up.fill", title: "Hundreds more Android games",
-             detail: "Hundreds of newly working games on the compatibility list, Flutter games that showed a blank screen draw again, Godot 4 games run, and Python games get online."),
+             detail: "Hundreds of newly working games on the compatibility list, unofficial ports like Sonic Robo Blast 2, Ring Racers, NetHack and PokeWilds, Flutter games that showed a blank screen draw again, Godot 4 games run, and Python games get online."),
         Item(symbol: "arrow.down.circle.fill", title: "Complete Store downloads",
              detail: "Games that keep their data in expansion files get them with the download, and games split into many pieces load."),
         Item(symbol: "keyboard.fill", title: "Typing everywhere",
