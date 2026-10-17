@@ -232,6 +232,7 @@ struct ContentView: View {
         jit.enableAtLaunchIfAsked()
         try? guest.prepareFirmware()
         guest.refresh()
+        if AutoStart.readyAtLaunch == nil { AutoStart.readyAtLaunch = guest.state == .ready }
         HuskBridgeFS.shared.prepare()
 
         // What is installed is compared against the release by digest, not by
@@ -258,11 +259,26 @@ struct ContentView: View {
         // app. But the setup flow now asks the question outright, and someone
         // who answered yes has made the decision -- continuing to ignore it
         // just means every launch begins by pressing Start.
+        //
+        // Only when Android was already installed as Husk opened (#75, #128): evaluate() runs on every return to the foreground,
+        // so an image that finished downloading in this run would otherwise start the moment Husk came back -- with a debugger
+        // that iOS may have suspended hours into the download, whose unanswered trap ends Husk. And not again after a start
+        // that Husk did not survive, or every launch would end the same way.
         guard Onboarding.autoStart, !started, guest.state == .ready,
               !showOnboarding else { return }
+        guard AutoStart.readyAtLaunch == true else {
+            HuskLog.log("ui", "Android was installed in this run; not starting it on its own (press Start)")
+            return
+        }
+        guard !AutoStart.lastOneDied() else {
+            HuskLog.log("ui", "Husk closed while starting Android on launch last time; not starting it on its own this time")
+            return
+        }
         HuskLog.log("ui", "starting Android on launch")
         booting = true
+        AutoStart.begin()
         start()
+        if !started { AutoStart.end() }
     }
 
     /// Start the guest from the library, without leaving it.
@@ -661,4 +677,30 @@ struct ControlsSheet: View {
         .padding(.horizontal, 14).padding(.vertical, 12)
         .contentShape(Rectangle())
     }
+}
+
+/// Starting Android on launch, made safe to repeat: whether the image was there as Husk opened, and a marker that is only on
+/// disk while an automatic start is under way, so a start Husk did not survive is not tried again on the next launch.
+enum AutoStart {
+    /// Whether the guest was ready on the first look in this process; nil before it.
+    nonisolated(unsafe) static var readyAtLaunch: Bool?
+
+    private static var marker: String {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("husk-autostart-pending").path
+    }
+
+    /// True once per crash: the marker of an automatic start that never finished is read and removed.
+    static func lastOneDied() -> Bool {
+        guard FileManager.default.fileExists(atPath: marker) else { return false }
+        try? FileManager.default.removeItem(atPath: marker)
+        return true
+    }
+
+    /// Marks an automatic start; the mark goes once QEMU has been running for a minute.
+    static func begin() {
+        FileManager.default.createFile(atPath: marker, contents: Data())
+        DispatchQueue.main.asyncAfter(deadline: .now() + 60) { end() }
+    }
+
+    static func end() { try? FileManager.default.removeItem(atPath: marker) }
 }
