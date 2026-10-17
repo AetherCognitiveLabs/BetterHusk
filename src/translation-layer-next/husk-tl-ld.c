@@ -80,6 +80,11 @@ struct tl_lib {
 
     struct { uint64_t start, end; } code[16];   /* executable sections, as vaddrs: the only places instructions are patched */
     int ncode;
+    /* A Go library (Go's build info is in it): every non-executable page is reached through the writable view, read-only data
+     * too, because Go compares data addresses from both kinds of page ("methodValueCallFrameObjs is not in a module" when the
+     * writable view lies below the executable one). C code is left as it was: it can compute jump targets from tables in
+     * read-only data. */
+    bool go_data;
     int tls_id;                    /* 1-based number of this library's thread-local storage template, 0 if it has none */
     uint64_t *fde_start, *fde_end; size_t nfde;   /* the address ranges of the functions the unwind tables describe, sorted; none if the library has no tables */
     size_t n_x18_data;             /* words naming x18 that lie outside every function: constant tables inside .text, left alone */
@@ -90,6 +95,8 @@ struct tl_lib {
     uint32_t n_unresolved;
     bool system;                   /* from the runtime's own folders (an APEX's lib64), not the app: what it needs comes from there too */
 };
+static inline bool data_page(const tl_lib *L, size_t page);
+
 
 static struct {
     pthread_mutex_t lock;
@@ -952,7 +959,7 @@ static int x18_rewrite(tl_lib *L, uint32_t *site_rw, const uint8_t *pc, ptrdiff_
             int64_t imm = (int64_t)((((insn >> 5) & 0x7FFFFu) << 2) | ((insn >> 29) & 3u));
             if (imm & 0x100000) imm -= 0x200000;
             uintptr_t tp = page ? ((uintptr_t)pc & ~(uintptr_t)0xFFF) + (uintptr_t)(imm * 4096) : (uintptr_t)pc + (uintptr_t)imm;
-            if (tp >= (uintptr_t)L->rx && tp < (uintptr_t)L->rx + L->npages * PAGE && (L->pflags[(tp - (uintptr_t)L->rx) / PAGE] & TL_PAGE_W))
+            if (tp >= (uintptr_t)L->rx && tp < (uintptr_t)L->rx + L->npages * PAGE && data_page(L, (tp - (uintptr_t)L->rx) / PAGE))
                 tp += (uintptr_t)delta;
             value = tp;
         } else {
@@ -1147,7 +1154,7 @@ static void patch_image(tl_lib *L, size_t *n_tpidr, size_t *n_adrp, size_t *n_ad
                 uintptr_t tp = ((uintptr_t)pc & ~(uintptr_t)0xFFF) + (uintptr_t)(imm << 12);
                 if (tp >= (uintptr_t)L->rx && tp < (uintptr_t)L->rx + L->npages * PAGE) {
                     size_t tpg = (tp - (uintptr_t)L->rx) / PAGE;
-                    if ((L->pflags[tpg] & TL_PAGE_W) && !adrp_targets_code(L, w, i, nwords, insn & 0x1Fu, tp)) {
+                    if (data_page(L, tpg) && !adrp_targets_code(L, w, i, nwords, insn & 0x1Fu, tp)) {
                         w[i] = encode_adrp(insn & 0x1Fu, pc, (const void *)(tp + (uintptr_t)delta));
                         (*n_adrp)++;
                     }
@@ -1170,7 +1177,7 @@ static void patch_image(tl_lib *L, size_t *n_tpidr, size_t *n_adrp, size_t *n_ad
                 if (imm & 0x100000) imm -= 0x200000;
                 uintptr_t tp = (uintptr_t)pc + (uintptr_t)imm;
                 if (tp >= (uintptr_t)L->rx && tp < (uintptr_t)L->rx + L->npages * PAGE
-                    && (L->pflags[(tp - (uintptr_t)L->rx) / PAGE] & TL_PAGE_W)
+                    && data_page(L, (tp - (uintptr_t)L->rx) / PAGE)
                     && !in_code(L, (uint64_t)(tp - (uintptr_t)L->rx) + L->base_vaddr)) {
                     uint32_t branch;
                     if (adr_stub(L, pc, insn & 0x1Fu, (uint64_t)(tp + (uintptr_t)delta), &branch)) { w[i] = branch; (*n_adr)++; }
@@ -1273,11 +1280,16 @@ static inline uint64_t rd64(const uint8_t *p) { uint64_t v; memcpy(&v, p, 8); re
 /* An address inside the image as pointer data records it: writable view for data, executable view for code. A small library built
  * for 4 KiB pages has code and data on one 16 KiB page, which is then writable; a pointer into its executable sections (a Python
  * module's exec slot, a vtable entry) is still code and must be called through the executable view. */
+static inline bool data_page(const tl_lib *L, size_t page)
+{
+    return (L->pflags[page] & TL_PAGE_W) || (L->go_data && !(L->pflags[page] & TL_PAGE_X));
+}
+
 static uint64_t image_addr(const tl_lib *L, uint64_t vaddr)
 {
     uint64_t off = vaddr - L->base_vaddr;
     size_t page = (size_t)(off / PAGE);
-    if (page < L->npages && (L->pflags[page] & TL_PAGE_W)) {
+    if (page < L->npages && data_page(L, page)) {
         if (L->pflags[page] & TL_PAGE_X)
             for (int r = 0; r < L->ncode; r++)
                 if (vaddr >= L->code[r].start && vaddr < L->code[r].end) return (uint64_t)(uintptr_t)(L->rx + off);
@@ -1792,6 +1804,9 @@ static tl_lib *map_library(const char *name, uint8_t *file, size_t flen)
         }
     }
 
+    /* Go's build info marks a Go library (see tl_lib.go_data) */
+    static const char go_magic[] = "\xff Go buildinf:";
+    bool go = memmem(file, flen, go_magic, sizeof(go_magic) - 1) != NULL;
     /* Stub pages after the image: one literal slot, a few probes, a stub for every raw
      * system call, and one for every instruction that names the reserved register x18. */
     size_t stub_bytes = 16 + 8192;
@@ -1805,7 +1820,7 @@ static tl_lib *map_library(const char *name, uint8_t *file, size_t flen)
                 int64_t imm = (int64_t)((((v >> 5) & 0x7FFFFu) << 2) | ((v >> 29) & 3u));
                 if (imm & 0x100000) imm -= 0x200000;
                 int64_t tv = (int64_t)(code[r].vaddr + k * 4) + imm - (int64_t)base_vaddr;
-                if (tv >= 0 && (size_t)tv < npages * PAGE && (flags[(size_t)tv / PAGE] & TL_PAGE_W)) stub_bytes += 32;
+                if (tv >= 0 && (size_t)tv < npages * PAGE && ((flags[(size_t)tv / PAGE] & TL_PAGE_W) || (go && !(flags[(size_t)tv / PAGE] & TL_PAGE_X)))) stub_bytes += 32;
             }
             else if (((v & 31u) == 18 || ((v >> 5) & 31u) == 18 || ((v >> 10) & 31u) == 18 || ((v >> 16) & 31u) == 18) && a64_uses_gpr(v, 18, NULL))
                 stub_bytes += X18_STUB_BYTES;
@@ -1839,6 +1854,8 @@ static tl_lib *map_library(const char *name, uint8_t *file, size_t flen)
     tl_lib *L = calloc(1, sizeof(*L));
     snprintf(L->name, sizeof(L->name), "%s", name);
     L->rx = rx; L->rw = rw; L->base_vaddr = base_vaddr; L->npages = npages; L->pflags = flags;
+    L->go_data = go;
+    if (go) tl_log_line("ld: %s is a Go library: its read-only data is reached through the writable view too", name);
     L->phdr = phs; L->phnum = eh->e_phnum;
     load_unwind_ranges(L, file, flen, phs, eh->e_phnum);
     if (has_tls) {
@@ -2038,6 +2055,7 @@ static bool init_locked(tl_lib *L)
         size_t n = L->init_arraysz / 8;
         static int trace = -1;
         if (trace < 0) trace = getenv("TL_INIT_TRACE") ? 1 : 0;   /* each constructor before and after it runs */
+        if (trace) tl_log_line("ld: %s: rx %p rw %p (%zu pages)", L->name, (void *)L->rx, (void *)L->rw, L->npages);
         for (size_t i = 0; i < n; i++) {
             uint64_t f = fns[i];
             if (!f || f == ~0ull) continue;
