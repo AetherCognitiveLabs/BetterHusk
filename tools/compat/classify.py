@@ -36,6 +36,21 @@ def signature(log):
             return 'missing class %s' % '/'.join(m.group(1).split('/')[:3])
     return None
 
+def drew_something(sweep_dir, pkg):
+    """Whether the run's screenshot shows a screen rather than one flat colour: a menu-driven game (a crossword, a board game)
+    draws a few frames and waits, so a frame count alone undercounts it. A flat 1748x804 PNG is under 25 KB; a web app's real
+    content is in its .web.png."""
+    sizes = [os.path.getsize(os.path.join(sweep_dir, pkg + ext)) for ext in ('.png', '.web.png') if os.path.exists(os.path.join(sweep_dir, pkg + ext))]
+    return bool(sizes) and max(sizes) > 25000
+
+def verdict(log, frames, sweep_dir, pkg, min_frames=30):
+    sig = signature(log)
+    if sig and not sig.startswith('missing class'):
+        return sig
+    if frames >= min_frames or (frames > 0 and drew_something(sweep_dir, pkg)):
+        return 'works'
+    return sig or ('opens (%d frames)' % frames if frames else 'no frames, no error')
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('dir')
@@ -50,14 +65,8 @@ def main():
         log = open(path, errors='replace').read()
         r = summarise(log)
         r['rc'] = 0 if not r.get('crash') else 139
-        frames = r.get('frames') or 0
-        sig = signature(log)
-        if frames >= a.min_frames and not (sig or '').startswith('crash'):
-            verdicts[pkg] = 'works'
-        elif frames > 0 and not sig:
-            verdicts[pkg] = 'opens (few frames)'
-        else:
-            verdicts[pkg] = sig or ('no frames, no error' if r.get('rc') == 0 else 'exit %s, no signature' % r.get('rc'))
+        v = verdict(log, r.get('frames') or 0, a.dir, pkg, a.min_frames)
+        verdicts[pkg] = 'opens (few frames)' if v.startswith('opens') else v
     groups = collections.defaultdict(list)
     for pkg, v in verdicts.items():
         groups[v].append(pkg)
