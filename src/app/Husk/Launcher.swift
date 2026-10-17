@@ -185,7 +185,6 @@ struct HomeView: View {
                             JITTile()
                             DownloadsTile()
                         }
-                        AndroidTile()
                     }
                     if let error = jit.error, !Launcher.jitOn {
                         Text(error).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
@@ -601,7 +600,8 @@ struct LibraryScreen: View {
                         .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
                     let games = items.filter(\.isGame)
                     // Android, as an app of its own: pinned first, and found by search like anything else.
-                    let apps = (matches(query, "Android") ? [LibraryItem.android] : []) + items.filter { !$0.isGame }
+                    // Android itself is in Settings now (experimental); the apps installed in it still show here
+                    let apps = items.filter { !$0.isGame }
 
                     if router.libraryFilter != .apps {
                         section("Games", games, empty: query.isEmpty ? "Add a game with the + button." : nil)

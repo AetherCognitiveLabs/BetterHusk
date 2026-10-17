@@ -84,10 +84,16 @@ struct SettingsTab: View {
                        + "with your device, iOS version, Husk build and JIT method.")
                 }
 
-                Section("Emulator") {
+                Section {
+                    row(AndroidSystemPage(), "apps.iphone", AndroidMark.green, "Android", "Experimental: full Android in an emulator")
                     row(InputSettings(), "hand.tap.fill", .indigo, "Input", "Screen, touch, keyboard")
                     row(NetworkSettings(), "globe", .green, "Network", "Internet and saved sessions")
                     row(SavedMachineSettings(), "externaldrive.fill", .teal, "Saved Machine", "Snapshots and automatic saving")
+                } header: {
+                    Text("Android Emulator")
+                } footer: {
+                    Text("Full Android runs in an emulator, for the apps the Translation Layer can't run yet. It is experimental: slow, "
+                       + "and it can freeze or crash.")
                 }
             }
             .listStyle(.insetGrouped)

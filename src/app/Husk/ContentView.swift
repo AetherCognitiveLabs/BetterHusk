@@ -14,6 +14,8 @@ struct ContentView: View {
     @ObservedObject private var host = AndroidHost.shared
 
     @State private var started = false
+    /// Asking before full Android starts: it is the experimental part of Husk
+    @State private var confirmAndroid = false
     @State private var showLogs = false
     /// True while the guest's own screen is being shown instead of the library.
     /// Starts false: the tab UI is the home screen, and the guest -- including
@@ -132,6 +134,13 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $showLogs) { LogView() }
+        .alert("Start Android?", isPresented: $confirmAndroid) {
+            Button("Start") { startFromLibrary() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Full Android emulation is experimental. It is slow, takes minutes to start, and can freeze or crash Husk. "
+               + "Games and apps run much better in the Translation Layer.")
+        }
         // A game that ended Husk last time: say so, with its report.
         .sheet(item: Binding(get: { showOnboarding ? nil : crash.pending }, set: { crash.pending = $0 }),
                onDismiss: { if WhatsNew.due { showWhatsNew = true } }) { r in
@@ -205,7 +214,7 @@ struct ContentView: View {
             if crash.pending == nil, !massTest.active { router.resumeSwitch() }
             if crash.pending == nil, WhatsNew.due { showWhatsNew = true }
             router.openGuest = { showGuestScreen = true }
-            router.startAndroid = { startFromLibrary() }
+            router.startAndroid = { confirmAndroid = true }
             evaluate()
         }
         // The two-parameter onChange is iOS 17; this single-parameter form is
