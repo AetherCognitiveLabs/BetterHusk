@@ -519,13 +519,17 @@ public class View implements Drawable.Callback, KeyEvent.Callback {
     public boolean isDrawingCacheEnabled() { return false; }
     public void buildDrawingCache() {}
     public void buildDrawingCache(boolean a) {}
-    public void destroyDrawingCache() {}
+    private Bitmap mDrawingCache;
+    public void destroyDrawingCache() { if (mDrawingCache != null) mDrawingCache.recycle(); mDrawingCache = null; }
     public void setDrawingCacheQuality(int q) {}
     public void setDrawingCacheBackgroundColor(int c) {}
     public Bitmap getDrawingCache() { return getDrawingCache(false); }
     public Bitmap getDrawingCache(boolean a) {
         if (getWidth() <= 0 || getHeight() <= 0) return null;
-        Bitmap b = Bitmap.createBitmap(getWidth(), getHeight(), Bitmap.Config.ARGB_8888);
+        // one cache per view, as Android keeps it, drawn again on each call
+        Bitmap b = mDrawingCache;
+        if (b == null || b.isRecycled() || b.getWidth() != getWidth() || b.getHeight() != getHeight()) { destroyDrawingCache(); b = mDrawingCache = Bitmap.createBitmap(getWidth(), getHeight(), Bitmap.Config.ARGB_8888); }
+        else b.eraseColor(0);
         Canvas c = new Canvas(b); draw(c); c.huskRelease();
         return b;
     }
