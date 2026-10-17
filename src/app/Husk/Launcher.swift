@@ -165,7 +165,7 @@ struct HomeView: View {
                         }
                         Text("Husk")
                             .font(.system(size: 28, weight: .heavy, design: .rounded))
-                        if holiday { ChristmasTree(size: 30).padding(.leading, 2) }
+                        if holiday && Holiday.inSeason { ChristmasTree(size: 30).padding(.leading, 2) }
                         Spacer()
                         HeaderButton(systemImage: "plus") { router.addSomething() }
                             .accessibilityLabel("Add a Game or App")
@@ -202,6 +202,7 @@ struct HomeView: View {
                                 HuskLink(value: item.route) { LibrarySquare(item: item) }
                                     .buttonStyle(CardButtonStyle())
                                     .accessibilityLabel(item.title)
+                                    .libraryItemMenu(item) { router.home.append($0) }
                             }
                         }
                     }
@@ -642,6 +643,7 @@ struct LibraryScreen: View {
                                     LauncherTile(title: item.title, iconPath: item.iconPath, item: item, caption: caption(item), size: 60)
                                 }
                                 .buttonStyle(CardButtonStyle())
+                                .libraryItemMenu(item) { router.library.append($0) }
                             }
                         }
                     }
@@ -707,6 +709,58 @@ struct LauncherTile: View {
         }
         .frame(maxWidth: .infinity)
         .contentShape(Rectangle())
+    }
+}
+
+/// Long-press on a library tile: play or open it, its settings, and removing it -- what iOS puts on a home screen icon.
+private struct LibraryItemMenu: ViewModifier {
+    let item: LibraryItem
+    let push: (LibraryRoute) -> Void
+    @State private var confirmRemove = false
+
+    func body(content: Content) -> some View {
+        content
+            .contextMenu {
+                Button {
+                    if case .game(let g) = item { Router.shared.autoPlay = g.id }
+                    push(item.route)
+                } label: {
+                    Label(item.isGame ? "Play" : "Open", systemImage: item.isGame ? "play.fill" : "arrow.up.forward.app")
+                }
+                if case .game(let g) = item {
+                    Button { push(.gameSettings(g.id)) } label: { Label("Settings", systemImage: "slider.horizontal.3") }
+                    Divider()
+                    Button(role: .destructive) { confirmRemove = true } label: { Label("Remove", systemImage: "trash") }
+                } else if case .app(let p) = item, AndroidHost.shared.isReady {
+                    Divider()
+                    Button(role: .destructive) { confirmRemove = true } label: { Label("Uninstall", systemImage: "trash") }
+                        .accessibilityHint("Removes \(p.label) from Android")
+                }
+            }
+            .confirmationDialog(removeTitle, isPresented: $confirmRemove, titleVisibility: .visible) {
+                Button(removeVerb, role: .destructive) {
+                    switch item {
+                    case .game(let g): TranslationLayerStore.shared.remove(g)
+                    case .app(let p): AndroidHost.shared.uninstall(p.name)
+                    default: break
+                    }
+                }
+            } message: {
+                Text(removeMessage)
+            }
+    }
+
+    private var removeVerb: String { if case .app = item { return "Uninstall" }; return "Remove" }
+    private var removeTitle: String { "\(removeVerb) \(item.title)?" }
+    private var removeMessage: String {
+        if case .app = item { return "It is uninstalled from Android, with its data." }
+        return "Its files and saved progress are deleted from Husk."
+    }
+}
+
+extension View {
+    func libraryItemMenu(_ item: LibraryItem, push: @escaping (LibraryRoute) -> Void) -> some View {
+        modifier(LibraryItemMenu(item: item, push: push))
     }
 }
 

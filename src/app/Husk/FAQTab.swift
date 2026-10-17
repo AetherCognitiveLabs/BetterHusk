@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 import SwiftUI
 
-/// The FAQ tab: common problems and what to do about them, so a user stuck on JIT or on an app
-/// that will not open has an answer without leaving Husk.
+/// Help: common problems and what to do about them, so a user stuck on JIT or on an app that will not open has an answer
+/// without leaving Husk. A page in Settings (it was a tab of its own; four tabs read simpler than five).
 struct FAQTab: View {
     @State private var query = ""
 
@@ -16,7 +16,6 @@ struct FAQTab: View {
     }
 
     var body: some View {
-        NavigationStack {
             List {
                 ForEach(sections) { s in
                     Section {
@@ -30,9 +29,8 @@ struct FAQTab: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            .navigationTitle("FAQ")
+            .navigationTitle("Help")
             .searchable(text: $query, prompt: "Search problems")
-        }
     }
 }
 

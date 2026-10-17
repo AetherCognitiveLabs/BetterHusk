@@ -61,10 +61,6 @@ struct ContentView: View {
                     .tabItem { Label("Store", systemImage: "cart.fill") }
                     .tag(HuskTab.store)
 
-                FAQTab()
-                    .tabItem { Label("FAQ", systemImage: "questionmark.circle.fill") }
-                    .tag(HuskTab.help)
-
                 SettingsTab()
                     .tabItem { Label("Settings", systemImage: "gearshape.fill") }
                     .tag(HuskTab.settings)
@@ -72,7 +68,7 @@ struct ContentView: View {
             .opacity(showGuestScreen && started && runner.isRunning ? 0 : 1)
 
             // Christmas: snow over the tabs (never over Android or an app's window, which come after it)
-            if holiday && !(showGuestScreen && started && runner.isRunning) {
+            if holiday && Holiday.inSeason && !(showGuestScreen && started && runner.isRunning) {
                 Snowfall().ignoresSafeArea()
             }
 

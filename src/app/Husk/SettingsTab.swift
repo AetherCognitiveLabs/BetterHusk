@@ -28,6 +28,7 @@ struct SettingsTab: View {
                     row(PerformanceSettings(), "speedometer", .orange, "Performance", "Renderer, sound")
                     row(AppearanceSettings(), "paintbrush.fill", .pink, "Appearance", "Light or dark, accent colour, app icon")
                     row(FontSettings(), "textformat", .indigo, "Fonts", "Chinese, Japanese and Korean text")
+                    row(FAQTab(), "questionmark.circle.fill", .teal, "Help", "Answers to common problems")
                 }
 
                 Section {
@@ -828,7 +829,8 @@ struct AppearanceSettings: View {
                 Text("Theme")
             } footer: {
                 Text("System follows the phone: light by day, dark by night. The guest's own "
-                   + "screen stays dark either way — it is a picture of another phone.")
+                   + "screen stays dark either way — it is a picture of another phone. "
+                   + "Holiday decorations appear from December to early January.")
             }
 
             Section {
