@@ -1526,7 +1526,7 @@ static long linux_syscall_impl(long a0, long a1, long a2, long a3, long a4, long
     case 233: return 0;                                                                 /* madvise */
     case 122: case 123: return 0;                                                       /* sched_setaffinity / getaffinity */
     case 167: return 0;                                                                 /* prctl */
-    case 160: return 0;                                                                 /* uname */
+    case 160: { int tl_bionic_uname(void *); return tl_bionic_uname((void *)a0); }    /* uname: filled in, as the libc call is */
     case 47: {                                                                          /* fallocate: growing the file (Superpack maps it at its full size, then writes) */
         if (a1) return -95;
         struct stat st;

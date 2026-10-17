@@ -550,6 +550,9 @@ static int bionic_uname(void *buf)
     return 0;
 }
 
+/* the same answer for uname by raw system call (fingerprinting libraries avoid libc: FingerprintJS's libfp in Airbnb) */
+int tl_bionic_uname(void *buf) { return bionic_uname(buf); }
+
 static int bionic_gethostname(char *name, size_t len) { snprintf(name, len, "localhost"); return 0; }
 
 static int bionic_gettid(void)
