@@ -9,7 +9,7 @@ import SwiftUI
 /// `Onboarding.version` is what re-opens it.
 enum Onboarding {
     /// Raise this when a question is added that existing installs must answer.
-    static let version = 1
+    static let version = 2   // 3.0: everyone goes through the new setup once
 
     private static let key = "husk.onboardingVersion"
 
