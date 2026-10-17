@@ -29,6 +29,14 @@ const char *husk_native_loaded_apk(void) __attribute__((weak_import));
 
 static const HuskConsoleModuleV1 *g_module;
 static HuskHostV1 g_host;
+
+/* The app's keyboard for a game's text dialog (husk_console_set_text_requester); none: the module answers for the player. */
+static husk_console_text_requester g_text_requester;
+void husk_console_set_text_requester(husk_console_text_requester fn) { g_text_requester = fn; }
+static int host_request_text(const char *title, const char *initial, uint32_t max_chars, void (*done)(void *, const char *), void *ctx)
+{
+    return g_text_requester ? g_text_requester(title, initial, max_chars, done, ctx) : -1;
+}
 static int g_log_fd = -1;
 static pthread_mutex_t g_log_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct timespec g_t0;
@@ -260,6 +268,7 @@ bool husk_console_launch(const husk_console_launch_args *a, char *err, size_t er
     g_host.footprint = host_footprint;
     g_host.log_line = host_log_line;
     g_host.vulkan_library_path = a->vulkan_path;
+    g_host.request_text = host_request_text;
 
     host_log("console: %s module, JIT region %zu MiB (ceiling %zu MiB), %zu MiB available", m->platform,
              husk_jit_arena_held_bytes() >> 20, husk_jit_arena_ceiling_bytes() >> 20, (size_t)(host_available_memory() >> 20));

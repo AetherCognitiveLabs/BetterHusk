@@ -9,7 +9,7 @@
  * Environment: PS4_PAD_SCRIPT="T:buttons:D,..." holds buttons (cross circle square triangle up down left right l1 r1 l2 r2
  * l3 r3 options share touchpad, joined with '+') from T to T+D seconds; PS4_USER_DIR (default: a folder in $TMPDIR);
  * PS4_MVK (default /opt/homebrew/lib/libMoltenVK.dylib); TL_XMEM_MIB sizes the JIT region (default 192);
- * HUSK_MEM_LIMIT_MB reports a phone's available memory to the module; AETHER_SHOT_EVERY=<s> saves game screenshots into
+ * PS4_TEXT answers the game's keyboard dialog; HUSK_MEM_LIMIT_MB reports a phone's available memory to the module; AETHER_SHOT_EVERY=<s> saves game screenshots into
  * the user dir's screenshots folder. PS4_PAD_FIFO=<path> makes a FIFO there and takes live presses from it, one per line,
  * "buttons seconds" (e.g. "cross 0.5", "down+cross 0.3"), to drive a game while watching its screenshots.
  */
@@ -28,6 +28,22 @@
 #include "husk-console-host.h"
 #include "husk-jit-arena.h"
 #include "husk-tl-gamepad.h"
+
+/* The game's keyboard dialog: PS4_TEXT=<text> answers it a second later, as a player would; PS4_TEXT unset leaves the module
+ * to answer for the player (an empty PS4_TEXT cancels). */
+static int test_text_requester(const char *title, const char *initial, uint32_t max_chars, void (*done)(void *, const char *), void *ctx)
+{
+    const char *answer = getenv("PS4_TEXT");
+    if (!answer) return -1;
+    fprintf(stderr, "ps4-test: the game asked for text (title \"%s\", initial \"%s\", up to %u); answering \"%s\"\n",
+            title ? title : "", initial ? initial : "", max_chars, answer);
+    char *copy = strdup(answer);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_global_queue(0, 0), ^{
+        done(ctx, copy[0] ? copy : NULL);
+        free(copy);
+    });
+    return 0;
+}
 
 void tl_log_line(const char *fmt, ...)
 {
@@ -92,6 +108,7 @@ int main(int argc, char **argv)
             .vulkan_path = mvk, .metal_layer = (__bridge void *)layer, .width_px = w, .height_px = h, .scale = 1.0f, .region_bytes = region,
         };
         char err[512] = "";
+        husk_console_set_text_requester(test_text_requester);
         if (!husk_console_launch(&a, err, sizeof(err))) { fprintf(stderr, "ps4-test: launch failed: %s\n", err); return 1; }
         fprintf(stderr, "ps4-test: launched; log %s\n", log.UTF8String);
 
