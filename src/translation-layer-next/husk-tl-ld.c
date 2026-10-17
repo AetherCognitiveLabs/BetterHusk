@@ -88,6 +88,7 @@ struct tl_lib {
     size_t n_x18, n_x18_failed;    /* sites rewritten for the reserved register, and sites that could not be */
     int state;                     /* 0 mapped, 1 relocating, 2 relocated, 3 initialising, 4 initialised */
     uint32_t n_unresolved;
+    bool system;                   /* from the runtime's own folders (an APEX's lib64), not the app: what it needs comes from there too */
 };
 
 static struct {
@@ -327,16 +328,26 @@ static uint32_t dynsym_bound(const tl_lib *L, uint32_t hashed)
 const char *tl_path_resolve(const char *path, char *buf, size_t n);
 static const char *base_name(const char *path) { const char *b = strrchr(path, '/'); return b ? b + 1 : path; }
 
+/*
+ * Two sets of libraries, as Android's linker namespaces keep them: the app's, and the runtime's own (libcore's and Conscrypt's natives
+ * and what they need). A name can be in both: WeChat carries an OpenSSL libcrypto.so, and Conscrypt's libjavacrypto.so needs the
+ * BoringSSL one beside it. Which set a lookup searches: */
+enum { NS_APP, NS_SYSTEM, NS_ANY };   /* NS_ANY: the app's first, then the runtime's */
+
 /* By the name it was asked for, its soname, or -- for one loaded from a path (a mod's library) -- its file name. */
-static tl_lib *find_loaded(const char *name)
+static tl_lib *find_loaded_ns(const char *name, int ns)
 {
     const char *b = base_name(name);
+    tl_lib *sys = NULL;
     for (int i = 0; i < G.nlibs; i++) {
-        if (!strcmp(G.libs[i]->name, name) || !strcmp(G.libs[i]->soname, name)) return G.libs[i];
-        if (!strcmp(base_name(G.libs[i]->name), b) || !strcmp(G.libs[i]->soname, b)) return G.libs[i];
+        tl_lib *l = G.libs[i];
+        if (strcmp(l->name, name) && strcmp(l->soname, name) && strcmp(base_name(l->name), b) && strcmp(l->soname, b)) continue;
+        if (!l->system) { if (ns != NS_SYSTEM) return l; }
+        else if (!sys) sys = l;
     }
-    return NULL;
+    return ns == NS_APP ? NULL : sys;
 }
+static tl_lib *find_loaded(const char *name) { return find_loaded_ns(name, NS_ANY); }
 
 /* A library that is a file of its own rather than an APK entry: Geode, and the mods it loads from where it unpacked them. */
 static bool fetch_from_file(const char *path, uint8_t **out, size_t *len)
@@ -370,7 +381,7 @@ static void build_scope(tl_lib *L)
         tl_lib *cur = queue[qh++];
         for (int i = 0; i < cur->nneeded; i++) {
             const char *n = (const char *)at(cur, cur->strtab) + cur->needed[i];
-            tl_lib *d = find_loaded(n);
+            tl_lib *d = find_loaded_ns(n, cur->system ? NS_SYSTEM : NS_ANY);
             if (!d || d == L) continue;
             bool seen = false;
             for (int k = 0; k < L->ndeps; k++) if (L->deps[k] == d) seen = true;
@@ -1887,35 +1898,66 @@ static bool relocate(tl_lib *L)
     return true;
 }
 
-/* Folders a library named only by its file name is also looked for in (the Java runtime's: the ART APEX's lib64). */
+/* Folders a library named only by its file name is also looked for in: the Java runtime's (the APEXes' lib64), and folders the app
+ * unpacked libraries into. */
 static char *g_search[32];
+static bool g_search_app[32];
 static int g_nsearch;
-void tl_ld_add_search_dir(const char *dir)
+static void add_search_dir(const char *dir, bool app)
 {
     for (int i = 0; i < g_nsearch; i++) if (!strcmp(g_search[i], dir)) return;
-    if (g_nsearch < 32) g_search[g_nsearch++] = strdup(dir);
+    if (g_nsearch < 32) { g_search_app[g_nsearch] = app; g_search[g_nsearch++] = strdup(dir); }
+}
+void tl_ld_add_search_dir(const char *dir) { add_search_dir(dir, false); }
+
+static bool fetch_from_dirs(const char *name, bool app, uint8_t **file, size_t *flen)
+{
+    for (int d = 0; d < g_nsearch; d++) {
+        if (g_search_app[d] != app) continue;
+        char path[1024];
+        snprintf(path, sizeof(path), "%s/%s", g_search[d], base_name(name));
+        if (fetch_from_file(path, file, flen)) return true;
+    }
+    return false;
 }
 
-static tl_lib *load_locked(const char *name, int depth)
+/* A path inside one of the runtime's folders: libcore's Runtime.loadLibrary0 hands nativeLoad the full path of the APEX's copy. */
+static bool in_system_dir(const char *path)
 {
-    tl_lib *L = find_loaded(name);
+    char real[1024];
+    const char *paths[2] = { path, tl_path_resolve(path, real, sizeof(real)) };
+    for (int d = 0; d < g_nsearch; d++) {
+        if (g_search_app[d]) continue;
+        size_t n = strlen(g_search[d]);
+        for (int k = 0; k < 2; k++) if (paths[k] && !strncmp(paths[k], g_search[d], n) && paths[k][n] == '/') return true;
+    }
+    return false;
+}
+
+static tl_lib *load_locked(const char *name, int depth, bool system)
+{
+    if (!system && strchr(name, '/') && in_system_dir(name)) system = true;
+    tl_lib *L = find_loaded_ns(name, system ? NS_SYSTEM : NS_APP);
     if (L) return L;
     if (tl_bionic_is_system_lib(name)) return NULL;
     if (depth > 32) { tl_log_line("ld: dependency chain too deep at %s", name); return NULL; }
 
     uint8_t *file; size_t flen;
-    bool got = fetch_from_apks(base_name(name), &file, &flen);
-    if (!got && fetch_from_file(name, &file, &flen)) {
-        got = true;
-        /* a library the app unpacked itself (SoLoader's Superpack, an update): what it needs is next to it */
-        char dir[1024]; snprintf(dir, sizeof(dir), "%s", name);
-        char *sl = strrchr(dir, '/'); if (sl && sl != dir) { *sl = 0; tl_ld_add_search_dir(dir); }
+    bool got = false;
+    if (!system) {
+        /* the app's: its APKs, a path it names, the folders it unpacked libraries into; then the runtime's */
+        got = fetch_from_apks(base_name(name), &file, &flen);
+        if (!got && fetch_from_file(name, &file, &flen)) {
+            got = true;
+            /* a library the app unpacked itself (SoLoader's Superpack, an update): what it needs is next to it */
+            char dir[1024]; snprintf(dir, sizeof(dir), "%s", name);
+            char *sl = strrchr(dir, '/'); if (sl && sl != dir) { *sl = 0; add_search_dir(dir, true); }
+        }
+        if (!got) got = fetch_from_dirs(name, true, &file, &flen);
+        if (!got && (L = find_loaded_ns(name, NS_SYSTEM))) return L;
     }
-    for (int d = 0; !got && d < g_nsearch; d++) {
-        char path[1024];
-        snprintf(path, sizeof(path), "%s/%s", g_search[d], base_name(name));
-        got = fetch_from_file(path, &file, &flen);
-    }
+    if (!got && system && strchr(name, '/')) got = fetch_from_file(name, &file, &flen);
+    if (!got) system = got = fetch_from_dirs(name, false, &file, &flen);
     if (!got) {
         tl_log_line("ld: %s is not in the APK and is not a system library", name);
         return NULL;
@@ -1929,12 +1971,13 @@ static tl_lib *load_locked(const char *name, int depth)
     L = map_library(name, file, flen);
     free(file);
     if (!L) return NULL;
+    L->system = system;
 
     /* Dependencies first, so everything this library binds against exists. */
     for (int i = 0; i < L->nneeded; i++) {
         const char *dn = (const char *)at(L, L->strtab) + L->needed[i];
-        if (find_loaded(dn) || tl_bionic_is_system_lib(dn)) continue;
-        if (!load_locked(dn, depth + 1)) tl_log_line("ld: %s: needed library %s could not be loaded", name, dn);
+        if (tl_bionic_is_system_lib(dn)) continue;
+        if (!load_locked(dn, depth + 1, L->system)) tl_log_line("ld: %s: needed library %s could not be loaded", name, dn);
     }
     build_scope(L);
     if (!relocate(L)) return NULL;
@@ -1944,7 +1987,7 @@ static tl_lib *load_locked(const char *name, int depth)
 tl_lib *tl_ld_load(const char *name)
 {
     pthread_mutex_lock(&g_big);
-    tl_lib *L = load_locked(name, 0);
+    tl_lib *L = load_locked(name, 0, false);
     pthread_mutex_unlock(&g_big);
     return L;
 }
