@@ -328,7 +328,7 @@ private final class PackageProgress: @unchecked Sendable {
     func update(_ done: UInt64, _ total: UInt64) {
         let pct = total > 0 ? Int(min(done, total) * 100 / total) : 0
         lock.lock()
-        guard pct != shown else { lock.unlock(); return }
+        guard pct > shown else { lock.unlock(); return }
         shown = pct
         let text = "\(label)… \(pct)%"
         lock.unlock()
