@@ -26,7 +26,7 @@ def apks(d):
 def summarise(text):
     m = re.search(r"main thread ended with (.*)", text)
     crash = re.search(r'=== CRASH: ([^\n]*)\n\s*pc\s+\S+\s+(\S+)\s*(\S*)', text)
-    frames = re.findall(r'(\d+) frames? in \d+ s', text)
+    frames = re.findall(r'(\d+) frames? in \d+ s', text) or re.findall(r'\(frame (\d+)\)', text)   # the Java harness says it on its screenshot
     exitm = re.search(r'bionic: exit\((\d+)\) called from (\S+)', text)
     return {
         'java_error': m.group(1)[:300] if m else None,
