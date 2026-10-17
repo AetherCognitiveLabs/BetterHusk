@@ -90,6 +90,13 @@ def main():
             text = r.stdout + r.stderr; rc = r.returncode
         except subprocess.TimeoutExpired as e:
             text = (e.stdout or b'').decode('utf-8', 'replace') if isinstance(e.stdout, bytes) else (e.stdout or ''); rc = 'timeout'
+        if not os.path.isdir(a.folder) or not os.path.isdir(a.out):
+            # the drive dropped during the run: its result means nothing, so wait for the drive and leave this app without a log
+            # (a --resume pass runs it again)
+            print('%-40s drive dropped during the run; skipped' % pkg, flush=True)
+            while not os.path.isdir(a.folder): time.sleep(30)
+            os.makedirs(a.out, exist_ok=True)
+            continue
         open(log, 'w').write(text)
         fm = re.search(r'^frames: (\S+)', text, re.M)
         if fm:
