@@ -50,23 +50,8 @@ struct ContentView: View {
             // with the tabs is the arrangement that survives that. Showing
             // Android is then a matter of hiding what is over it, which is also
             // why it appears instantly rather than reloading.
-            TabView(selection: $router.tab) {
-                HomeView()
-                    .tabItem { Label("Home", systemImage: "house.fill") }
-                    .tag(HuskTab.home)
-
-                LibraryScreen()
-                    .tabItem { Label("Library", systemImage: "square.grid.2x2.fill") }
-                    .tag(HuskTab.library)
-
-                StoreView()
-                    .tabItem { Label("Store", systemImage: "cart.fill") }
-                    .tag(HuskTab.store)
-
-                SettingsTab()
-                    .tabItem { Label("Settings", systemImage: "gearshape.fill") }
-                    .tag(HuskTab.settings)
-            }
+            // The tabs, under the floating dock (ConsoleUI.swift) rather than the system's tab bar.
+            ConsoleShell()
             .opacity(showGuestScreen && started && runner.isRunning ? 0 : 1)
 
             // Christmas: snow over the tabs (never over Android or an app's window, which come after it)
@@ -86,7 +71,7 @@ struct ContentView: View {
                     Spacer()
                     ToastView(toast: toast) { host.toast = nil }
                         .padding(.horizontal, 16)
-                        .padding(.bottom, 8)
+                        .padding(.bottom, 8 + Console.dockHeight)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
                 .task(id: toast.id) {
