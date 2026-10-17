@@ -590,6 +590,14 @@ void husk_cocos_delete_backward(void) { if (atomic_load(&A.state) == HUSK_UNITY_
 void husk_cocos_key_down(int keycode) { if (atomic_load(&A.state) == HUSK_UNITY_RUNNING && A.engine == ENGINE_COCOS) tl_cocos_key_down(keycode); }
 void husk_cocos_request_text(void (*cb)(const char *utf8)) { if (atomic_load(&A.state) == HUSK_UNITY_RUNNING && A.engine == ENGINE_COCOS) tl_cocos_request_content_text(cb); }
 
+/* Unity games: TouchScreenKeyboard's field (an InputField, a player name), typed into from the iPhone's keyboard. */
+void husk_unity_set_keyboard_handler(void (*handler)(int action, int kind)) { tl_unity_set_keyboard_handler(handler); }
+static bool unity_running(void) { return atomic_load(&A.state) == HUSK_UNITY_RUNNING && A.engine == ENGINE_UNITY; }
+void husk_unity_insert_text(const char *utf8) { if (unity_running()) tl_unity_insert_text(utf8); }
+void husk_unity_delete_backward(void) { if (unity_running()) tl_unity_delete_backward(); }
+void husk_unity_finish_text(int done) { if (unity_running()) tl_unity_finish_text(done != 0); }
+void husk_unity_text(char *out, unsigned long cap) { if (cap) out[0] = 0; if (unity_running()) tl_unity_text_copy(out, cap); }
+
 /* Minecraft and other GameActivity games: GameTextInput's field, typed into from the iPhone's keyboard. */
 void husk_ga_set_keyboard_handler(void (*handler)(int action)) { tl_ga_set_keyboard_handler(handler); }
 static bool ga_running(void) { return atomic_load(&A.state) == HUSK_UNITY_RUNNING && A.engine == ENGINE_GAMEACTIVITY; }
