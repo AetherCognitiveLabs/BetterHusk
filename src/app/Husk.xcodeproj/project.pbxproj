@@ -178,13 +178,13 @@
 		EADD1EF85B20E4623B582BBF /* husk-tl-jni-godot.c in Sources */ = {isa = PBXBuildFile; fileRef = 9C254830956F062F72F2EF2D /* husk-tl-jni-godot.c */; };
 		EBA260CEB1E1AD0D117CE0D5 /* husk-tl-unity.c in Sources */ = {isa = PBXBuildFile; fileRef = 2C2AAB4C0C1CD9F4CC69E4E8 /* husk-tl-unity.c */; };
 		EBC8548011E6708CF09F8386 /* TLAppSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EBCB1A1B865B14C76096042 /* TLAppSettings.swift */; };
-		A15C0115C0115C0115C01151 /* Compat15.swift in Sources */ = {isa = PBXBuildFile; fileRef = A15C0115C0115C0115C01152 /* Compat15.swift */; };
 		EBDBC46EF4E65E1DA2342F6B /* DiscoverTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48DA17A30AE793049F358717 /* DiscoverTab.swift */; };
 		EC8B11F723C188F32B5D9DCA /* libqemu-aarch64-softmmu.dylib in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 1B29247002CE43A3B9DEC633 /* libqemu-aarch64-softmmu.dylib */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		EDD9BF5E120ED2453CB023FA /* icon-default.png in Resources */ = {isa = PBXBuildFile; fileRef = 555112D0E3895EBE37A68FEB /* icon-default.png */; };
 		EF4D3972DFB4447D5FDDF0AE /* stb_vorbis.inc in Resources */ = {isa = PBXBuildFile; fileRef = 4B06A9BB292E04A841BE20D2 /* stb_vorbis.inc */; };
 		F1E2ED25F28A24BA7197C5DB /* PipeShim.c in Sources */ = {isa = PBXBuildFile; fileRef = 766F6F7816E672E83CFFE47D /* PipeShim.c */; };
 		F2653F32A929D8E8BCEE057E /* husk-tl-dvm-audio.c in Sources */ = {isa = PBXBuildFile; fileRef = F58D55D1773275160F4F4717 /* husk-tl-dvm-audio.c */; };
+		F3989017EF86D4BD0D4D6DDA /* Compat15.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71DD2E2A2A0B0AB86EE783DD /* Compat15.swift */; };
 		F4833815482790E167401965 /* husk-tl-ld.c in Sources */ = {isa = PBXBuildFile; fileRef = 4D54C1E4F20A020AC62C9419 /* husk-tl-ld.c */; };
 		F6880CA30640F688356229CF /* HuskMetalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D91C1E7D6301EBCE06FEE0FE /* HuskMetalView.swift */; };
 		F6B3DA43CA16FAF920EF236D /* AppTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = D05B2EFC533719ED2E455C24 /* AppTheme.swift */; };
@@ -339,7 +339,6 @@
 		5D01B6F6F9B57E73E4B319F2 /* SaveBackup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SaveBackup.swift; sourceTree = "<group>"; };
 		5EB0AF32D5E40E753DDD85DA /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		5EBCB1A1B865B14C76096042 /* TLAppSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TLAppSettings.swift; sourceTree = "<group>"; };
-		A15C0115C0115C0115C01152 /* Compat15.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Compat15.swift; sourceTree = "<group>"; };
 		60B6DEB5B27C73D8E79DC5BA /* husk-tl-dvm-gles10ext.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "husk-tl-dvm-gles10ext.c"; sourceTree = "<group>"; };
 		6146DAE69D6D6462FB1FB771 /* HuskFilePicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HuskFilePicker.swift; sourceTree = "<group>"; };
 		619394B1069242D8750E7F33 /* Husk.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Husk.entitlements; sourceTree = "<group>"; };
@@ -359,6 +358,7 @@
 		6F40192B3EDAD27D2CBFFC2F /* BootScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BootScreen.swift; sourceTree = "<group>"; };
 		7087E37F05675CE3FD4EDEE2 /* ItemPages.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ItemPages.swift; sourceTree = "<group>"; };
 		7104A621330A81BD69495520 /* husk-tl-internal.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "husk-tl-internal.h"; sourceTree = "<group>"; };
+		71DD2E2A2A0B0AB86EE783DD /* Compat15.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Compat15.swift; sourceTree = "<group>"; };
 		766F6F7816E672E83CFFE47D /* PipeShim.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = PipeShim.c; sourceTree = "<group>"; };
 		771B4FD56CABC214FEED6DFE /* GuestImage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GuestImage.swift; sourceTree = "<group>"; };
 		77487CDE2CFA1499255EB794 /* husk-tl-python.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "husk-tl-python.c"; sourceTree = "<group>"; };
@@ -518,6 +518,7 @@
 				28D3E1CEE343707BE986FA6E /* Assets.xcassets */,
 				6F40192B3EDAD27D2CBFFC2F /* BootScreen.swift */,
 				E37298010F80517A3057579E /* BundleUnpacker.swift */,
+				71DD2E2A2A0B0AB86EE783DD /* Compat15.swift */,
 				3BDB1E8EEE64E1BBF7D72E2B /* Compatibility.swift */,
 				6CAD18BA88F03D63EF1F5DF2 /* ContentView.swift */,
 				BD3B1227581E9D6E7C9DCC3E /* CrashReport.swift */,
@@ -570,7 +571,6 @@
 				319324C01D99446B862A6278 /* TechnicalDetails.swift */,
 				5EB0AF32D5E40E753DDD85DA /* Theme.swift */,
 				5EBCB1A1B865B14C76096042 /* TLAppSettings.swift */,
-				A15C0115C0115C0115C01152 /* Compat15.swift */,
 				66DDBC0AF7BE5742AA867515 /* TLScreenView.swift */,
 				211CC4F06EC722E5972D7F3B /* TLUnityView.swift */,
 				4BD6ABD20471B2CACF60ABD4 /* TranslationLayer.swift */,
@@ -1049,6 +1049,7 @@
 				6CA4A4E301BCB015E19AF7A8 /* AppWindows.swift in Sources */,
 				853E83FF7FF5B9A7FDE5E638 /* BootScreen.swift in Sources */,
 				7FA5D73DC2780CACC7399534 /* BundleUnpacker.swift in Sources */,
+				F3989017EF86D4BD0D4D6DDA /* Compat15.swift in Sources */,
 				13EEBA67589844DCF50836CF /* Compatibility.swift in Sources */,
 				4E1329C07A116B3BE1FDFA7A /* ContentView.swift in Sources */,
 				BE7E302D6F02165C04588DA1 /* CrashReport.swift in Sources */,
@@ -1101,7 +1102,6 @@
 				6F6142A042D5107E3F35FBB4 /* Showcase.swift in Sources */,
 				14F4718B87230D502748C4D3 /* StoreView.swift in Sources */,
 				EBC8548011E6708CF09F8386 /* TLAppSettings.swift in Sources */,
-				A15C0115C0115C0115C01151 /* Compat15.swift in Sources */,
 				945DD86A7A210B74B2C7FF17 /* TLScreenView.swift in Sources */,
 				0BB57A13C0D48446CB4FBCD5 /* TLUnityView.swift in Sources */,
 				206FBBD23AB53FE21214C71A /* TechnicalDetails.swift in Sources */,
