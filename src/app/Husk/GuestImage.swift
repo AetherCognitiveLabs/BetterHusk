@@ -109,7 +109,7 @@ final class GuestImage: ObservableObject {
                   + "\(dependenciesTag)/vda-\(imageVersion).qcow2")!
     }
 
-    nonisolated private var versionStampPath: String {
+    nonisolated var versionStampPath: String {
         // Named for this guest, not the old one. It used to be
         // "husk-guest.version", which cleanUpPreviousGuest() deletes as Waydroid
         // leftovers -- so every launch wiped the stamp, decided the image was
@@ -343,6 +343,34 @@ final class GuestImage: ObservableObject {
             return (nil, "not a qcow2 image (header was \(hex), expected 51 46 49 fb)")
         }
         return (size, nil)
+    }
+
+    /// Every file the Android machine keeps: the system and userdata disks, the UEFI variables and firmware copy, the guest RAM
+    /// file, the saved machine and the records about them. All of it comes back with the next download, and none of it is needed
+    /// to run apps on the translation layer.
+    nonisolated var androidFiles: [String] {
+        let runner = QemuRunner.shared
+        return [diskPath, userdataPath, varsPath, varsPath + ".layout", firmwarePath, versionStampPath, imageDigestPath,
+                snapshotStampPath, snapshotDigestPath, snapshotPinsPath, runner.guestRamPath, runner.snapshotSizePath,
+                runner.snapshotDisplayPath, runner.memoryStrategyPath]
+    }
+
+    /// Bytes the Android files take on disk.
+    nonisolated var androidBytes: Int64 {
+        androidFiles.reduce(0) { total, path in
+            let size = (try? URL(fileURLWithPath: path).resourceValues(forKeys: [.totalFileAllocatedSizeKey]).totalFileAllocatedSize) ?? 0
+            return total + Int64(size)
+        }
+    }
+
+    /// Delete Android's files (#123: people who only use the translation layer). Returns the bytes freed.
+    @discardableResult
+    func removeAll() -> Int64 {
+        let freed = androidBytes
+        for path in androidFiles { try? FileManager.default.removeItem(atPath: path) }
+        HuskLog.log("guest", "removed Android's files (\(freed / 1_048_576) MiB); the next start downloads them again")
+        state = .missing
+        return freed
     }
 
     func refresh() {

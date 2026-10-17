@@ -610,6 +610,9 @@ struct SavedMachineSettings: View {
         UserDefaults.standard.object(forKey: "husk.downloadSnapshot") as? Bool ?? true
     @State private var askWhichToDelete = false
     @State private var deleteResult: String?
+    @State private var askRemoveAndroid = false
+    @State private var removeResult: String?
+    @State private var androidBytes = GuestImage.shared.androidBytes
     @AppStorage(GuestImage.askUpdatesKey) private var askUpdates = true
 
     var body: some View {
@@ -662,6 +665,21 @@ struct SavedMachineSettings: View {
             }
 
             Section {
+                Button(role: .destructive) { askRemoveAndroid = true } label: {
+                    Label("Remove Android", systemImage: "trash.slash")
+                }
+                .disabled(runner.isRunning || androidBytes == 0)
+                if let removeResult {
+                    Text(removeResult).font(.caption).foregroundStyle(.secondary)
+                }
+            } footer: {
+                Text(androidBytes > 0
+                     ? "Android's system, its data and the saved machine take \(ByteCountFormatter.string(fromByteCount: androidBytes, countStyle: .file)). "
+                     + "Apps and games on the translation layer do not need them. Android downloads again the next time it is started."
+                     : "Android is not downloaded.")
+            }
+
+            Section {
                 Toggle("Ask about Android updates", isOn: $askUpdates)
             } footer: {
                 Text("When a new Android image or snapshot is published, Husk asks once whether to download it. "
@@ -677,6 +695,16 @@ struct SavedMachineSettings: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("Android will boot from cold once, then save a new one.")
+        }
+        .confirmationDialog("Remove Android?", isPresented: $askRemoveAndroid, titleVisibility: .visible) {
+            Button("Remove Android", role: .destructive) {
+                let freed = GuestImage.shared.removeAll()
+                androidBytes = GuestImage.shared.androidBytes
+                removeResult = "Freed \(ByteCountFormatter.string(fromByteCount: freed, countStyle: .file))."
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Everything installed or saved inside Android is deleted. Translation layer apps keep their data.")
         }
     }
 
