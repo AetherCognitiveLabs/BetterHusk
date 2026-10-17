@@ -175,7 +175,7 @@ struct HomeView: View {
             GeometryReader { geo in
                 let items = self.items
                 let selected = items.first { $0.id == selectedID } ?? items.first
-                let heroHeight = (geo.size.height + geo.safeAreaInsets.top) * 0.55
+                let heroHeight = (geo.size.height + geo.safeAreaInsets.top + geo.safeAreaInsets.bottom) * 0.55
                 ZStack(alignment: .top) {
                     Console.page.ignoresSafeArea()
                     HomeHero(item: selected, width: geo.size.width, height: heroHeight)

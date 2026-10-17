@@ -92,8 +92,10 @@ extension LibraryItem {
         return (isGame ? "Last played " : "Last opened ") + ago
     }
 
-    /// When it was added to Husk, from its folder: what "Recently added" sorts by.
-    var addedDate: Date? {
+    /// When it was added to Husk, from its folder: what "Recently added" sorts by. Read once per item and kept, since Home
+    /// redraws often and a folder's creation date does not change.
+    @MainActor var addedDate: Date? {
+        if let known = AddedDates.cache[id] { return known }
         let path: String
         switch self {
         case .game(let g): path = TranslationLayer.root.appendingPathComponent(g.id).path
@@ -101,8 +103,14 @@ extension LibraryItem {
         default: return nil
         }
         let attrs = try? FileManager.default.attributesOfItem(atPath: path)
-        return (attrs?[.creationDate] as? Date) ?? (attrs?[.modificationDate] as? Date)
+        let date = (attrs?[.creationDate] as? Date) ?? (attrs?[.modificationDate] as? Date)
+        AddedDates.cache[id] = .some(date)
+        return date
     }
+}
+
+@MainActor private enum AddedDates {
+    static var cache: [String: Date?] = [:]
 }
 
 struct StatusDot: View {
