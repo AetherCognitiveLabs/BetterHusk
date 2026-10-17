@@ -376,6 +376,7 @@ final class GuestImage: ObservableObject {
     func refresh() {
         if case .downloading = state { return }
         if case .installing = state { return }
+        removeStaleDownloads()
 
         guard FileManager.default.fileExists(atPath: diskPath) else {
             state = .missing
@@ -572,6 +573,11 @@ final class GuestImage: ObservableObject {
                 return
             }
         }
+        if let short = snapshotSpaceShortfall() {
+            HuskLog.log("guest", "not fetching the pre-booted snapshot: \(short)")
+            failed("Not enough free space for the pre-booted snapshot: \(short).")
+            return
+        }
         isFetchingSnapshot = true
         state = .downloading(progress: 0, received: 0, total: 0)
         HuskLog.log("guest", "downloading pre-booted snapshot (about 2 GB)")
@@ -695,6 +701,36 @@ final class GuestImage: ObservableObject {
         fetcher?.start()
     }
 
+    /// What unpacking the snapshot takes on disk at its peak: the joined archive and the expanded disk side by side (#75, #128:
+    /// a phone that ran out partway used to crash, because the old FileHandle.write raises instead of throwing, and the next
+    /// launch offered the download again). nil when it fits.
+    private func snapshotSpaceShortfall() -> String? {
+        let archive = manifest?.snapshot.size ?? 2_200_000_000
+        let expanded: Int64 = 5_000_000_000
+        let margin: Int64 = 500_000_000
+        let current = ((try? FileManager.default.attributesOfItem(atPath: userdataPath))?[.size] as? NSNumber)?.int64Value ?? 0
+        let need = archive + expanded + margin - current
+        guard let free = try? URL(fileURLWithPath: NSHomeDirectory())
+            .resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]).volumeAvailableCapacityForImportantUsage
+        else { return nil }
+        guard free < need else { return nil }
+        let gb = { (b: Int64) in String(format: "%.1f GB", Double(b) / 1e9) }
+        return "it needs \(gb(need)) free and the device has \(gb(free))"
+    }
+
+    /// The staging files of a download or unpack that a previous run did not live to finish: gigabytes in tmp that iOS only
+    /// clears when it decides to, and that left the next attempt even shorter of space.
+    private func removeStaleDownloads() {
+        guard fetcher == nil, task == nil else { return }
+        let tmp = FileManager.default.temporaryDirectory
+        for name in ["husk-snapshot-download.gz", "husk-guest-download.qcow2"] {
+            let path = tmp.appendingPathComponent(name).path
+            guard let size = (try? FileManager.default.attributesOfItem(atPath: path))?[.size] as? NSNumber else { continue }
+            try? FileManager.default.removeItem(atPath: path)
+            HuskLog.log("guest", "removed \(name) (\(size.int64Value >> 20) MiB) left by an earlier run")
+        }
+    }
+
     /// Remember the machine the installed snapshot expects.
     ///
     /// QEMU refuses a restore whose RAM differs by a byte ("Size mismatch:
@@ -778,7 +814,7 @@ final class GuestImage: ObservableObject {
                     let st = compression_stream_process(&stream, last ? Int32(COMPRESSION_STREAM_FINALIZE.rawValue) : 0)
                     let produced = chunk - stream.dst_size
                     if produced > 0 {
-                        output.write(Data(bytes: outBuf, count: produced))
+                        try output.write(contentsOf: Data(bytes: outBuf, count: produced))
                     }
                     if st == COMPRESSION_STATUS_END { finished = true; break }
                     if st == COMPRESSION_STATUS_ERROR {
@@ -849,7 +885,10 @@ final class GuestImage: ObservableObject {
                 HuskLog.log("guest", "guest image ready (\(size) bytes, \(Self.imageVersion))")
                 // The snapshot only makes sense next to the image it was booted
                 // from, so it is fetched after, not alongside.
-                if Self.wantsSnapshot, !hasShippedSnapshot {
+                if Self.wantsSnapshot, !hasShippedSnapshot, let short = snapshotSpaceShortfall() {
+                    HuskLog.log("guest", "not fetching the pre-booted snapshot: \(short); Android will boot from cold")
+                    state = .ready
+                } else if Self.wantsSnapshot, !hasShippedSnapshot {
                     state = .installing
                     downloadSnapshot { ok in
                         DispatchQueue.main.async {
@@ -1024,7 +1063,7 @@ private final class SnapshotFetcher: NSObject, URLSessionDownloadDelegate {
             defer { try? output.close() }
             try output.seekToEnd()
             while let chunk = try input.read(upToCount: 4 << 20), !chunk.isEmpty {
-                output.write(chunk)
+                try output.write(contentsOf: chunk)
                 hasher.update(chunk)
                 bytesDone += Int64(chunk.count)
             }
