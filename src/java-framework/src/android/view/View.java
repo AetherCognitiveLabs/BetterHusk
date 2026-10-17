@@ -1240,6 +1240,8 @@ public class View implements Drawable.Callback, KeyEvent.Callback {
         return onTouchEvent(e);
     }
     public boolean onFilterTouchEventForSecurity(MotionEvent e) { return true; }
+    /** The time of the frame being drawn, on the uptime clock (Compose draws its layers with it). */
+    public long getDrawingTime() { return android.os.SystemClock.uptimeMillis(); }
     public boolean dispatchGenericMotionEvent(MotionEvent e) {
         if (mOnGeneric != null && mEnabled && mOnGeneric.onGenericMotion(this, e)) return true;
         return onGenericMotionEvent(e);
