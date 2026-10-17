@@ -69,11 +69,12 @@ func run() async -> Int32 {
             for pkg in args.dropFirst(2) {
                 do {
                     guard let app = try await PlayAPI.details(packageName: pkg, session: s) else { print("\(pkg)\tFAIL no details"); rc = 1; continue }
-                    let files = try await PlayAPI.downloadApp(packageName: pkg, versionCode: app.versionCode, session: s)
+                    let files = try await PlayAPI.downloadApp(packageName: pkg, versionCode: app.versionCode, session: s, stagingDirectory: out)
                     let dir = out.appendingPathComponent(pkg)
                     try? FileManager.default.removeItem(at: dir)
                     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
                     for f in files { try FileManager.default.moveItem(at: f, to: dir.appendingPathComponent(f.lastPathComponent)) }
+                    if let staging = files.first?.deletingLastPathComponent() { try? FileManager.default.removeItem(at: staging) }
                     print("\(pkg)\tOK vc \(app.versionCode)\t\(files.map { $0.lastPathComponent }.joined(separator: " "))")
                 } catch { print("\(pkg)\tFAIL \(error.localizedDescription)"); rc = 1 }
             }

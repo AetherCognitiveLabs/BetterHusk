@@ -740,6 +740,7 @@ enum PlayAPI {
         packageName: String,
         versionCode: Int,
         session: PlaySession,
+        stagingDirectory: URL? = nil,
         progress: (@MainActor (Double) -> Void)? = nil
     ) async throws -> [URL] {
         // Purchase first to obtain delivery token, then request delivery
@@ -764,7 +765,9 @@ enum PlayAPI {
         }
 
         let totalExpectedBytes = downloadsToMake.reduce(Int64(0)) { $0 + max(0, $1.size) }
-        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("PlayDownload_\(UUID().uuidString)", isDirectory: true)
+        // stagingDirectory: a folder on the destination's disk (the Mac downloader's games go to an external one; the temporary
+        // folder is always on the internal disk)
+        let tempDir = (stagingDirectory ?? FileManager.default.temporaryDirectory).appendingPathComponent("PlayDownload_\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
 
         var downloadedFiles: [URL] = []
@@ -779,11 +782,11 @@ enum PlayAPI {
             }
 
             let fileDest = tempDir.appendingPathComponent(item.name)
-            let (tempLocalURL, resp) = try await URLSession.shared.download(for: req)
-            guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
-                throw PlayError("Failed to download \(item.name) (HTTP \((resp as? HTTPURLResponse)?.statusCode ?? 0))")
+            let status = try await FileStreamer.download(req, to: fileDest)
+            guard status == 200 else {
+                try? FileManager.default.removeItem(at: fileDest)
+                throw PlayError("Failed to download \(item.name) (HTTP \(status))")
             }
-            try FileManager.default.moveItem(at: tempLocalURL, to: fileDest)
             downloadedFiles.append(fileDest)
 
             totalBytesWritten += item.size
@@ -798,3 +801,48 @@ enum PlayAPI {
     }
 }
 
+
+
+/// Writes a download straight into its file as it arrives. A download task would first put the whole file in the system's temporary
+/// folder and then move it: twice the space at the peak, and on the internal disk whatever the destination (the Mac downloader's
+/// games go to an external one).
+private final class FileStreamer: NSObject, URLSessionDataDelegate {
+    private let handle: FileHandle
+    private var status = 0
+    private var failure: Error?
+    private var continuation: CheckedContinuation<Int, Error>?
+
+    private init(handle: FileHandle) { self.handle = handle }
+
+    static func download(_ request: URLRequest, to destination: URL) async throws -> Int {
+        FileManager.default.createFile(atPath: destination.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: destination)
+        let streamer = FileStreamer(handle: handle)
+        let session = URLSession(configuration: .default, delegate: streamer, delegateQueue: nil)
+        defer { session.finishTasksAndInvalidate(); try? handle.close() }
+        return try await withCheckedThrowingContinuation { continuation in
+            streamer.continuation = continuation
+            session.dataTask(with: request).resume()
+        }
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+                    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        completionHandler(status == 200 ? .allow : .cancel)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        guard failure == nil else { return }
+        do { try handle.write(contentsOf: data) } catch { failure = error; dataTask.cancel() }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        let c = continuation
+        continuation = nil
+        if let failure { c?.resume(throwing: failure) }
+        else if status != 200 { c?.resume(returning: status) }
+        else if let error { c?.resume(throwing: error) }
+        else { c?.resume(returning: status) }
+    }
+}
