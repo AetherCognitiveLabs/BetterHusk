@@ -9,6 +9,7 @@
  */
 #define _DARWIN_C_SOURCE
 #include "husk-tl-bionic.h"
+const char *tl_ld_main_apk(void);
 #include "husk-tl-internal.h"
 #include "husk-tl-codewrite.h"
 #include "husk-tl-xmem.h"
@@ -265,6 +266,18 @@ const char *tl_path_resolve(const char *path, char *buf, size_t n)
             return buf;
         }
         snprintf(buf, n, "%s/sdcard%s", tl_data_dir(), rest);
+        /* An expansion file (Android/obb/<package>/main.<version>.<package>.obb) not in the app's data: the one Husk's store
+         * downloaded with the app, kept beside its APKs in obb/ */
+        if (!strncmp(rest, "/Android/obb/", 13)) {
+            struct stat st;
+            const char *apk = tl_ld_main_apk(), *file = strrchr(rest, '/');
+            if (stat(buf, &st) != 0 && apk && file && file[1]) {
+                char beside[1024];
+                const char *slash = strrchr(apk, '/');
+                snprintf(beside, sizeof(beside), "%.*s/obb%s", slash ? (int)(slash - apk) : 0, apk, file);
+                if (stat(beside, &st) == 0) snprintf(buf, n, "%s", beside);
+            }
+        }
         return buf;
     }
     return path;

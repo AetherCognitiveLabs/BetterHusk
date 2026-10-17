@@ -73,7 +73,15 @@ func run() async -> Int32 {
                     let dir = out.appendingPathComponent(pkg)
                     try? FileManager.default.removeItem(at: dir)
                     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-                    for f in files { try FileManager.default.moveItem(at: f, to: dir.appendingPathComponent(f.lastPathComponent)) }
+                    for f in files {
+                        // expansion files go to obb/ beside the APKs, where the runtime looks for them
+                        var to = dir
+                        if f.pathExtension.lowercased() == "obb" {
+                            to = dir.appendingPathComponent("obb", isDirectory: true)
+                            try FileManager.default.createDirectory(at: to, withIntermediateDirectories: true)
+                        }
+                        try FileManager.default.moveItem(at: f, to: to.appendingPathComponent(f.lastPathComponent))
+                    }
                     if let staging = files.first?.deletingLastPathComponent() { try? FileManager.default.removeItem(at: staging) }
                     print("\(pkg)\tOK vc \(app.versionCode)\t\(files.map { $0.lastPathComponent }.joined(separator: " "))")
                 } catch { print("\(pkg)\tFAIL \(error.localizedDescription)"); rc = 1 }

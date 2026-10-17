@@ -29,7 +29,7 @@ final class IncomingFiles: ObservableObject {
         try? FileManager.default.removeItem(at: folder)
     }
 
-    static let extensions: Set<String> = ["apk", "xapk", "apkm", "apks"]
+    static let extensions: Set<String> = ["apk", "xapk", "apkm", "apks", "obb"]
 
     /// Copies under way, said in one line while they last.
     @Published private(set) var preparing: String?
@@ -149,7 +149,10 @@ final class IncomingFiles: ObservableObject {
         guard AndroidHost.shared.isReady, AndroidHost.shared.busy == nil, !forAndroid.isEmpty else { return }
         let urls = forAndroid
         forAndroid = []
-        AndroidHost.shared.install(urls)
+        // An expansion file is not a package: Android's installer would refuse the whole set over it
+        let obbs = urls.filter { $0.pathExtension.lowercased() == "obb" }
+        if !obbs.isEmpty { HuskLog.log("ui", "not installing \(obbs.map(\.lastPathComponent)) into Android: expansion files only go with the translation layer") }
+        AndroidHost.shared.install(urls.filter { $0.pathExtension.lowercased() != "obb" })
     }
 
     func discard() {

@@ -135,6 +135,8 @@ void tl_ld_queue_split(const char *path)
 }
 
 const char *tl_ld_queued_split(int i) { return i >= 0 && i < g_nsplits ? g_splits[i] : NULL; }
+/* The app's base APK, the first one added (its folder also holds what was downloaded with it: expansion files in obb/) */
+const char *tl_ld_main_apk(void) { return G.napks > 0 ? g_apk_paths[0] : NULL; }
 
 static bool add_one(const char *path)
 {

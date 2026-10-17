@@ -664,6 +664,14 @@ enum PlayAPI {
         public let size: Int64
         public let splits: [SplitFile]
         public let downloadAuthCookie: (name: String, value: String)?
+        /// Expansion files (OBB): a game's data kept beside the APK, "main" and sometimes "patch"
+        public struct ExpansionFile {
+            public let isPatch: Bool
+            public let versionCode: Int64
+            public let size: Int64
+            public let downloadUrl: String
+        }
+        public var expansions: [ExpansionFile] = []
     }
 
     /// "Purchase" (license) a free app so Google Play allows delivery. Returns encoded delivery token if provided.
@@ -706,6 +714,17 @@ enum PlayAPI {
             throw PlayError("Google Play did not return download information.")
         }
 
+        if ProcessInfo.processInfo.environment["HUSK_PLAY_DUMP"] != nil {
+            // what Play sent, field by field (asset packs and expansion files are in fields Husk did not read)
+            func dump(_ m: ProtoMessage, _ indent: String, _ depth: Int) {
+                for k in m.fields.keys.sorted() {
+                    let subs = m.messages(k)
+                    print("\(indent)\(k): \(subs.isEmpty || depth > 2 ? (m.string(k).map { String($0.prefix(80)) } ?? m.int(k).map(String.init) ?? "?") : "\(subs.count) message(s)")")
+                    if depth <= 2 { for sub in subs.prefix(6) { dump(sub, indent + "    ", depth + 1) } }
+                }
+            }
+            print("delivery response:"); if let r = delivResp { dump(r, "  ", 0) }
+        }
         let downloadUrl = deliveryDataMsg.string(3)
         let downloadSize = deliveryDataMsg.int(1) ?? 0
 
@@ -727,12 +746,23 @@ enum PlayAPI {
             cookie = (cName, cVal)
         }
 
-        return DeliveryData(
+        // Expansion files: field 4 (AppFileMetadata: 1 file type, 0 main and 1 patch; 2 version code; 3 size; 4 URL)
+        var expansions: [DeliveryData.ExpansionFile] = []
+        for f in deliveryDataMsg.messages(4) {
+            if let url = f.string(4) {
+                expansions.append(DeliveryData.ExpansionFile(isPatch: f.int(1) == 1, versionCode: f.int(2) ?? Int64(versionCode),
+                                                             size: f.int(3) ?? 0, downloadUrl: url))
+            }
+        }
+
+        var data = DeliveryData(
             downloadUrl: downloadUrl,
             size: downloadSize,
             splits: splits,
             downloadAuthCookie: cookie
         )
+        data.expansions = expansions
+        return data
     }
 
     /// Downloads the APK (and splits if present) into a temporary directory and returns the list of file URLs.
@@ -758,6 +788,10 @@ enum PlayAPI {
         }
         for split in deliveryData.splits {
             downloadsToMake.append(("\(packageName).\(split.name).apk", split.downloadUrl, split.size))
+        }
+        // Expansion files keep the name Android gives them; the store puts them where the game looks (obb/ beside the APKs)
+        for x in deliveryData.expansions {
+            downloadsToMake.append(("\(x.isPatch ? "patch" : "main").\(x.versionCode).\(packageName).obb", x.downloadUrl, x.size))
         }
 
         guard !downloadsToMake.isEmpty else {
