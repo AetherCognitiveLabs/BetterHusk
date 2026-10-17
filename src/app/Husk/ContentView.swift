@@ -323,6 +323,11 @@ struct ContentView: View {
             guard JITBootstrap.mapJITWorks else {
                 HuskLog.log("jit", "refusing to start QEMU: no trap servicer is "
                                  + "answering and MAP_JIT does not execute here")
+                // Said on screen too: a Start button that silently does nothing reads as a hang (#122).
+                host.say("Android can't start without JIT",
+                         JITBootstrap.lastFailure ?? "Husk could not get executable memory. Turn JIT on again (Settings > JIT) and retry.",
+                         good: false)
+                booting = false
                 return
             }
             HuskLog.log("jit", "no dual mapping, but MAP_JIT executes -- letting "
