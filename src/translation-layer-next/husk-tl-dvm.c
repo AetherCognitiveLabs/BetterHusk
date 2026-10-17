@@ -1311,12 +1311,16 @@ static inline void WL(uint64_t *r, int n, jobj *o)
     r[n] = (uint64_t)(uintptr_t)o;
 }
 extern _Thread_local uint32_t t_pcs[8192];
+/* Whether a class name's first byte can start one: printable ASCII, or the lead byte of a UTF-8 sequence (obfuscators name
+ * classes with characters like U+3007 '〇': CamScanner's Kotlin code). */
+static inline bool name_start_ok(unsigned char ch) { return (ch > 0x20 && ch < 0x7f) || (ch >= 0xc2 && ch <= 0xf4); }
+
 static void check_ref(jobj *o, int n)
 {
     if (g_dvm_check < 0) { g_dvm_check = getenv("TL_DVM_CHECK") ? 1 : 0; if (!g_dvm_check) return; }
     uintptr_t p = (uintptr_t)o;
     bool ok = (p & 7) == 0 && p > 0x100000 && o->kind <= TL_K_OBJ_ARRAY && (o->kind == TL_K_CLASS || ((uintptr_t)o->cls & 7) == 0);
-    if (ok && o->kind != TL_K_CLASS && o->cls) { unsigned char ch = (unsigned char)o->cls->name[0]; ok = ch > 0x20 && ch < 0x7f; }
+    if (ok && o->kind != TL_K_CLASS && o->cls) ok = name_start_ok((unsigned char)o->cls->name[0]);
     if (ok) return;
     dvm_method *m = t_depth > 0 && t_depth <= 8192 ? t_frames[t_depth - 1] : NULL;
     uint32_t pc = t_depth > 0 && t_depth <= 8192 ? t_pcs[t_depth - 1] : 0;
@@ -1381,7 +1385,7 @@ static bool invoke_regs(dvm_method *caller, int kind, uint32_t midx, int count, 
         if (!self) return dvm_throw("java/lang/NullPointerException", "Attempt to invoke %s method '%s.%s%s' on a null object reference",
                                      kind == 4 ? "interface" : "virtual", r->cls->name, r->name, r->sig);
         /* not an object at all (a bug elsewhere put something else in the register): say where, rather than crash on it */
-        if (self->kind > TL_K_OBJ_ARRAY || (self->kind != TL_K_CLASS && self->cls && (((uintptr_t)self->cls & 7) || (unsigned char)self->cls->name[0] <= 0x20 || (unsigned char)self->cls->name[0] >= 0x7f))) {
+        if (self->kind > TL_K_OBJ_ARRAY || (self->kind != TL_K_CLASS && self->cls && (((uintptr_t)self->cls & 7) || !name_start_ok((unsigned char)self->cls->name[0])))) {
             tl_log_line("dvm: register v%u of %s.%s holds %p, not an object (kind %u, class %p \"%.40s\"), for %s.%s%s", areg[0], caller->cls->name, caller->name,
                         (void *)self, self->kind, (void *)self->cls, self->cls && !((uintptr_t)self->cls & 7) ? self->cls->name : "?", r->cls->name, r->name, r->sig);
             return dvm_throw("java/lang/InternalError", "not an object in v%u for %s.%s", areg[0], r->cls->name, r->name);
