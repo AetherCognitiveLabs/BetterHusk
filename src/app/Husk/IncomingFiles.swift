@@ -52,9 +52,51 @@ final class IncomingFiles: ObservableObject {
 
     /// Files picked inside Husk: all at once, so they are one question.
     func receive(_ urls: [URL]) {
+        // A PS4 game is a folder (eboot.bin and sce_sys/): it goes to the PS4 library, not to Android.
+        let ps4 = urls.filter(Self.isPS4GameFolder)
+        if !ps4.isEmpty { importPS4(ps4) }
         let wanted = urls.filter { Self.extensions.contains($0.pathExtension.lowercased()) }
         guard !wanted.isEmpty else { return }
         take(wanted) { self.waiting += $0 }
+    }
+
+    /// An extracted PS4 game: a folder with eboot.bin, or with sce_sys/param.sfo.
+    nonisolated static func isPS4GameFolder(_ url: URL) -> Bool {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        var dir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &dir), dir.boolValue else { return false }
+        return FileManager.default.fileExists(atPath: url.appendingPathComponent("eboot.bin").path)
+            || FileManager.default.fileExists(atPath: url.appendingPathComponent("sce_sys/param.sfo").path)
+    }
+
+    /// Copies PS4 game folders into Documents/PS4 Games (off the main thread: they are gigabytes) and shows them in the library.
+    private func importPS4(_ folders: [URL]) {
+        preparing = folders.count == 1 ? "Importing \(folders[0].lastPathComponent)…" : "Importing \(folders.count) PS4 games…"
+        Task.detached(priority: .userInitiated) {
+            let fm = FileManager.default
+            try? fm.createDirectory(at: PS4Store.root, withIntermediateDirectories: true)
+            for url in folders {
+                let scoped = url.startAccessingSecurityScopedResource()
+                defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                let dest = PS4Store.root.appendingPathComponent(url.lastPathComponent, isDirectory: true)
+                guard !fm.fileExists(atPath: dest.path) else {
+                    HuskLog.log("ps4", "\(url.lastPathComponent) is already in PS4 Games")
+                    continue
+                }
+                do {
+                    try fm.copyItem(at: url, to: dest)
+                    HuskLog.log("ps4", "imported \(url.lastPathComponent)")
+                } catch {
+                    try? fm.removeItem(at: dest)
+                    HuskLog.log("ps4", "could not import \(url.lastPathComponent): \(error.localizedDescription)")
+                }
+            }
+            await MainActor.run {
+                self.preparing = nil
+                PS4Store.shared.reload()
+            }
+        }
     }
 
     /// Copy files to Husk's own folder, off the main thread -- a game can be gigabytes -- then hand back the copies.

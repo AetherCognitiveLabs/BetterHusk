@@ -41,7 +41,7 @@ struct PS4Game: Identifiable, Hashable {
     static let shared = PS4Store()
 
     /// Visible in Files as "PS4 Games": drop an extracted game folder in.
-    static var root: URL {
+    nonisolated static var root: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("PS4 Games", isDirectory: true)
     }
     /// The PS4 layer's own data, shared by every game: its settings, saves, system modules and shader cache.
