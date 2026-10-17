@@ -112,4 +112,5 @@ def main():
         print('%-40s %-16s rc=%-7s frames=%-5s %s' % (pkg, (engine or 'Java')[:16], rc, row['frames'], row['java_error'] or row['crash'] or row['exit'] or ('finished' if row['finished'] else '')), flush=True)
     json.dump(rows, open(os.path.join(a.out, 'summary.json'), 'w'), indent=1)
 
-main()
+if __name__ == '__main__':   # classify.py and the pipelines import summarise() from here
+    main()
