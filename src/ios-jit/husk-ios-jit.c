@@ -410,15 +410,31 @@ static HuskDualMapping husk_self_dual_mapping(size_t bytes)
         HUSK_LOG("self: could not reserve %zu MiB: %s", (size * 2) >> 20, strerror(errno));
         return none;
     }
-    rx = mmap(base, size, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_FIXED | MAP_PRIVATE | MAP_ANON, -1, 0);
-    uint8_t *rw = rx == MAP_FAILED ? NULL : husk_rw_alias(rx, size, true);
-    if (rw && vm_protect(mach_task_self(), (vm_address_t)rx, size, FALSE, VM_PROT_READ | VM_PROT_EXECUTE) == KERN_SUCCESS && husk_self_selftest(rx, rw)) {
-        HuskDualMapping m = { rw, rx, size };
-        atomic_store(&g_jit_available, true);
-        g_self_route = "plain";
-        HUSK_LOG("self: PASS -- %zu MiB of plain memory (%s), rx=%p rw=%p", size >> 20,
-                 debugged ? "process is debugged" : "jailbreak allows invalid pages", (void *)rx, (void *)rw);
-        return m;
+    /* Two layouts: writable+executable asked for and then made read+execute (the kernel drops execute from the first), or
+     * read+execute from the start, as UTM and Dolphin map it. Each step that fails says so (#127: an A15 on iOS 18 with
+     * CS_DEBUGGED set failed one of them without saying which). */
+    static const int first_prot[2] = { PROT_READ | PROT_WRITE | PROT_EXEC, PROT_READ | PROT_EXEC };
+    static const char *const layout[2] = { "rwx then rx", "rx" };
+    for (int i = 0; i < 2; i++) {
+        rx = mmap(base, size, first_prot[i], MAP_FIXED | MAP_PRIVATE | MAP_ANON, -1, 0);
+        if (rx == MAP_FAILED) { HUSK_LOG("self: plain (%s): mmap failed: %s", layout[i], strerror(errno)); continue; }
+        uint8_t *rw = husk_rw_alias(rx, size, true);
+        if (!rw) { HUSK_LOG("self: plain (%s): no writable alias", layout[i]); continue; }
+        kern_return_t kr = vm_protect(mach_task_self(), (vm_address_t)rx, size, FALSE, VM_PROT_READ | VM_PROT_EXECUTE);
+        if (kr != KERN_SUCCESS) {
+            HUSK_LOG("self: plain (%s): vm_protect r-x failed: %d (%s)", layout[i], (int)kr, mach_error_string(kr));
+            continue;
+        }
+        if (!husk_page_is_executable(rx)) { HUSK_LOG("self: plain (%s): the kernel did not keep execute on the page", layout[i]); continue; }
+        if (husk_self_selftest(rx, rw)) {
+            HuskDualMapping m = { rw, rx, size };
+            atomic_store(&g_jit_available, true);
+            g_self_route = "plain";
+            HUSK_LOG("self: PASS -- %zu MiB of plain memory (%s, %s), rx=%p rw=%p", size >> 20,
+                     debugged ? "process is debugged" : "jailbreak allows invalid pages", layout[i], (void *)rx, (void *)rw);
+            return m;
+        }
+        HUSK_LOG("self: plain (%s): code written through the alias faulted or returned the wrong value", layout[i]);
     }
     HUSK_LOG("self: plain memory did not execute (%s)", debugged ? "debugged" : "jailbroken");
     munmap(base, size * 2);
