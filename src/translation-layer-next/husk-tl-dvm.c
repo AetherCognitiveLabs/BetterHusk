@@ -1676,7 +1676,15 @@ dispatch:;
     case 0x23: {                                                   /* new-array */
         int32_t n = RI(regs, B4);
         THROW_IF(n < 0 && !dvm_throw("java/lang/NegativeArraySizeException", "%d", n));
-        WL(regs, A4, new_array(resolve_type(dex, FETCH(1)), n));
+        tl_jclass *ac = resolve_type(dex, FETCH(1));
+        /* ART throws OutOfMemoryError past the heap's growth limit; apps that probe how much they may allocate (RoboZZle
+         * doubles a byte[] until it does) otherwise grow the size until it turns negative. */
+        char t = ac->name[1];
+        uint64_t esz = t == 'Z' || t == 'B' ? 1 : t == 'C' || t == 'S' ? 2 : t == 'I' || t == 'F' ? 4 : 8;
+        THROW_IF((uint64_t)n * esz > (256ull << 20) &&
+                 !dvm_throw("java/lang/OutOfMemoryError", "Failed to allocate a %llu byte allocation with 0 free bytes",
+                            (unsigned long long)((uint64_t)n * esz)));
+        WL(regs, A4, new_array(ac, n));
         NEXT(2);
     }
     case 0x24: case 0x25: {                                        /* filled-new-array(/range) */
