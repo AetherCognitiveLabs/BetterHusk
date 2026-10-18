@@ -94,6 +94,9 @@ static void b_sincosl(q128 x, q128 *s, q128 *c) { double d = q2d(x); if (s) *s =
 static long b_lrintl(q128 x) { return lrint(q2d(x)); }
 static long b_lroundl(q128 x) { return lround(q2d(x)); }
 static int b___isinfl(q128 x) { return isinf(q2d(x)); }
+/* bionic's names for signbit on double and float (Darwin's libm calls them __signbitd/__signbitf): fmt's FormatDouble asks */
+static int b___signbit(double x) { return signbit(x) != 0; }
+static int b___signbitf(float x) { return signbit(x) != 0; }
 static int b___isnanl(q128 x) { return isnan(q2d(x)); }
 
 /* nextafterl on the quad bits: one unit in quad's last place, toward y. */
@@ -205,6 +208,7 @@ const tl_bionic_entry tl_tab_ldbl[] = {
     TL_WRAP("fdiml", b_fdiml), TL_WRAP("ldexpl", b_ldexpl), TL_WRAP("scalbnl", b_scalbnl), TL_WRAP("frexpl", b_frexpl),
     TL_WRAP("modfl", b_modfl), TL_WRAP("sincosl", b_sincosl), TL_WRAP("lrintl", b_lrintl), TL_WRAP("lroundl", b_lroundl),
     TL_WRAP("__isinfl", b___isinfl), TL_WRAP("__isnanl", b___isnanl), TL_WRAP("nextafterl", b_nextafterl),
+    TL_WRAP("__signbit", b___signbit), TL_WRAP("__signbitf", b___signbitf),
     TL_WRAP("nexttowardl", b_nextafterl),
     TL_DIRECT(copysign), TL_DIRECT(erf), TL_DIRECT(erfc), TL_DIRECT(readv), TL_DIRECT(sync), TL_DIRECT(getsid),
     TL_DIRECT(tcgetpgrp), TL_DIRECT(tcsetpgrp), TL_DIRECT(getitimer), TL_DIRECT(setitimer), TL_DIRECT(wait4),
