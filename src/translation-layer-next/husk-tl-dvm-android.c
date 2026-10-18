@@ -391,6 +391,11 @@ void tl_javaapp_text(const char *utf8) { if (utf8 && *utf8) text_push("t", utf8)
 void tl_javaapp_text_delete(void) { text_push("d", NULL); }
 void tl_javaapp_text_action(void) { text_push("e", NULL); }
 void tl_javaapp_keyboard_closed(void) { text_push("h", NULL); }
+void tl_javaapp_documents_picked(const char *const *paths, int n)
+{
+    for (int i = 0; i < n; i++) if (paths[i] && *paths[i]) text_push("f", paths[i]);
+    text_push("F", NULL);
+}
 void tl_javaapp_set_insets(int l, int t, int r, int b, int ime)
 {
     A.insets[0] = l; A.insets[1] = t; A.insets[2] = r; A.insets[3] = b; A.insets[4] = ime;
@@ -422,6 +427,15 @@ NAT(N_getClipboard)
     return true;
 }
 NAT(N_share) { (void)self; (void)ret; const char *t = tl_jni_string(a[0].l); tl_log_line("javaapp: share %.80s", t ? t : ""); if (A.cfg.share && t) A.cfg.share(t); return true; }
+NAT(N_pickDocuments)
+{
+    (void)self; (void)ret;
+    const char *t = tl_jni_string(a[0].l);
+    tl_log_line("javaapp: file picker for %s%s", t ? t : "*/*", a[1].i ? " (several)" : "");
+    if (A.cfg.pick_documents) A.cfg.pick_documents(t ? t : "*/*", a[1].i != 0);
+    else tl_javaapp_documents_picked(NULL, 0);     /* no picker here (host tests): the user backed out */
+    return true;
+}
 NAT(N_setOrientation) { (void)self; (void)ret; if (A.cfg.set_orientation) A.cfg.set_orientation(a[0].i); return true; }
 NAT(N_nightMode) { (void)self; (void)a; jvalue v; v.j = A.cfg.night_mode ? 1 : 0; *ret = v; return true; }
 NAT(N_insets)
@@ -480,6 +494,7 @@ static const struct { const char *name, *sig; dvm_native_fn fn; } k_native[] = {
     { "setClipboard", "(Ljava/lang/String;)V", N_setClipboard },
     { "getClipboard", "()Ljava/lang/String;", N_getClipboard },
     { "share", "(Ljava/lang/String;)V", N_share },
+    { "pickDocuments", "(Ljava/lang/String;Z)V", N_pickDocuments },
     { "setOrientation", "(I)V", N_setOrientation },
     { "insets", "()[I", N_insets },
     { "nightMode", "()Z", N_nightMode },

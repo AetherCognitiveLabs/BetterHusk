@@ -48,6 +48,7 @@ public final class InputMethods {
             if (it.isEmpty()) continue;
             char k = it.charAt(0);
             if (k == 'h') { sShown = false; continue; }           /* the host closed the keyboard */
+            if (k == 'f' || k == 'F') { Documents.deliver(it); continue; }   /* the file picker's answer */
             if (sConn == null) {
                 if (sFocused != null) { long t = android.os.SystemClock.uptimeMillis(); if (k == 'd') { sFocused.dispatchKeyEvent(new KeyEvent(t, t, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DEL, 0)); sFocused.dispatchKeyEvent(new KeyEvent(t, t, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DEL, 0)); } }
                 continue;

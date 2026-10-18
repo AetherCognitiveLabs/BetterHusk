@@ -35,6 +35,7 @@ public final class Native {
     public static native void setClipboard(String text);
     public static native String getClipboard();
     public static native void share(String text);
+    public static native void pickDocuments(String mimeTypes, boolean multiple);   // the answer arrives through pollText ("f<path>", "F")
     public static native void setOrientation(int androidOrientation);
     public static native int[] insets();
     public static native boolean nightMode();                // the phone is in dark mode                     // left, top, right, bottom of the screen the app must keep clear
