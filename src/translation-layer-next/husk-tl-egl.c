@@ -76,6 +76,15 @@ static void (*a_glReadPixels)(int, int, int, int, unsigned, unsigned, void *);
 static void (*a_glGetIntegerv)(unsigned, int *);
 static void (*a_glBindFramebuffer)(unsigned, unsigned);
 static void (*a_glPixelStorei)(unsigned, int);
+/* the composited fast path (a window surface's frame handed to the Java runtime's compositor as a shared texture) */
+static void (*a_glGenTextures)(int, unsigned *);
+static void (*a_glDeleteTextures)(int, const unsigned *);
+static void (*a_glBindTexture)(unsigned, unsigned);
+static void (*a_glTexParameteri)(unsigned, unsigned, int);
+static void (*a_glCopyTexImage2D)(unsigned, int, unsigned, int, int, int, int, int);
+static void (*a_glCopyTexSubImage2D)(unsigned, int, int, int, int, int, int, int);
+static void (*a_glActiveTexture)(unsigned);
+static void (*a_glFinish)(void);
 
 #define LOAD(lib, name) do { a_##name = dlsym(lib, #name); if (!a_##name) tl_log_line("egl: ANGLE does not export " #name); } while (0)
 
@@ -103,6 +112,14 @@ bool tl_egl_init(const char *egl_path, const char *gles_path, const char *frame_
     a_glGetIntegerv = a_eglGetProcAddress("glGetIntegerv");
     a_glBindFramebuffer = a_eglGetProcAddress("glBindFramebuffer");
     a_glPixelStorei = a_eglGetProcAddress("glPixelStorei");
+    a_glGenTextures = a_eglGetProcAddress("glGenTextures");
+    a_glDeleteTextures = a_eglGetProcAddress("glDeleteTextures");
+    a_glBindTexture = a_eglGetProcAddress("glBindTexture");
+    a_glTexParameteri = a_eglGetProcAddress("glTexParameteri");
+    a_glCopyTexImage2D = a_eglGetProcAddress("glCopyTexImage2D");
+    a_glCopyTexSubImage2D = a_eglGetProcAddress("glCopyTexSubImage2D");
+    a_glActiveTexture = a_eglGetProcAddress("glActiveTexture");
+    a_glFinish = a_eglGetProcAddress("glFinish");
     if (frame_dir) { snprintf(E.frame_dir, sizeof(E.frame_dir), "%s", frame_dir); E.latest_only = frame_every < 0; E.frame_every = frame_every != 0 ? (frame_every < 0 ? -frame_every : frame_every) : 60; }
     E.ready = true;
     pthread_mutex_unlock(&E.lock);
@@ -197,9 +214,73 @@ static EGLBoolean w_eglGetConfigAttrib(EGLDisplay d, EGLConfig c, EGLint at, EGL
     if (trace) tl_log_line("egl: eglGetConfigAttrib(%p, %#x) -> %s %d", c, at, ok ? "true" : "false", v ? *v : -1);
     return ok;
 }
-PASS_BOOL(eglDestroyContext, (EGLDisplay d, EGLContext c), (d, c))
 PASS_BOOL(eglQuerySurface, (EGLDisplay d, EGLSurface s, EGLint at, EGLint *v), (d, s, at, v))
 PASS_BOOL(eglSurfaceAttrib, (EGLDisplay d, EGLSurface s, EGLint at, EGLint v), (d, s, at, v))
+/* The Java runtime's compositor (husk-tl-dvm-android.c), where it is linked: it holds the screen's surface, so an app that makes
+ * an EGL window of its own (SDL, Unity on a SurfaceView) draws off screen and each swap hands the frame to it, to be put on the
+ * screen under the app's views. Two window surfaces on one layer is what a phone refuses (EGL_BAD_ALLOC). */
+__attribute__((weak)) bool tl_javaapp_compositing(void);
+__attribute__((weak)) void tl_javaapp_app_pixels(const void *px, int w, int h);
+/* the frame as a shared texture instead of pixels: set when the app's context was joined to the compositor's share group */
+__attribute__((weak)) void tl_javaapp_app_texture(unsigned tex, int w, int h);
+/* the share group anchor: the compositor's own context; joining it lets an app's context hand its frame over on the GPU */
+__attribute__((weak)) void *tl_javaapp_egl_share(void);
+/* a texture whose context died: the compositor deletes it on its own context (a group member) */
+__attribute__((weak)) void tl_javaapp_app_gone(unsigned tex0, unsigned tex1);
+
+/* Contexts joined to the compositor's share group: anything created sharing with the anchor, and anything those create sharing
+ * among themselves. A context that could not join (a config ANGLE will not share) still works -- its composited surfaces fall
+ * back to the pixel read-back path. */
+#define MAX_GROUP_CTX 32
+static struct { EGLContext c; int es; } g_group[MAX_GROUP_CTX];
+static pthread_mutex_t g_group_lock = PTHREAD_MUTEX_INITIALIZER;
+static bool ctx_grouped(EGLContext c)
+{
+    bool r = false;
+    pthread_mutex_lock(&g_group_lock);
+    for (int i = 0; i < MAX_GROUP_CTX; i++) if (g_group[i].c == c && c) r = true;
+    pthread_mutex_unlock(&g_group_lock);
+    return r;
+}
+static void ctx_join_group(EGLContext c, int es)
+{
+    if (!c) return;
+    pthread_mutex_lock(&g_group_lock);
+    for (int i = 0; i < MAX_GROUP_CTX; i++) if (!g_group[i].c) { g_group[i].c = c; g_group[i].es = es; break; }
+    pthread_mutex_unlock(&g_group_lock);
+}
+static void ctx_leave_group(EGLContext c)
+{
+    pthread_mutex_lock(&g_group_lock);
+    for (int i = 0; i < MAX_GROUP_CTX; i++) if (g_group[i].c == c) g_group[i].c = NULL;
+    pthread_mutex_unlock(&g_group_lock);
+}
+/* every context made through here, to its ES major version (grouped or not: the read-back paths choose framebuffer binds by it) */
+#define MAX_ALL_CTX 64
+static struct { EGLContext c; int es; } g_ctxes[MAX_ALL_CTX];
+static void ctx_note_es(EGLContext c, int es)
+{
+    if (!c) return;
+    pthread_mutex_lock(&g_group_lock);
+    for (int i = 0; i < MAX_ALL_CTX; i++) if (g_ctxes[i].c == c) { g_ctxes[i].es = es; pthread_mutex_unlock(&g_group_lock); return; }
+    for (int i = 0; i < MAX_ALL_CTX; i++) if (!g_ctxes[i].c) { g_ctxes[i].c = c; g_ctxes[i].es = es; break; }
+    pthread_mutex_unlock(&g_group_lock);
+}
+static void ctx_forget(EGLContext c)
+{
+    pthread_mutex_lock(&g_group_lock);
+    for (int i = 0; i < MAX_ALL_CTX; i++) if (g_ctxes[i].c == c) g_ctxes[i].c = NULL;
+    pthread_mutex_unlock(&g_group_lock);
+}
+static int ctx_es_any(EGLContext c)
+{
+    int es = 0;
+    pthread_mutex_lock(&g_group_lock);
+    for (int i = 0; i < MAX_ALL_CTX; i++) if (g_ctxes[i].c == c) es = g_ctxes[i].es;
+    pthread_mutex_unlock(&g_group_lock);
+    return es ? es : 3;    /* a context nobody logged: assume ES 3's split bindings */
+}
+
 static EGLBoolean w_eglMakeCurrent(EGLDisplay d, EGLSurface dr, EGLSurface rd, EGLContext c)
 {
     EGLBoolean ok = E.ready ? a_eglMakeCurrent(d, dr, rd, c) : EGL_FALSE;
@@ -220,6 +301,7 @@ PASS_BOOL(eglWaitGL, (void), ())
 PASS_BOOL(eglWaitNative, (EGLint e), (e))
 PASS_BOOL(eglReleaseThread, (void), ())
 
+static EGLBoolean w_eglDestroyContext(EGLDisplay d, EGLContext c) { ctx_leave_group(c); ctx_forget(c); return a_eglDestroyContext(d, c); }
 static const char *w_eglQueryString(EGLDisplay d, EGLint name) { return a_eglQueryString(d, name); }
 static bool g_es31_shim;           /* defined with the rest of the shim, below */
 static EGLContext w_eglCreateContext(EGLDisplay d, EGLConfig c, EGLContext share, const EGLint *at)
@@ -235,7 +317,21 @@ static EGLContext w_eglCreateContext(EGLDisplay d, EGLConfig c, EGLContext share
         patched[n] = EGL_NONE;
         at = patched;
     }
-    EGLContext ctx = a_eglCreateContext(d, cfg_real(c), share, at);
+    /* the context's ES major, for the calls the composited path makes on it (ES 2 binds one framebuffer for both) */
+    int es = 1;
+    if (at) for (int i = 0; at[i] != EGL_NONE && i < 36; i += 2) if (at[i] == 0x3098 /* EGL_CONTEXT_CLIENT_VERSION */) { es = at[i + 1]; break; }
+    /* while the Java runtime's compositor holds the screen, a context that asks for no share group is offered the compositor's:
+     * joined, its window surfaces can hand frames over as textures on the GPU instead of a whole-screen pixel read-back */
+    EGLContext grouped_share = NULL;
+    if (tl_javaapp_compositing && tl_javaapp_compositing()) {
+        if (share && ctx_grouped(share)) grouped_share = share;
+        else if (!share && tl_javaapp_egl_share) grouped_share = tl_javaapp_egl_share();
+    }
+    EGLContext ctx = grouped_share ? a_eglCreateContext(d, cfg_real(c), grouped_share, at) : NULL;
+    bool in_group = ctx != NULL;
+    if (!ctx) ctx = a_eglCreateContext(d, cfg_real(c), share, at);                  /* ANGLE refused the group (or none asked): plain, frames go the slow way */
+    if (in_group) ctx_join_group(ctx, es);
+    ctx_note_es(ctx, es);
     static int trace = -1;
     if (trace < 0) trace = getenv("TL_EGL_TRACE") ? 1 : 0;
     if (trace || !ctx) {
@@ -257,7 +353,7 @@ static bool g_offscreen_windows;
 void tl_egl_offscreen_windows(bool on) { g_offscreen_windows = on; }
 /* surfaces made on a TextureView's window: off-screen, read back into its SurfaceTexture at each swap */
 #define MAX_TEX_SURFACES 16
-static struct { EGLSurface s; void *win; } g_tex_surf[MAX_TEX_SURFACES];
+static struct { EGLSurface s; void *win; EGLContext ctx; } g_tex_surf[MAX_TEX_SURFACES];
 static pthread_mutex_t g_tex_lock = PTHREAD_MUTEX_INITIALIZER;
 static void *tex_window_of(EGLSurface s)
 {
@@ -267,23 +363,22 @@ static void *tex_window_of(EGLSurface s)
     pthread_mutex_unlock(&g_tex_lock);
     return w;
 }
-/* The Java runtime's compositor (husk-tl-dvm-android.c), where it is linked: it holds the screen's surface, so an app that makes
- * an EGL window of its own (SDL, Unity on a SurfaceView) draws off screen and each swap hands the frame to it, to be put on the
- * screen under the app's views. Two window surfaces on one layer is what a phone refuses (EGL_BAD_ALLOC). */
-__attribute__((weak)) bool tl_javaapp_compositing(void);
-__attribute__((weak)) void tl_javaapp_app_pixels(const void *px, int w, int h);
 #define MAX_COMP_SURFACES 8
-static EGLSurface g_comp_surf[MAX_COMP_SURFACES];
-static bool comp_surface(EGLSurface s)
+/* a composited window surface: the context that was current when it was made (it owns the swap), and the two shared textures the
+ * frames are handed over as when the context joined the compositor's group */
+static struct { EGLSurface s; EGLContext ctx; uint32_t tex[2]; int tw[2], th[2], cur; } g_comp_surf[MAX_COMP_SURFACES];
+static int comp_index(EGLSurface s)
 {
-    bool r = false;
+    int r = -1;
     pthread_mutex_lock(&g_tex_lock);
-    for (int i = 0; i < MAX_COMP_SURFACES && s; i++) if (g_comp_surf[i] == s) r = true;
+    for (int i = 0; i < MAX_COMP_SURFACES && s; i++) if (g_comp_surf[i].s == s) r = i;
     pthread_mutex_unlock(&g_tex_lock);
     return r;
 }
-/* The current frame of a surface, read back (bottom-up RGBA, in a buffer of this thread's). */
-static const uint8_t *read_back(EGLDisplay d, EGLSurface s, EGLint *pw, EGLint *ph)
+/* The current frame of a surface, read back (bottom-up RGBA, in a buffer of this thread's). `es` is the surface context's
+ * major version: ES 2 has a single framebuffer binding, ES 3 a separate read one -- the wrong enum reads the app's own FBO
+ * (a black or partial frame: AQWorlds' world after login, #139) */
+static const uint8_t *read_back(EGLDisplay d, EGLSurface s, EGLint *pw, EGLint *ph, int es)
 {
     EGLint w = 0, h = 0;
     a_eglQuerySurface(d, s, EGL_WIDTH, &w); a_eglQuerySurface(d, s, EGL_HEIGHT, &h);
@@ -293,13 +388,13 @@ static const uint8_t *read_back(EGLDisplay d, EGLSurface s, EGLint *pw, EGLint *
     if (need > cap) { free(buf); buf = malloc(need); cap = buf ? need : 0; }
     if (!buf) return NULL;
     int old_fb = 0, old_pack = 0;
-    a_glGetIntegerv(0x8CAA /* GL_READ_FRAMEBUFFER_BINDING */, &old_fb);
+    a_glGetIntegerv(es >= 3 ? 0x8CAA /* GL_READ_FRAMEBUFFER_BINDING */ : 0x8CA6 /* GL_FRAMEBUFFER_BINDING */, &old_fb);
     a_glGetIntegerv(0x0D05 /* GL_PACK_ALIGNMENT */, &old_pack);
-    a_glBindFramebuffer(0x8CA8 /* GL_READ_FRAMEBUFFER */, 0);
+    a_glBindFramebuffer(es >= 3 ? 0x8CA8 /* GL_READ_FRAMEBUFFER */ : 0x8D40 /* GL_FRAMEBUFFER */, 0);
     a_glPixelStorei(0x0D05, 1);
     a_glReadPixels(0, 0, w, h, 0x1908 /* GL_RGBA */, 0x1401 /* GL_UNSIGNED_BYTE */, buf);
     a_glPixelStorei(0x0D05, old_pack);
-    a_glBindFramebuffer(0x8CA8, (unsigned)old_fb);
+    a_glBindFramebuffer(es >= 3 ? 0x8CA8 : 0x8D40, (unsigned)old_fb);
     *pw = w; *ph = h;
     return buf;
 }
@@ -310,8 +405,9 @@ static EGLSurface w_eglCreateWindowSurface(EGLDisplay d, EGLConfig cfg, void *wi
         EGLint pb[] = { EGL_WIDTH, tl_nwindow_width(win), EGL_HEIGHT, tl_nwindow_height(win), EGL_NONE };
         EGLSurface s = a_eglCreatePbufferSurface(d, cfg, pb);
         if (s) {
+            EGLContext now = a_eglGetCurrentContext();
             pthread_mutex_lock(&g_tex_lock);
-            for (int i = 0; i < MAX_TEX_SURFACES; i++) if (!g_tex_surf[i].s) { g_tex_surf[i].s = s; g_tex_surf[i].win = win; break; }
+            for (int i = 0; i < MAX_TEX_SURFACES; i++) if (!g_tex_surf[i].s) { g_tex_surf[i].s = s; g_tex_surf[i].win = win; g_tex_surf[i].ctx = now; break; }
             pthread_mutex_unlock(&g_tex_lock);
         }
         tl_log_line("egl: TextureView window %dx%d -> off-screen surface %p", pb[1], pb[3], s);
@@ -321,11 +417,12 @@ static EGLSurface w_eglCreateWindowSurface(EGLDisplay d, EGLConfig cfg, void *wi
         EGLint pb[] = { EGL_WIDTH, tl_nwindow_width(win), EGL_HEIGHT, tl_nwindow_height(win), EGL_NONE };
         EGLSurface s = a_eglCreatePbufferSurface(d, cfg, pb);
         if (s) {
+            EGLContext now = a_eglGetCurrentContext();
             pthread_mutex_lock(&g_tex_lock);
-            for (int i = 0; i < MAX_COMP_SURFACES; i++) if (!g_comp_surf[i]) { g_comp_surf[i] = s; break; }
+            for (int i = 0; i < MAX_COMP_SURFACES; i++) if (!g_comp_surf[i].s) { memset(&g_comp_surf[i], 0, sizeof(g_comp_surf[i])); g_comp_surf[i].s = s; g_comp_surf[i].ctx = now; break; }
             pthread_mutex_unlock(&g_tex_lock);
-        }
-        tl_log_line("egl: window %dx%d -> surface %p, composited under the app's views", pb[1], pb[3], s);
+            tl_log_line("egl: window %dx%d -> surface %p, composited under the app's views%s", pb[1], pb[3], s, ctx_grouped(now) ? " (shared-texture path)" : "");
+        } else tl_log_line("egl: window %dx%d -> composited surface failed", pb[1], pb[3]);
         return s;
     }
     if (E.frame_dir[0] || g_offscreen_windows) {
@@ -351,10 +448,11 @@ static EGLBoolean w_eglDestroySurface(EGLDisplay d, EGLSurface s)
 {
     pthread_mutex_lock(&g_tex_lock);
     for (int i = 0; i < MAX_TEX_SURFACES; i++) if (g_tex_surf[i].s == s) g_tex_surf[i].s = NULL;
-    bool comp = false;
-    for (int i = 0; i < MAX_COMP_SURFACES && s; i++) if (g_comp_surf[i] == s) { g_comp_surf[i] = NULL; comp = true; }
+    uint32_t dead[2] = { 0, 0 }; bool comp = false;
+    for (int i = 0; i < MAX_COMP_SURFACES && s; i++) if (g_comp_surf[i].s == s) { dead[0] = g_comp_surf[i].tex[0]; dead[1] = g_comp_surf[i].tex[1]; memset(&g_comp_surf[i], 0, sizeof(g_comp_surf[i])); comp = true; }
     pthread_mutex_unlock(&g_tex_lock);
     if (comp && tl_javaapp_app_pixels) tl_javaapp_app_pixels(NULL, 0, 0);
+    if (comp && tl_javaapp_app_gone && (dead[0] || dead[1])) tl_javaapp_app_gone(dead[0], dead[1]);
     return a_eglDestroySurface(d, s);
 }
 static EGLSurface w_eglCreatePbufferSurface(EGLDisplay d, EGLConfig c, const EGLint *at) { return a_eglCreatePbufferSurface(d, cfg_real(c), at); }
@@ -415,24 +513,100 @@ static void tex_swap(EGLDisplay d, EGLSurface s, void *win)
     size_t need = (size_t)w * h * 4;
     if (need > cap) { free(buf); buf = malloc(need); cap = buf ? need : 0; }
     if (!buf) return;
+    int es = 3;
+    pthread_mutex_lock(&g_tex_lock);
+    for (int i = 0; i < MAX_TEX_SURFACES; i++) if (g_tex_surf[i].s == s) { es = ctx_es_any(g_tex_surf[i].ctx); break; }
+    pthread_mutex_unlock(&g_tex_lock);
     int old_fb = 0, old_pack = 0;
-    a_glGetIntegerv(0x8CAA /* GL_READ_FRAMEBUFFER_BINDING */, &old_fb);
+    a_glGetIntegerv(es >= 3 ? 0x8CAA /* GL_READ_FRAMEBUFFER_BINDING */ : 0x8CA6 /* GL_FRAMEBUFFER_BINDING */, &old_fb);
     a_glGetIntegerv(0x0D05 /* GL_PACK_ALIGNMENT */, &old_pack);
-    a_glBindFramebuffer(0x8CA8 /* GL_READ_FRAMEBUFFER */, 0);
+    a_glBindFramebuffer(es >= 3 ? 0x8CA8 /* GL_READ_FRAMEBUFFER */ : 0x8D40 /* GL_FRAMEBUFFER */, 0);
     a_glPixelStorei(0x0D05, 1);
     a_glReadPixels(0, 0, w, h, 0x1908 /* GL_RGBA */, 0x1401 /* GL_UNSIGNED_BYTE */, buf);
     a_glPixelStorei(0x0D05, old_pack);
-    a_glBindFramebuffer(0x8CA8, (unsigned)old_fb);
+    a_glBindFramebuffer(es >= 3 ? 0x8CA8 : 0x8D40, (unsigned)old_fb);
     tl_nwindow_post(win, buf, w, h, true);
+}
+/* A composited surface's frame handed over on the GPU: the pbuffer's color is copied into a texture shared with the compositor,
+ * which draws it under the app's views. Only for contexts in the share group; anything else still sends pixels. */
+static bool comp_swap_tex(EGLDisplay d, int i, EGLint *pw, EGLint *ph)
+{
+    if (!a_glCopyTexImage2D || !a_glCopyTexSubImage2D || !a_glGenTextures || !a_glBindTexture || !a_glTexParameteri || !a_glActiveTexture
+        || !a_glGetIntegerv || !a_glBindFramebuffer || !tl_javaapp_app_texture) return false;
+    pthread_mutex_lock(&g_tex_lock);
+    EGLSurface s = g_comp_surf[i].s;
+    EGLContext ctx = g_comp_surf[i].ctx;
+    pthread_mutex_unlock(&g_tex_lock);
+    if (!s || !ctx || !ctx_grouped(ctx)) return false;
+    int es = ctx_es_any(ctx);
+    EGLint w = 0, h = 0;
+    a_eglQuerySurface(d, s, EGL_WIDTH, &w); a_eglQuerySurface(d, s, EGL_HEIGHT, &h);
+    if (w <= 0 || h <= 0) return false;
+    /* the pbuffer is framebuffer 0 of the bound draw/read surface; whatever the app left bound goes back after */
+    int old_fb = 0, old_tex = 0, old_active = 0x84C0;
+    a_glGetIntegerv(0x84E0 /* GL_ACTIVE_TEXTURE */, &old_active);
+    if (es >= 3) {
+        a_glGetIntegerv(0x8CAA /* GL_READ_FRAMEBUFFER_BINDING */, &old_fb);
+        a_glBindFramebuffer(0x8CA8 /* GL_READ_FRAMEBUFFER */, 0);
+    } else {
+        a_glGetIntegerv(0x8CA6 /* GL_FRAMEBUFFER_BINDING */, &old_fb);
+        a_glBindFramebuffer(0x8D40 /* GL_FRAMEBUFFER */, 0);
+    }
+    a_glActiveTexture(0x84C0);
+    a_glGetIntegerv(0x8069 /* GL_TEXTURE_BINDING_2D */, &old_tex);
+    int cur;
+    uint32_t tex;
+    pthread_mutex_lock(&g_tex_lock);
+    cur = g_comp_surf[i].s == s ? g_comp_surf[i].cur : -1;
+    if (cur >= 0) {
+        if (!g_comp_surf[i].tex[cur]) a_glGenTextures(1, &g_comp_surf[i].tex[cur]);
+        tex = g_comp_surf[i].tex[cur];
+    } else tex = 0;
+    pthread_mutex_unlock(&g_tex_lock);
+    if (cur < 0 || !tex) { a_glBindTexture(0x0DE1, (unsigned)old_tex); a_glActiveTexture((unsigned)old_active); a_glBindFramebuffer(es >= 3 ? 0x8CA8 : 0x8D40, (unsigned)old_fb); return false; }
+    a_glBindTexture(0x0DE1, tex);
+    int k = -1;
+    pthread_mutex_lock(&g_tex_lock);
+    if (g_comp_surf[i].s == s && g_comp_surf[i].tex[cur] == tex) {
+        if (g_comp_surf[i].tw[cur] != w || g_comp_surf[i].th[cur] != h) k = 0; else k = 1;
+    }
+    pthread_mutex_unlock(&g_tex_lock);
+    if (k < 0) { a_glBindTexture(0x0DE1, (unsigned)old_tex); a_glActiveTexture((unsigned)old_active); a_glBindFramebuffer(es >= 3 ? 0x8CA8 : 0x8D40, (unsigned)old_fb); return false; }
+    if (k == 0) {
+        a_glTexParameteri(0x0DE1, 0x2801, 0x2601); a_glTexParameteri(0x0DE1, 0x2800, 0x2601);
+        a_glTexParameteri(0x0DE1, 0x2802, 0x812F); a_glTexParameteri(0x0DE1, 0x2803, 0x812F);
+        a_glCopyTexImage2D(0x0DE1, 0, 0x1908, 0, 0, w, h, 0);
+    } else a_glCopyTexSubImage2D(0x0DE1, 0, 0, 0, 0, 0, w, h);
+    a_glBindTexture(0x0DE1, (unsigned)old_tex);
+    a_glActiveTexture((unsigned)old_active);
+    a_glBindFramebuffer(es >= 3 ? 0x8CA8 : 0x8D40, (unsigned)old_fb);
+    if (a_glFinish) a_glFinish();            /* the copy is done before the compositor's context samples the texture */
+    pthread_mutex_lock(&g_tex_lock);
+    if (g_comp_surf[i].s == s && g_comp_surf[i].tex[cur] == tex) { g_comp_surf[i].tw[cur] = w; g_comp_surf[i].th[cur] = h; g_comp_surf[i].cur = cur ^ 1; }
+    pthread_mutex_unlock(&g_tex_lock);
+    *pw = w; *ph = h;
+    return true;
 }
 static EGLBoolean w_eglSwapBuffers(EGLDisplay d, EGLSurface s)
 {
     void *texwin = tex_window_of(s);
     if (texwin) { tex_swap(d, s, texwin); return EGL_TRUE; }
     unsigned long n = atomic_fetch_add(&E.presented, 1) + 1;
-    if (comp_surface(s)) {
+    int ci = comp_index(s);
+    if (ci >= 0) {
         EGLint w = 0, h = 0;
-        const uint8_t *px = read_back(d, s, &w, &h);
+        if (comp_swap_tex(d, ci, &w, &h)) {
+            if (tl_javaapp_app_texture) {
+                pthread_mutex_lock(&g_tex_lock);
+                uint32_t tex = g_comp_surf[ci].tex[g_comp_surf[ci].cur ^ 1];
+                pthread_mutex_unlock(&g_tex_lock);
+                tl_javaapp_app_texture(tex, w, h);
+            }
+            if (n <= 3 || n % 600 == 0) tl_log_line("egl: swap #%lu (composited, shared texture)", n);
+            return EGL_TRUE;
+        }
+        pthread_mutex_lock(&g_tex_lock); EGLContext sctx = g_comp_surf[ci].ctx; pthread_mutex_unlock(&g_tex_lock);
+        const uint8_t *px = read_back(d, s, &w, &h, sctx ? ctx_es_any(sctx) : 3);
         if (px && tl_javaapp_app_pixels) tl_javaapp_app_pixels(px, w, h);
         if (n <= 3 || n % 600 == 0) tl_log_line("egl: swap #%lu (composited)", n);
         return EGL_TRUE;

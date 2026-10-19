@@ -864,6 +864,29 @@ void tl_javaapp_app_pixels(const void *px, int w, int h)
     E2.on = true; E2.seq++;
     pthread_mutex_unlock(&E2.lk);
 }
+/* the same frame, already on the GPU: a texture shared with this context (the app's EGL context joined the group) */
+void tl_javaapp_app_texture(uint32_t tex, int w, int h)
+{
+    pthread_mutex_lock(&E2.lk);
+    E2.tex = tex; E2.pw = w; E2.ph = h;
+    E2.x = 0; E2.y = 0; E2.w = A.cfg.width; E2.h = A.cfg.height;
+    E2.on = true; E2.seq++;
+    pthread_mutex_unlock(&E2.lk);
+}
+/* the share group's anchor: this thread's context, so an app's context can be created sharing with it */
+void *tl_javaapp_egl_share(void)
+{
+    pthread_mutex_lock(&E2.lk); void *c = E2.ready ? E2.ui : NULL; pthread_mutex_unlock(&E2.lk); return c;
+}
+/* shared textures whose surface/context went away, handed here to be deleted by a group member that is still current */
+static uint32_t g_dead_tex[32]; static int g_dead_n;
+void tl_javaapp_app_gone(uint32_t t0, uint32_t t1)
+{
+    pthread_mutex_lock(&E2.lk);
+    if (t0 && g_dead_n < 32) g_dead_tex[g_dead_n++] = t0;
+    if (t1 && g_dead_n < 32) g_dead_tex[g_dead_n++] = t1;
+    pthread_mutex_unlock(&E2.lk);
+}
 static uint64_t app_frame_seq(void) { pthread_mutex_lock(&E2.lk); uint64_t q = E2.seq; pthread_mutex_unlock(&E2.lk); return q; }
 static bool app_frame_on(void) { pthread_mutex_lock(&E2.lk); bool q = E2.on; pthread_mutex_unlock(&E2.lk); return q; }
 
@@ -972,6 +995,9 @@ static void *gl_main(void *arg)
         app_seq = q;
         if (drew || fresh || app_fresh) {
             makeCurrent(dpy, surf, surf, ui);
+            uint32_t dl[32]; int nd;
+            pthread_mutex_lock(&E2.lk); nd = g_dead_n; memcpy(dl, g_dead_tex, sizeof(dl)); g_dead_n = 0; pthread_mutex_unlock(&E2.lk);
+            if (nd) { void (*delTex)(int32_t, const uint32_t *) = gl_fn("glDeleteTextures"); if (delTex) delTex(nd, dl); }
             if (!app) { clearColor(0, 0, 0, tl_web_any_visible() && !app_frame_on() ? 0 : 1); clear(0x4000); }     /* web views show through from under the screen */
             if (!app) app_frame_draw(&appov, &appup, A.cfg.width, A.cfg.height);
             if (tl_ui_has_frame()) ov_draw(&ov, A.cfg.width, A.cfg.height);
