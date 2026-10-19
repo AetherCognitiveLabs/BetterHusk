@@ -31,7 +31,7 @@ for arg in "$@"; do
 done
 [[ "$OUT" == *.tipa ]] && TROLLSTORE=true
 if [ -z "$OUT" ]; then
-    OUT="$HOME/Desktop/Husk.$([ "$TROLLSTORE" = true ] && echo tipa || echo ipa)"
+    OUT="$HOME/Desktop/BetterHusk.$([ "$TROLLSTORE" = true ] && echo tipa || echo ipa)"
 fi
 mkdir -p "$DD"
 
