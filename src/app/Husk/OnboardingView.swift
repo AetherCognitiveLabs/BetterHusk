@@ -453,7 +453,7 @@ struct OnboardingView: View {
 
     // MARK: lists
 
-    private static var defaultLanguage: String {
+    static var defaultLanguage: String {
         let preferred = Locale.preferredLanguages.first ?? "en"
         if preferred.hasPrefix("zh-Hant") || preferred.hasPrefix("zh-TW") || preferred.hasPrefix("zh-HK") { return "zh-Hant" }
         if preferred.hasPrefix("zh") { return "zh-Hans" }
@@ -462,7 +462,7 @@ struct OnboardingView: View {
         return languages.contains { $0.id == code } ? code : "en"
     }
 
-    private static let languages: [SetupChoice] = {
+    static let languages: [SetupChoice] = {
         let codes = ["en", "es", "fr", "de", "it", "pt", "pt-BR", "ru", "uk", "pl", "nl", "sv", "da", "nb", "fi", "tr", "el",
                      "cs", "hu", "ro", "ar", "he", "hi", "th", "vi", "id", "ms", "ja", "ko", "zh-Hans", "zh-Hant"]
         return codes.map { code in
@@ -472,7 +472,7 @@ struct OnboardingView: View {
         }
     }()
 
-    private static let regions: [SetupChoice] = {
+    static let regions: [SetupChoice] = {
         Locale.isoRegionCodes
             .compactMap { code in Locale.current.localizedString(forRegionCode: code).map { SetupChoice(id: code, name: $0) } }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }

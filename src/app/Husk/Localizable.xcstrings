@@ -9901,6 +9901,26 @@
           }
         }
       }
+    },
+    "What apps and games inside Husk speak": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Husk 内运行的应用和游戏使用的语言"
+          }
+        }
+      }
+    },
+    "The language apps and games inside Husk see. Husk itself follows your iPhone. Takes effect the next time an app opens.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Husk 内运行的应用和游戏看到的语言。Husk 本身跟随你的 iPhone 系统语言。下次打开应用时生效。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

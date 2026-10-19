@@ -27,6 +27,7 @@ struct SettingsTab: View {
                     row(LibrarySettings(), "square.grid.2x2.fill", .blue, "Library", "Your apps and their icons")
                     row(PerformanceSettings(), "speedometer", .orange, "Performance", "Renderer, sound")
                     row(AppearanceSettings(), "paintbrush.fill", .pink, "Appearance", "Light or dark, accent colour, app icon")
+                    row(LanguageSettings(), "globe", .purple, "Language", "What apps and games inside Husk speak")
                     row(FontSettings(), "textformat", .indigo, "Fonts", "Chinese, Japanese and Korean text")
                     row(FAQTab(), "questionmark.circle.fill", .teal, "Help", "Answers to common problems")
                 }
@@ -258,6 +259,33 @@ struct FontSettings: View {
         }
         .huskForm()
         .navigationTitle("Fonts")
+    }
+}
+
+// MARK: - Language
+
+/// The language and region apps and games inside Husk are told to use, asked once in setup and changed here
+/// afterwards (#150). Consumed by QemuRunner (persist.sys.* over the guest bridge) and the translation layer's
+/// `husk_tl_set_locale` channel; Husk's own interface follows iOS either way.
+struct LanguageSettings: View {
+    @AppStorage(Onboarding.languageKey) private var language = OnboardingView.defaultLanguage
+    @AppStorage(Onboarding.regionKey) private var region = Locale.current.huskRegionCode ?? "US"
+
+    var body: some View {
+        Form {
+            Section {
+                Picker("Language", selection: $language) {
+                    ForEach(OnboardingView.languages) { Text($0.name).tag($0.id) }
+                }
+                Picker("Region", selection: $region) {
+                    ForEach(OnboardingView.regions) { Text($0.name).tag($0.id) }
+                }
+            } footer: {
+                Text("The language apps and games inside Husk see. Husk itself follows your iPhone. Takes effect the next time an app opens.")
+            }
+        }
+        .huskForm()
+        .navigationTitle("Language")
     }
 }
 
