@@ -1052,12 +1052,50 @@ static void jni_ReleaseStringCritical(void *env, jo s, const uint16_t *c) { jni_
 
 typedef struct { const char *name, *sig; void *fn; } native_method;
 
+/* Bind one native onto a class. Called under g_lock. */
+static void bind_native(tl_jclass *c, const char *name, const char *sig, void *fn)
+{
+    c->natives = realloc(c->natives, (size_t)(c->nnatives + 1) * sizeof(*c->natives));
+    c->natives[c->nnatives].name = strdup(name);
+    c->natives[c->nnatives].sig = strdup(sig);
+    c->natives[c->nnatives].fn = fn;
+    c->nnatives++;
+}
+
+/* A run-time classloader's copy of a class is tagged "name@ns" inside the dvm,
+ * so loader-isolated classes stay distinct -- but JNI natives are bound to
+ * class OBJECTS, and the two views of the same Java class must share them:
+ * a Dex2C protector (Balatro's libandroidoyunclub) that registers on the
+ * namespaced class it loaded must still answer when the base dex's call site
+ * resolves the plain name, and the reverse. Extracts the plain name of a
+ * tagged class, or returns NULL when it is not a loader copy. */
+static const char *base_class_name(const char *name, char *buf, size_t cap)
+{
+    const char *at = name ? strchr(name, '@') : NULL;
+    size_t len = at ? (size_t)(at - name) : 0;
+    if (!at || !len || len >= cap) return NULL;
+    memcpy(buf, name, len); buf[len] = 0;
+    return buf;
+}
+
+/* The tagged class's plain-named twin, or NULL. find-only: call under g_lock
+ * (declaring under it would reenter g_lock through tl_jni_class). */
+static tl_jclass *base_class_locked(tl_jclass *c)
+{
+    char bname[600];
+    return base_class_name(c ? c->name : NULL, bname, sizeof(bname)) ? find_class_locked(bname) : NULL;
+}
+
 static int32_t jni_RegisterNatives(void *env, jo cls, const native_method *m, int32_t n)
 {
     (void)env;
     if (!cls || cls->kind != TL_K_CLASS) return -1;
     tl_jclass *given = cls->klass.jc;
     bool tl_dvm_declares(tl_jclass *jc, const char *name, const char *sig);
+    /* Resolve the plain twin of the given class before locking, so the common
+     * case (binding onto the very class handed in) declares it if needed. */
+    char bname[600];
+    tl_jclass *given_base = base_class_name(given->name, bname, sizeof(bname)) ? tl_jni_class(bname) : NULL;
     pthread_mutex_lock(&g_lock);
     for (int32_t i = 0; i < n; i++) {
         /* the class that declares the method, the given one or a superclass (ART's FindClassMethod): Reanimated registers
@@ -1065,11 +1103,10 @@ static int32_t jni_RegisterNatives(void *env, jo cls, const native_method *m, in
         tl_jclass *c = given;
         if (!tl_dvm_declares(c, m[i].name, m[i].sig))
             for (tl_jclass *k = given->super; k; k = k->super) if (tl_dvm_declares(k, m[i].name, m[i].sig)) { c = k; break; }
-        c->natives = realloc(c->natives, (size_t)(c->nnatives + 1) * sizeof(*c->natives));
-        c->natives[c->nnatives].name = strdup(m[i].name);
-        c->natives[c->nnatives].sig = strdup(m[i].sig);
-        c->natives[c->nnatives].fn = m[i].fn;
-        c->nnatives++;
+        bind_native(c, m[i].name, m[i].sig, m[i].fn);
+        /* The same method looked up through the loader-agnostic name (#152). */
+        tl_jclass *base = c == given ? given_base : base_class_locked(c);
+        if (base && base != c) bind_native(base, m[i].name, m[i].sig, m[i].fn);
         TRACE("jni: RegisterNatives %s.%s%s -> %p", c->name, m[i].name, m[i].sig, m[i].fn);
     }
     pthread_mutex_unlock(&g_lock);
@@ -1080,9 +1117,15 @@ static int32_t jni_UnregisterNatives(void *env, jo cls) { (void)env; (void)cls; 
 void *tl_jni_native(const char *cls, const char *name, const char *sig)
 {
     tl_jclass *c = tl_jni_class(cls);
+    /* Asked under the loader tag: the plain-named twin may be where the
+     * natives were registered -- resolve it outside the lock (#152). */
+    char bname[600];
+    tl_jclass *base = base_class_name(cls, bname, sizeof(bname)) ? tl_jni_class(bname) : NULL;
     void *r = NULL;
     pthread_mutex_lock(&g_lock);
-    for (int i = 0; i < c->nnatives; i++) if (!strcmp(c->natives[i].name, name) && (!sig || !strcmp(c->natives[i].sig, sig))) r = c->natives[i].fn;
+    for (int i = 0; i < c->nnatives && !r; i++) if (!strcmp(c->natives[i].name, name) && (!sig || !strcmp(c->natives[i].sig, sig))) r = c->natives[i].fn;
+    if (!r && base && base != c)
+        for (int i = 0; i < base->nnatives; i++) if (!strcmp(base->natives[i].name, name) && (!sig || !strcmp(base->natives[i].sig, sig))) { r = base->natives[i].fn; break; }
     pthread_mutex_unlock(&g_lock);
     return r;
 }
