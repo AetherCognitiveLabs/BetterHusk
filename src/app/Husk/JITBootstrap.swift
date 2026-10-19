@@ -93,6 +93,7 @@ enum JITBootstrap {
         }
         HuskLog.log("jit", "claiming \(jitBytes / (1024 * 1024)) MiB of JIT memory now, "
                          + "before the guest download -- StikDebug does not stay attached")
+        husk_ios_jit_expect_servicer()
         let ok = husk_ios_jit_prewarm(jitBytes)
         if ok {
             prewarmed = true

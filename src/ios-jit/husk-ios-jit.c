@@ -461,6 +461,16 @@ static HuskDualMapping husk_ios_jit_allocate_real(size_t bytes);
 
 static HuskDualMapping husk_prewarmed;
 static bool husk_prewarm_done;
+static bool husk_prewarm_debugged;   /* CS_DEBUGGED was set when the earlier try ran */
+static atomic_bool husk_prewarm_retried;
+/* Whether a brk from us is expected to be serviced (the JIT method is
+ * StikDebug). A debugged process is not the same thing: TrollStore's
+ * enable-jit attaches for a moment and services nothing, and trapping there
+ * leaves the process stopped -- so the retry below needs this flag set by
+ * the side that knows the method, not just CS_DEBUGGED. */
+static atomic_bool g_servicer_expected;
+
+HUSK_EXPORT void husk_ios_jit_expect_servicer(void) { atomic_store(&g_servicer_expected, true); }
 
 HUSK_EXPORT bool husk_ios_jit_prewarm(size_t bytes)
 {
@@ -468,16 +478,41 @@ HUSK_EXPORT bool husk_ios_jit_prewarm(size_t bytes)
         return husk_prewarmed.rw_addr != NULL;
     }
     husk_prewarm_done = true;
+    husk_prewarm_debugged = husk_kernel_debugged();
     husk_prewarmed = husk_ios_jit_allocate_real(bytes);
     fprintf(stderr, "[husk-jit] prewarm %s: %zu bytes\n",
             husk_prewarmed.rw_addr ? "OK" : "FAILED", bytes);
     return husk_prewarmed.rw_addr != NULL;
 }
 
+/* Region size a late allocation asks for: the same 512 MiB JITBootstrap's
+ * prewarm requests, so a retry inside get_mapping hands the runtime what the
+ * early path would have. */
+#define HUSK_JIT_REGION_BYTES ((size_t)512 << 20)
+
+/* The trap is worth one more attempt once a debugger shows up where none was
+ * when the earlier try ran: inside LiveContainer the servicer (StikDebug
+ * attached to the container process) can arrive after Husk's launch-time
+ * prewarm already failed, or after no prewarm ran at all (#155). A failure
+ * measured WITH a debugger stays final -- an attached servicer that does not
+ * answer would only leave the process stopped on the brk. */
+static HuskDualMapping *husk_prewarm_retry(size_t bytes)
+{
+    if (husk_prewarm_debugged
+        || !atomic_load(&g_servicer_expected) || !husk_kernel_debugged()) return NULL;
+    if (atomic_exchange(&husk_prewarm_retried, true)) return NULL;   /* one retry, even across threads */
+    husk_prewarm_done = true;
+    fprintf(stderr, "[husk-jit] a debugger is attached now; requesting the JIT region\n");
+    HuskDualMapping m = husk_ios_jit_allocate_real(bytes);
+    if (m.rw_addr) husk_prewarmed = m;
+    return m.rw_addr ? &husk_prewarmed : NULL;
+}
+
 /* The held region, for the native runtime (translation-layer/husk-tl-load.c looks this up by name). */
 HUSK_EXPORT HuskDualMapping *husk_ios_jit_get_mapping(void)
 {
-    return husk_prewarmed.rw_addr ? &husk_prewarmed : NULL;
+    if (husk_prewarmed.rw_addr) return &husk_prewarmed;
+    return husk_prewarm_retry(HUSK_JIT_REGION_BYTES);
 }
 
 /*
@@ -534,6 +569,8 @@ HuskDualMapping husk_ios_jit_allocate(size_t bytes)
      * fall back to MAP_JIT, or lets qemu_init report the error.
      */
     if (husk_prewarm_done) {
+        HuskDualMapping *retry = husk_prewarm_retry(bytes);
+        if (retry) return *retry;
         fprintf(stderr, "[husk-jit] prewarm failed earlier; not trapping again\n");
         HuskDualMapping none = { NULL, NULL, 0 };
         return none;
