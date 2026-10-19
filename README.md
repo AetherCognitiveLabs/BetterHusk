@@ -1,16 +1,15 @@
-# Husk
+# BetterHusk
 
-<p align="center">
-  <a href="https://trendshift.io/repositories/233057?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-233057" target="_blank" rel="noopener noreferrer">
-    <img src="https://trendshift.io/api/badge/trendshift/repositories/233057/daily?language=Swift" alt="Leviidev/Husk | Trendshift" width="250" height="55"/>
-  </a>
-</p>
+[![BetterHusk Downloads](https://img.shields.io/github/downloads/betterstreamflix/betterhusk/total?style=for-the-badge&color=5865F2&labelColor=111111)](https://github.com/BetterStreamflix/BetterHusk/releases)
+[![Build BetterHusk IPA](https://img.shields.io/github/actions/workflow/status/betterstreamflix/betterhusk/build-ipa.yml?style=for-the-badge&label=build)](https://github.com/BetterStreamflix/BetterHusk/actions/workflows/build-ipa.yml)
 
-[![Husk Downloads](https://img.shields.io/github/downloads/leviidev/husk/total?style=for-the-badge&color=5865F2&labelColor=111111)](https://github.com/leviidev/husk/releases)
+**BetterHusk is a fork of [Leviidev/Husk](https://github.com/Leviidev/Husk) that
+tracks upstream and ships the fixes upstream has not merged yet.** It installs
+next to Husk (`com.betterhusk.app`), so you can run both.
 
 Android apps and games on your iPhone.
 
-Add an APK, tap it, and it opens full-screen. Husk runs it in one of two ways,
+Add an APK, tap it, and it opens full-screen. BetterHusk runs it in one of two ways,
 shown as the two sides of its Library:
 
 - **Translation Layer.** The game's own 64-bit Android code runs directly on
@@ -20,10 +19,51 @@ shown as the two sides of its Library:
   game starts in seconds, and its code is never emulated.
   See [docs/04-translation-layer.md](docs/04-translation-layer.md).
 - **Emulation.** A full Android system (LineageOS) boots under QEMU inside
-  Husk, for apps the translation layer cannot run yet and for using Android
+  BetterHusk, for apps the translation layer cannot run yet and for using Android
   itself. iOS gives apps no hypervisor, so the processor is emulated, and
   this is much slower than the translation layer.
   See [docs/00-architecture.md](docs/00-architecture.md).
+
+## What BetterHusk adds over Husk
+
+Everything in upstream `Leviidev/Husk`, plus these unmerged upstream fixes
+and fork-level work:
+
+- **Translation-layer sensor manager** — Unity games that enumerate sensors at
+  startup (e.g. Stickman Dismounting hanging on the ViperGames splash screen)
+  get real accelerometer/gyro answers from CoreMotion
+  ([Leviidev/Husk#147](https://github.com/Leviidev/Husk/pull/147)).
+- **Unity display modes + device memory** — `Display.getSupportedModes`
+  answers a 60 Hz mode instead of `null`, so `Enumerable.Max` no longer
+  throws during Unity startup (same PR).
+- **Godot 4.6/4.7 file & directory handlers** — the Kotlin-moved
+  `DirectoryAccessHandler`/`FileAccessHandler` natives are answered, fixing
+  the `NoSuchMethodError` crash on startup
+  ([Leviidev/Husk#151](https://github.com/Leviidev/Husk/pull/151), fixes
+  [#140](https://github.com/Leviidev/Husk/issues/140)).
+- **Cocos Creator games boot** — V8 is told `--jitless` before its
+  `JNI_OnLoad`, so `libcocos2djs` games (Top War and friends) no longer die
+  asking for writable+executable memory
+  ([Leviidev/Husk#113](https://github.com/Leviidev/Husk/pull/113)).
+- **Correct base-APK selection for split bundles** — the manifest's `split`
+  attribute decides, not the file name, so `.xapk`/`.apkm` installs pick the
+  real base APK ([Leviidev/Husk#106](https://github.com/Leviidev/Husk/pull/106)).
+- **Built-in JIT port discovery** — the RemotePairing port is discovered via
+  Bonjour instead of assumed to be 49152, fixing built-in StikJIT on devices
+  where the port differs
+  ([Leviidev/Husk#153](https://github.com/Leviidev/Husk/pull/153)).
+- **W^X-safe JIT mapping + TrollStore packaging** — the dual mapping allocates
+  RWX-max then demotes to RX via `vm_protect`, and `package_ipa.sh` strips the
+  `dynamic-codesigning` entitlement that TrollStore bans under PPL/TXM
+  ([Leviidev/Husk#74](https://github.com/Leviidev/Husk/pull/74)).
+- **A real CI** — `.github/workflows/build-ipa.yml` builds a complete,
+  verified IPA (with the checksummed PS4 module) on every push to `main` and
+  publishes it as a prerelease. Upstream has no CI at all.
+- **Its own identity** — `com.betterhusk.app`, so BetterHusk installs
+  alongside Husk instead of fighting it for the same bundle ID.
+
+See [FORK.md](FORK.md) for how the fork is kept in sync and how upstream PRs
+are picked.
 
 ## Screenshots
 
@@ -82,57 +122,60 @@ what happened, with a report you can share.
 
 ## Installing
 
-**SideStore, AltStore and other sideloaders:** add Husk's source, and the
-sideloader installs Husk and offers each update as it comes out.
+**SideStore, AltStore and other sideloaders:** add BetterHusk's source, and the
+sideloader installs BetterHusk and offers each update as it comes out.
 
 ```
-https://raw.githubusercontent.com/Leviidev/Husk/main/altsource.json
+https://raw.githubusercontent.com/BetterStreamflix/BetterHusk/main/altsource.json
 ```
 
 In SideStore or AltStore: Sources › + › paste the address above.
 
-**Or by hand:** download `Husk.ipa` from
-[Releases](https://github.com/leviidev/husk/releases) and install it with
+**Or by hand:** download `BetterHusk.ipa` from
+[Releases](https://github.com/BetterStreamflix/BetterHusk/releases) and install it with
 SideStore, AltStore or TrollStore. It is one IPA for all of them: it carries
-Husk's entitlements, which TrollStore keeps, and a sideloader re-signs it with
+BetterHusk's entitlements, which TrollStore keeps, and a sideloader re-signs it with
 your own.
 
-Husk needs iOS 16.0 or later.
+BetterHusk needs iOS 15.5 or later.
 
 ## JIT
 
 Both the translation layer and Emulation need JIT, which on iOS comes from a
-debugger. Husk can get it in several ways, and walks you through each one
+debugger. BetterHusk can get it in several ways, and walks you through each one
 (Settings › JIT & Sideload):
 
-- **Built-in StikJIT** (iOS 26 and later): Husk turns JIT on itself, with no
+- **Built-in StikJIT** (iOS 26 and later): BetterHusk turns JIT on itself, with no
   second app. On iOS 27 it pairs with your iPhone from Settings, with no
   computer. See [docs/06-built-in-jit.md](docs/06-built-in-jit.md).
-- **StikDebug**, installed alongside Husk.
+- **StikDebug**, installed alongside BetterHusk.
 - **TrollStore or a Dopamine jailbreak** ("Allow JIT in Apps"), on iOS
   versions before 26 only. From iOS 26 only a debugger can grant JIT.
 
 ## Building
 
-Husk is built on a Mac with Xcode. The build scripts also call `meson`,
+BetterHusk is built on a Mac with Xcode, or in the cloud with the included
+GitHub Actions workflow (`Actions › Build BetterHusk IPA › Run workflow` — no
+Mac needed). The build scripts also call `meson`,
 `ninja`, `pkg-config`, `python3`, `xcodegen`, `qemu-img` and a Rust
 toolchain with the `aarch64-apple-ios` target.
 
 ```sh
-./scripts/ci_build.sh
+./scripts/ci_build.sh build/BetterHusk.ipa
 ```
 
-From a clean checkout this fetches and cross-compiles everything Husk links:
+From a clean checkout this fetches and cross-compiles everything BetterHusk links:
 
 - QEMU and its dependencies
 - ANGLE and virglrenderer
 - MoltenVK
 - the on-device pairing library
 
-It then builds the app and writes the IPA to `build/Husk.ipa`. The first run
+It then builds the app and writes the IPA to `build/BetterHusk.ipa`. The first run
 takes a couple of hours, and later runs reuse what is already built. After
 that, `./scripts/package_ipa.sh` rebuilds just the app and writes
-`~/Desktop/Husk.ipa`.
+`~/Desktop/BetterHusk.ipa` (`--trollstore` produces a `.tipa` with the banned
+entitlements stripped).
 
 `tools/regress/run.sh` plays a set of games on the Mac through the
 translation layer and checks each against a reference screenshot (see the
@@ -140,8 +183,12 @@ top of `tools/regress/cases.txt` for what it needs).
 
 ## Licence
 
-GPL-2.0-or-later. Husk links QEMU, which is GPLv2, so the shipped binary is a
-combined GPLv2 work and the full source is public. The translation layer is
-Husk's own code, under the same licence. Husk cannot go on the App Store, both
+GPL-2.0-or-later, same as upstream. BetterHusk links QEMU, which is GPLv2, so
+the shipped binary is a combined GPLv2 work and the full source is public.
+BetterHusk cannot go on the App Store, both
 because of that and because it needs `get-task-allow` plus a debugger
 attaching at runtime. See [docs/01-licensing.md](docs/01-licensing.md).
+
+All credit for the engine and the app goes to
+[Leviidev](https://github.com/Leviidev) and Husk's contributors; BetterHusk
+only curates and adds on top.

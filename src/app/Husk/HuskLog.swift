@@ -20,7 +20,7 @@ import os
 /// translating" is preserved, which is exactly the ordering that matters when
 /// something goes wrong.
 enum HuskLog {
-    private static let osLog = Logger(subsystem: "com.husk.app", category: "husk")
+    private static let osLog = Logger(subsystem: "com.betterhusk.app", category: "husk")
 
     /// Exposed because a C signal handler closure cannot capture context.
     fileprivate static var rawLogFD: Int32 { logFD }
@@ -190,7 +190,7 @@ enum HuskLog {
                 }
             }
         }
-        t.name = "com.husk.log.reader"
+        t.name = "com.betterhusk.log.reader"
         t.qualityOfService = .userInitiated
         t.start()
     }

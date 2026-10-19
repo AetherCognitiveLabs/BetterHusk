@@ -1,6 +1,6 @@
 name: Husk
 options:
-  bundleIdPrefix: com.husk
+  bundleIdPrefix: com.betterhusk
   deploymentTarget:
     # 15.5: what QEMU, ANGLE and rppairing are built for, and the TrollStore
     # and Dopamine iOS 15 devices (#92). Compat15.swift stands in for the
@@ -13,7 +13,7 @@ settings:
     # The app and its JIT helper extension follow this together: the helper's
     # identifier has to sit under the app's. Change this, not
     # PRODUCT_BUNDLE_IDENTIFIER.
-    HUSK_BUNDLE_IDENTIFIER: com.husk.app
+    HUSK_BUNDLE_IDENTIFIER: com.betterhusk.app
     # The app's entitlements only. A signed development build has to drop
     # dynamic-codesigning, which Apple will not provision; overriding this
     # rather than CODE_SIGN_ENTITLEMENTS keeps the override off the helper.

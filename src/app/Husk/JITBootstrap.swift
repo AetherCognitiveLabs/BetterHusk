@@ -20,7 +20,7 @@ private let CS_DEBUGGED = UInt32(0x10000000)
 /// Husk's own built-in StikJIT helper (JITSetup.swift), which runs the same
 /// script from an app extension.
 enum JITBootstrap {
-    private static let log = Logger(subsystem: "com.husk.app", category: "jit")
+    private static let log = Logger(subsystem: "com.betterhusk.app", category: "jit")
 
     enum State: Equatable {
         case unknown

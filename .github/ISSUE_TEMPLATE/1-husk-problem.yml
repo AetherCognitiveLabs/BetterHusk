@@ -1,6 +1,6 @@
 name: Problem with Husk itself
 description: Husk crashes, freezes, won't install, won't turn on JIT, or something in its own screens is wrong.
-title: "[Husk] "
+title: "[BetterHusk] "
 labels: ["bug", "husk"]
 body:
   - type: markdown

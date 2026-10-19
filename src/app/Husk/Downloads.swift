@@ -58,7 +58,7 @@ final class Downloads: ObservableObject {
     /// Live Activities are turned off for Husk in Settings, so a download cannot show on the Lock Screen or in the Dynamic Island.
     @Published var liveActivitiesOff = false
 
-    nonisolated static let sessionID = "com.husk.downloads"
+    nonisolated static let sessionID = "com.betterhusk.downloads"
     /// How many files at once.
     private static let parallel = 4
 
@@ -772,7 +772,7 @@ enum ContinuedDownload {
     static func begin(title: String) {
         guard !running, !refused, let bundle = Bundle.main.bundleIdentifier else { return }
         // The launch handler is registered for a wildcard pattern from Info.plist, and the submitted identifier has to start with the
-        // app's bundle ID. A sideloader renames the bundle (com.husk.app.<team>) but not Info.plist: then the broad com.husk.app.* is
+        // app's bundle ID. A sideloader renames the bundle (com.betterhusk.app.<team>) but not Info.plist: then the broad com.betterhusk.app.* is
         // the pattern, and the identifier is made from the bundle ID as it is now.
         let permitted = Bundle.main.object(forInfoDictionaryKey: "BGTaskSchedulerPermittedIdentifiers") as? [String] ?? []
         guard let downloads = permitted.first(where: { $0.hasSuffix(".downloads.*") }) else { return }

@@ -9,7 +9,7 @@ import os
 /// .bgra8Unorm, so there is no pixel conversion anywhere in this path — the
 /// bytes QEMU's virtio-gpu wrote go straight into a texture.
 final class HuskMetalView: MTKView {
-    private let log = Logger(subsystem: "com.husk.app", category: "display")
+    private let log = Logger(subsystem: "com.betterhusk.app", category: "display")
     private var commandQueue: MTLCommandQueue?
     private var pipelineState: MTLRenderPipelineState?
     private var texture: MTLTexture?

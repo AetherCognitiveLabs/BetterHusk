@@ -11,7 +11,7 @@ final class CompatibilityStore: ObservableObject {
     static let shared = CompatibilityStore()
 
     /// The site, then its Render address for when the domain does not answer. A different one can be put first for testing
-    /// (defaults write com.husk.app husk.compatURL http://…).
+    /// (defaults write com.betterhusk.app husk.compatURL http://…).
     static var sites: [URL] {
         let custom = UserDefaults.standard.string(forKey: "husk.compatURL").flatMap(URL.init(string:))
         return [custom, URL(string: "https://antiweb.lol"), URL(string: "https://antiweb-website.onrender.com")].compactMap { $0 }

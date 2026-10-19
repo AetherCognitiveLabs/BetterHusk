@@ -439,7 +439,7 @@ enum LocalDevVPN {
 /// Built-in StikJIT keeps working after the device restarts.
 enum RemotePairingPortDiscovery {
     private static let serviceType = "_remotepairing._tcp"
-    private static let queue = DispatchQueue(label: "com.husk.app.remotepairing-discovery", qos: .utility)
+    private static let queue = DispatchQueue(label: "com.betterhusk.app.remotepairing-discovery", qos: .utility)
     private static let lock = NSLock()
     private static var cachedPort: UInt16?
     private static var lastFailure: Date?

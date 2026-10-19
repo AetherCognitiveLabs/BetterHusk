@@ -9,7 +9,7 @@ import StikJIT
 /// LocalDevVPN and services the script's trap requests until Husk detaches.
 private enum HuskJITWork {
     /// One request at a time: enabling JIT holds this queue while the debugger is attached.
-    static let queue = DispatchQueue(label: "com.husk.app.jit-helper")
+    static let queue = DispatchQueue(label: "com.betterhusk.app.jit-helper")
 
     static func handle(_ request: HuskJITRequest) -> HuskJITRequest.Response {
         let manager = FileManager.default

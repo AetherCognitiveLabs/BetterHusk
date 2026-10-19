@@ -652,7 +652,7 @@ final class GuestBridge {
         guard !watching else { return }
         watching = true
         Thread.detachNewThread { [weak self] in
-            Thread.current.name = "com.husk.bridge.health"
+            Thread.current.name = "com.betterhusk.bridge.health"
             var wasAlive: Bool?
             var ticks = 0
             var lastCrashLine: String?
