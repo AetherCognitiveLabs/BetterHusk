@@ -21,5 +21,14 @@
 	     probed at startup and the guest is sized to whatever actually maps. -->
 	<key>com.apple.developer.kernel.extended-virtual-addressing</key>
 	<true/>
+	<!-- Hypervisor.framework access for QEMU's hvf accelerator. Only honoured
+	     where third parties may still enter EL2: M1/M2 iPads on iOS/iPadOS
+	     15.5-16.3.x installed via TrollStore or a jailbreak, since no
+	     provisioning profile can grant it. Everywhere else the key is simply
+	     inert: it is not on TrollStore's banned list, sideloaded signing drops
+	     it, and at runtime an hv_vm_create probe gates the accelerator choice
+	     before QEMU ever sees the flag. -->
+	<key>com.apple.developer.hypervisor</key>
+	<true/>
 </dict>
 </plist>

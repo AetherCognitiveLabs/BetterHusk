@@ -175,7 +175,7 @@ stage_qemu() {
             --enable-opengl --enable-virglrenderer \
             --disable-curses --disable-curl --disable-libusb --disable-usb-redir \
             --disable-tpm --disable-docs --disable-guest-agent --disable-tools \
-            --disable-hvf --disable-vde --disable-brlapi --disable-libssh \
+            --enable-hvf --disable-vde --disable-brlapi --disable-libssh \
             --disable-bzip2 --disable-snappy --disable-lzo --disable-gnutls \
             --disable-png --disable-vte --disable-zstd \
             --disable-nettle --disable-gcrypt --disable-auth-pam \

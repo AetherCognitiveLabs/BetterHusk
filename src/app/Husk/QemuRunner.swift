@@ -1,6 +1,93 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 import Foundation
+import Security
 import os
+
+// These two live in Security.framework but sit in its private headers. Every
+// sideloading tool that checks its own signature calls them; declared here so
+// the compiler does not need the private header.
+@_silgen_name("SecTaskCreateFromSelf")
+private func SecTaskCreateFromSelf(_ allocator: CFAllocator?) -> AnyObject?
+@_silgen_name("SecTaskCopyValueForEntitlement")
+private func SecTaskCopyValueForEntitlement(_ task: AnyObject,
+                                            _ entitlement: CFString,
+                                            _ error: UnsafeMutablePointer<Unmanaged<CFError>?>?) -> AnyObject?
+
+/// Whether QEMU's `hvf` accelerator can run this session (#146).
+///
+/// Hypervisor.framework lets a guest run on the host CPU at near-native speed
+/// instead of being interpreted by TCG -- for an arm64 Android guest on an
+/// M1/M2 iPad that is the difference between "emulator" and "second desktop".
+/// Apple only ever allowed it in a window: iOS/iPadOS 15.5 through 16.3.x,
+/// on hardware with EL2 (M1/M2 iPads), and only for a signature carrying
+/// com.apple.developer.hypervisor, which no provisioning profile can grant --
+/// so in practice this means TrollStore or jailbroken installs. iOS 16.4
+/// removed the feature for non-Apple code outright.
+///
+/// Three gates, each independently sufficient to say no: the OS version has
+/// to be inside the window (an entitled key in the signature still reports
+/// present on 16.4+, where the kernel then ignores it), the entitlement has
+/// to be in this process's own signature, and a real hv_vm_create has to
+/// succeed -- the framework being linked and the entitlement being granted
+/// do not by themselves prove EL2 is ours on this device.
+enum HVFSupport {
+    static let usable: Bool = probe()
+
+    /// "hvf"/"tcg" -- stamped onto snapshots and folded into the memory
+    /// strategy, because a TCG vmstate cannot resume under the hypervisor and
+    /// the reverse is just as true.
+    static var tag: String { usable ? "hvf" : "tcg" }
+
+    private static func probe() -> Bool {
+        let v = ProcessInfo.processInfo.operatingSystemVersion
+        let inWindow = (v.majorVersion == 15 && v.minorVersion >= 5)
+                    || (v.majorVersion == 16 && v.minorVersion <= 3)
+        guard inWindow else {
+            HuskLog.log("qemu", "hvf: iOS \(v.majorVersion).\(v.minorVersion) is outside "
+                              + "the 15.5-16.3 window; staying on tcg")
+            return false
+        }
+        guard entitled() else {
+            HuskLog.log("qemu", "hvf: com.apple.developer.hypervisor not in this "
+                              + "signature; staying on tcg")
+            return false
+        }
+        guard vmWorks() else {
+            HuskLog.log("qemu", "hvf: hv_vm_create refused; staying on tcg")
+            return false
+        }
+        HuskLog.log("qemu", "hvf: hypervisor available; the guest runs on the host CPU")
+        return true
+    }
+
+    /// com.apple.developer.hypervisor, read out of the running process's own
+    /// code signature -- the entitlement file being present in the build says
+    /// nothing about whether the signer kept it.
+    private static func entitled() -> Bool {
+        guard let task = SecTaskCreateFromSelf(nil),
+              let value = SecTaskCopyValueForEntitlement(
+                  task, "com.apple.developer.hypervisor" as CFString, nil)
+        else { return false }
+        return value as? Bool ?? false
+    }
+
+    /// The deciding probe: actually create and destroy a VM. hv_vm_create
+    /// answers HV_SUCCESS only when the entitlement, the OS, and the silicon
+    /// all agree; anything else (HV_ERROR, HV_NO_RESOURCES, HV_UNSUPPORTED)
+    /// lands here as non-zero and we keep TCG.
+    private static func vmWorks() -> Bool {
+        typealias Create = @convention(c) (UnsafeRawPointer?) -> UInt32
+        typealias Destroy = @convention(c) () -> UInt32
+        guard let lib = dlopen(
+                "/System/Library/Frameworks/Hypervisor.framework/Hypervisor", RTLD_NOW),
+              let createSym = dlsym(lib, "hv_vm_create"),
+              let destroySym = dlsym(lib, "hv_vm_destroy") else { return false }
+        let create = unsafeBitCast(createSym, to: Create.self)
+        guard create(nil) == 0 else { return false }
+        unsafeBitCast(destroySym, to: Destroy.self)()
+        return true
+    }
+}
 
 /// Runs QEMU inside this process on a dedicated thread.
 ///
@@ -322,6 +409,22 @@ final class QemuRunner: ObservableObject {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// Which accelerator ran when the snapshot was taken.
+    ///
+    /// A vmstate blob is accelerator-specific: TCG saves emulated-CPU state
+    /// the hypervisor cannot resume, and an hvf snapshot holds EL2 guest state
+    /// TCG does not understand. Every snapshot written before this stamp
+    /// existed -- including the shipped one, which has no stamps at all --
+    /// is by definition TCG.
+    nonisolated var snapshotAccelPath: String {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("husk-snapshot.accel").path
+    }
+    nonisolated var snapshotAccel: String {
+        (try? String(contentsOfFile: snapshotAccelPath, encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? "tcg"
+    }
+
     nonisolated var hasSnapshot: Bool {
         FileManager.default.fileExists(atPath: snapshotSizePath)
     }
@@ -342,7 +445,8 @@ final class QemuRunner: ObservableObject {
         guard hasSnapshot else { return false }
         let have = snapshotDisplay ?? "sw"
         guard have == mode else { return false }
-        for path in [snapshotSizePath, snapshotDisplayPath, memoryStrategyPath] {
+        for path in [snapshotSizePath, snapshotDisplayPath, snapshotAccelPath,
+                     memoryStrategyPath] {
             try? FileManager.default.removeItem(atPath: path)
         }
         HuskLog.log("snap", "forgot the \(mode) machine; the next launch boots from cold")
@@ -360,6 +464,7 @@ final class QemuRunner: ObservableObject {
     nonisolated var hasUsableSnapshot: Bool {
         guard hasSnapshot else { return false }
         return (snapshotDisplay ?? "sw") == QemuRunner.machineStamp
+            && snapshotAccel == HVFSupport.tag
     }
 
     /// Write the running machine to disk so the next launch restores *this*.
@@ -635,6 +740,12 @@ final class QemuRunner: ObservableObject {
                 try? QemuRunner.machineStamp
                     .write(toFile: QemuRunner.shared.snapshotDisplayPath,
                            atomically: true, encoding: .utf8)
+                // Same for the accelerator: a TCG vmstate cannot resume under
+                // hvf, so the stamp is what a later launch checks before it
+                // ever asks QEMU to load.
+                try? HVFSupport.tag
+                    .write(toFile: QemuRunner.shared.snapshotAccelPath,
+                           atomically: true, encoding: .utf8)
             }
             if QemuRunner.glProven {
                 // Whether or not the save worked. A guest left with its
@@ -697,9 +808,12 @@ final class QemuRunner: ObservableObject {
         // machine. Folding the display choice into the strategy means the first
         // launch after GL starts working boots cold once, then re-snapshots,
         // rather than failing to restore.
+        // The accelerator is part of the shape too: vmstate saved under TCG
+        // cannot resume under hvf, so switching modes retires the old snapshot
+        // exactly like a memory-backend change does.
         GuestImage.shared.hasShippedSnapshot
-            ? "shipped-snapshot-v10"
-            : "file-backed-lineage-v2-" + QemuRunner.machineStamp
+            ? "shipped-snapshot-v10-" + HVFSupport.tag
+            : "file-backed-lineage-v2-" + HVFSupport.tag + "-" + QemuRunner.machineStamp
     }
 
     /// Whether guest RAM can be backed by a file on this device, this run.
@@ -908,8 +1022,11 @@ final class QemuRunner: ObservableObject {
     }
 
     private var machineCpu: String {
-        GuestImage.shared.hasShippedSnapshot ? GuestImage.shared.snapshotPins.cpu
-                                            : GuestImage.defaultCpu
+        // Under hvf the only CPU model QEMU accepts is "host": the guest runs
+        // on the silicon itself, so there is no feature list to describe.
+        if HVFSupport.usable { return "host" }
+        return GuestImage.shared.hasShippedSnapshot ? GuestImage.shared.snapshotPins.cpu
+                                                    : GuestImage.defaultCpu
     }
     private var machineSmp: Int {
         GuestImage.shared.hasShippedSnapshot ? GuestImage.shared.snapshotPins.smp
@@ -1100,7 +1217,13 @@ final class QemuRunner: ObservableObject {
             "-cpu", machineCpu,
             "-smp", "\(machineSmp)",
             "-m", "\(memMiB)",
-            "-accel", "tcg,tb-size=256,thread=multi,split-wx=on",
+            // hvf where it exists (M1/M2 iPads still on iOS 15.5-16.3 with the
+            // hypervisor entitlement in the signature -- TrollStore/jailbreak
+            // installs); TCG everywhere else, tuned exactly as before. The
+            // probe decided, so this is a choice, not a try-and-see.
+            "-accel", HVFSupport.usable
+                ? "hvf"
+                : "tcg,tb-size=256,thread=multi,split-wx=on",
 
             // The balloon was written earlier and never put on the machine, so
             // nothing could ever reclaim guest memory. With it present the guest
@@ -1482,7 +1605,18 @@ final class QemuRunner: ObservableObject {
             HuskLog.log("qemu", "saved machine is a \(haveDisplay) machine and this one is "
                               + "\(wantDisplay); booting cold and saving a new one")
         }
-        let restored = snapshotFits && displayFits && husk_snapshot_load_at_startup()
+
+        // The accelerator is part of the machine shape the same way the
+        // display is. An absent stamp means the snapshot predates hvf support,
+        // i.e. it is TCG -- the shipped snapshot included.
+        let haveAccel = QemuRunner.shared.snapshotAccel
+        let accelFits = (haveAccel == HVFSupport.tag)
+        if !accelFits {
+            HuskLog.log("qemu", "saved machine ran under \(haveAccel) and this one runs "
+                              + "\(HVFSupport.tag); booting cold and saving a new one")
+        }
+        let restored = snapshotFits && displayFits && accelFits
+            && husk_snapshot_load_at_startup()
         HuskLog.log("qemu", restored
             ? "restored a saved machine -- Android is already booted"
             : "no saved machine; booting Android from cold")
