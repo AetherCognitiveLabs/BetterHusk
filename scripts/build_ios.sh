@@ -170,9 +170,14 @@ stage_hypervisor() {
     done_stage hypervisor && { echo "[skip] hypervisor"; return 0; }
     banner "building Hypervisor.framework (iOS hv_* shim)"
     [ -d "$dir" ] || fail hypervisor "$log (run ./scripts/fetch_sources.sh)"
+    # scrub the cross-compile env: xcodebuild takes CC/CXX/LD as bare tool paths, and
+    # our "clang -target arm64-apple-ios15.5" is not an executable name to it
     ( cd "$dir" \
       && rm -rf Hypervisor.xcarchive \
-      && xcodebuild archive -archivePath Hypervisor -scheme Hypervisor \
+      && env -u CC -u CXX -u LD -u AR -u NM -u RANLIB -u STRIP -u OBJCC \
+            -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u OBJCFLAGS -u LDFLAGS \
+            -u PKG_CONFIG -u PKG_CONFIG_LIBDIR \
+            xcodebuild archive -archivePath Hypervisor -scheme Hypervisor \
             -sdk "$SDK" -configuration Release \
             IPHONEOS_DEPLOYMENT_TARGET="$SDKMINVER" \
             CODE_SIGNING_ALLOWED=NO \
