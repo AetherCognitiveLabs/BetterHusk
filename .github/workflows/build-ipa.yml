@@ -101,8 +101,17 @@ jobs:
           ipa="$PWD/build/BetterHusk.ipa"
           ps4_path=Payload/Husk.app/Frameworks/libhuskps4.dylib
           unzip -Z1 "$ipa" | grep -Fx "$ps4_path"
-          packaged_ps4_sha256="$(unzip -p "$ipa" "$ps4_path" | shasum -a 256 | awk '{print $1}')"
-          test "$packaged_ps4_sha256" = dfdf728bfba56ac045d177d4be398df0c73361c299a114fd34a4ba96e2a0699e
+          # The staged module is verified byte-for-byte upstream before it is
+          # staged; by the time it sits in the IPA, codesign --force has
+          # rewritten its signature and the bytes no longer equal that hash.
+          # So the packaged copy gets the same structural checks instead.
+          unzip -p "$ipa" "$ps4_path" > /tmp/packaged-ps4.dylib
+          test "$(lipo -archs /tmp/packaged-ps4.dylib)" = arm64
+          test "$(nm -gU /tmp/packaged-ps4.dylib | awk '{print $3}')" = _husk_console_module_v1
+          if nm -u /tmp/packaged-ps4.dylib | grep -q BreakGetJITMapping; then
+            echo "PS4 module still references BreakpointJIT" >&2
+            exit 1
+          fi
           echo "Complete IPA size: $(stat -f '%z' "$ipa") bytes"
 
       - name: Upload logs on failure
