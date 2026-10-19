@@ -3,8 +3,8 @@
   "identifier": "com.betterhusk.source",
   "subtitle": "Android apps and games on your iPhone — Husk, plus the fixes upstream hasn't merged.",
   "description": "The official source for BetterHusk, a community fork of Leviidev's Husk. Add it to SideStore, AltStore or another sideloader to install BetterHusk and get its updates. BetterHusk installs next to Husk (com.betterhusk.app), it does not replace it.",
-  "iconURL": "https://raw.githubusercontent.com/BetterStreamflix/BetterHusk/main/src/app/Husk/Assets.xcassets/AppIcon.appiconset/Icon-Default.png",
-  "website": "https://github.com/BetterStreamflix/BetterHusk",
+  "iconURL": "https://raw.githubusercontent.com/AetherCognitiveLabs/BetterHusk/main/src/app/Husk/Assets.xcassets/AppIcon.appiconset/Icon-Default.png",
+  "website": "https://github.com/AetherCognitiveLabs/BetterHusk",
   "tintColor": "#5865F2",
   "featuredApps": [
     "com.betterhusk.app"
@@ -16,17 +16,17 @@
       "developerName": "BetterHusk (fork of Leviidev's Husk)",
       "subtitle": "Android apps and PS4 games on your iPhone.",
       "localizedDescription": "BetterHusk is a fork of Husk that tracks upstream and additionally ships fixes upstream has not merged yet: a Java sensor-manager API for Unity games, Godot 4.6/4.7 file and directory handlers, V8 --jitless for Cocos Creator games, manifest-based base-APK selection for split bundles, dynamic RemotePairing port discovery for built-in JIT, and a W^X-safe executable-memory path for TrollStore devices.",
-      "iconURL": "https://raw.githubusercontent.com/BetterStreamflix/BetterHusk/main/src/app/Husk/Assets.xcassets/AppIcon.appiconset/Icon-Default.png",
+      "iconURL": "https://raw.githubusercontent.com/AetherCognitiveLabs/BetterHusk/main/src/app/Husk/Assets.xcassets/AppIcon.appiconset/Icon-Default.png",
       "tintColor": "#5865F2",
       "category": "games",
       "screenshots": [
-        "https://raw.githubusercontent.com/BetterStreamflix/BetterHusk/main/Screenshots/beach-buggy-racing-2.jpeg",
-        "https://raw.githubusercontent.com/BetterStreamflix/BetterHusk/main/Screenshots/game-settings.png",
-        "https://raw.githubusercontent.com/BetterStreamflix/BetterHusk/main/Screenshots/geometry-dash.jpeg",
-        "https://raw.githubusercontent.com/BetterStreamflix/BetterHusk/main/Screenshots/gta-san-andreas.jpeg",
-        "https://raw.githubusercontent.com/BetterStreamflix/BetterHusk/main/Screenshots/library.png",
-        "https://raw.githubusercontent.com/BetterStreamflix/BetterHusk/main/Screenshots/minecraft-dungeons.jpeg",
-        "https://raw.githubusercontent.com/BetterStreamflix/BetterHusk/main/Screenshots/settings.png"
+        "https://raw.githubusercontent.com/AetherCognitiveLabs/BetterHusk/main/Screenshots/beach-buggy-racing-2.jpeg",
+        "https://raw.githubusercontent.com/AetherCognitiveLabs/BetterHusk/main/Screenshots/game-settings.png",
+        "https://raw.githubusercontent.com/AetherCognitiveLabs/BetterHusk/main/Screenshots/geometry-dash.jpeg",
+        "https://raw.githubusercontent.com/AetherCognitiveLabs/BetterHusk/main/Screenshots/gta-san-andreas.jpeg",
+        "https://raw.githubusercontent.com/AetherCognitiveLabs/BetterHusk/main/Screenshots/library.png",
+        "https://raw.githubusercontent.com/AetherCognitiveLabs/BetterHusk/main/Screenshots/minecraft-dungeons.jpeg",
+        "https://raw.githubusercontent.com/AetherCognitiveLabs/BetterHusk/main/Screenshots/settings.png"
       ],
       "versions": [],
       "appPermissions": {

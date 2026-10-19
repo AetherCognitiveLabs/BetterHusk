@@ -1,7 +1,7 @@
 # BetterHusk
 
-[![BetterHusk Downloads](https://img.shields.io/github/downloads/betterstreamflix/betterhusk/total?style=for-the-badge&color=5865F2&labelColor=111111)](https://github.com/BetterStreamflix/BetterHusk/releases)
-[![Build BetterHusk IPA](https://img.shields.io/github/actions/workflow/status/betterstreamflix/betterhusk/build-ipa.yml?style=for-the-badge&label=build)](https://github.com/BetterStreamflix/BetterHusk/actions/workflows/build-ipa.yml)
+[![BetterHusk Downloads](https://img.shields.io/github/downloads/aethercognitivelabs/betterhusk/total?style=for-the-badge&color=5865F2&labelColor=111111)](https://github.com/AetherCognitiveLabs/BetterHusk/releases)
+[![Build BetterHusk IPA](https://img.shields.io/github/actions/workflow/status/aethercognitivelabs/betterhusk/build-ipa.yml?style=for-the-badge&label=build)](https://github.com/AetherCognitiveLabs/BetterHusk/actions/workflows/build-ipa.yml)
 
 **BetterHusk is a fork of [Leviidev/Husk](https://github.com/Leviidev/Husk) that
 tracks upstream and ships the fixes upstream has not merged yet.** It installs
@@ -148,13 +148,13 @@ what happened, with a report you can share.
 sideloader installs BetterHusk and offers each update as it comes out.
 
 ```
-https://raw.githubusercontent.com/BetterStreamflix/BetterHusk/main/altsource.json
+https://raw.githubusercontent.com/AetherCognitiveLabs/BetterHusk/main/altsource.json
 ```
 
 In SideStore or AltStore: Sources › + › paste the address above.
 
 **Or by hand:** download `BetterHusk.ipa` from
-[Releases](https://github.com/BetterStreamflix/BetterHusk/releases) and install it with
+[Releases](https://github.com/AetherCognitiveLabs/BetterHusk/releases) and install it with
 SideStore, AltStore or TrollStore. It is one IPA for all of them: it carries
 BetterHusk's entitlements, which TrollStore keeps, and a sideloader re-signs it with
 your own.
