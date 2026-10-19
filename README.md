@@ -72,6 +72,12 @@ and fork-level work:
   never touched, and two failed repairs surface an actual error instead of an
   endless recovery loop
   ([Leviidev/Husk#128](https://github.com/Leviidev/Husk/issues/128)).
+- **Simplified Chinese UI** — a `Localizable.xcstrings` catalog translates the
+  whole interface (onboarding, settings, library, JIT setup, emulation
+  screens) into zh-Hans; devices set to Chinese get it automatically
+  ([Leviidev/Husk#143](https://github.com/Leviidev/Husk/issues/143),
+  [#150](https://github.com/Leviidev/Husk/issues/150)). Upstream has no
+  localization at all.
 - **A real CI** — `.github/workflows/build-ipa.yml` builds a complete,
   verified IPA (with the checksummed PS4 module) on every push to `main` and
   publishes it as a prerelease. Upstream has no CI at all.

@@ -79,6 +79,7 @@
 		507309F42DC8965C816DC580 /* JITBootstrap.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5664FE015975D16E7500F3C7 /* JITBootstrap.swift */; };
 		507B1DFCAE18CC582B503084 /* PS4Screen.swift in Sources */ = {isa = PBXBuildFile; fileRef = A43D8891F1155EEDA22874C9 /* PS4Screen.swift */; };
 		50A3A90912B5C9D90B87D9BF /* cacert.pem in Resources */ = {isa = PBXBuildFile; fileRef = BE31FE0E8BF0D132E6298CE9 /* cacert.pem */; };
+		5B1A9C3D7E4F2088A6B1C2D3 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = 9C4E7A2F1B8D4056E3F7A9B1 /* Localizable.xcstrings */; };
 		50F7B80FBADEAF705EC960F8 /* husk-tl-jni-fmod.c in Sources */ = {isa = PBXBuildFile; fileRef = C575FDA8867C3A75AB2392E3 /* husk-tl-jni-fmod.c */; };
 		5231634DF5866145DDE3A298 /* husk-tl-bionic.c in Sources */ = {isa = PBXBuildFile; fileRef = E8B800E5E712B4EFFB9F5D59 /* husk-tl-bionic.c */; };
 		530FE1935C2D0C23EA98A3F1 /* husk-tl-dvm-gles31.c in Sources */ = {isa = PBXBuildFile; fileRef = 43842BBC4EAEE01CF6441B5B /* husk-tl-dvm-gles31.c */; };
@@ -421,6 +422,7 @@
 		BCA22CD85A237E860D437698 /* husk-tl-unity-app.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "husk-tl-unity-app.c"; sourceTree = "<group>"; };
 		BD3B1227581E9D6E7C9DCC3E /* CrashReport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrashReport.swift; sourceTree = "<group>"; };
 		BE31FE0E8BF0D132E6298CE9 /* cacert.pem */ = {isa = PBXFileReference; path = cacert.pem; sourceTree = "<group>"; };
+		9C4E7A2F1B8D4056E3F7A9B1 /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
 		BF6468C273AA781A48B72C0B /* husk-tl-geode.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "husk-tl-geode.h"; sourceTree = "<group>"; };
 		BFE1EF1033F9F2FAA51111C7 /* husk-tl-dvm-gles32.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "husk-tl-dvm-gles32.c"; sourceTree = "<group>"; };
 		C1F2A4FC567A4CCC74209DD4 /* AppDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDetailView.swift; sourceTree = "<group>"; };
@@ -563,6 +565,7 @@
 				83275C7FEF2DEB950028D914 /* JITSetup.swift */,
 				5894E74BA308222C01AEE311 /* JITSetupView.swift */,
 				6829A7DBA27EDCC20D8C17AD /* Launcher.swift */,
+				9C4E7A2F1B8D4056E3F7A9B1 /* Localizable.xcstrings */,
 				2470C9D4EBE84F890D35A354 /* MassTest.swift */,
 				79E4865C5FE44ADD210A4917 /* OnboardingView.swift */,
 				766F6F7816E672E83CFFE47D /* PipeShim.c */,
@@ -937,6 +940,7 @@
 			knownRegions = (
 				Base,
 				en,
+				"zh-Hans",
 			);
 			mainGroup = 1E59FB82FCE9A2CABD19395C;
 			minimizedProjectReferenceProxies = 1;
@@ -961,6 +965,7 @@
 				FA8097D8E118A8CE8DBCF763 /* LICENSE-StikJIT-MPL-2.0.txt in Resources */,
 				DD78A64F53CD2C615EB004B3 /* LICENSE-idevice-MIT.txt in Resources */,
 				1D576C7E088182B888F811BB /* LICENSES-rppairing-crates.txt in Resources */,
+				5B1A9C3D7E4F2088A6B1C2D3 /* Localizable.xcstrings in Resources */,
 				50A3A90912B5C9D90B87D9BF /* cacert.pem in Resources */,
 				E2C01F517E73992A29E22EC2 /* husk-jit.js in Resources */,
 				7A7A40B3B76C8BA2D7262907 /* husk-tl-egl-es31.inc in Resources */,

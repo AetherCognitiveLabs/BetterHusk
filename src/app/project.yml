@@ -34,6 +34,11 @@ targets:
       - path: Husk
         excludes:
           - "Resources/**"
+          - "Localizable.xcstrings"
+      # The zh-Hans string catalog lives next to the Swift sources, but it is a
+      # resource: Xcode compiles it into the bundle's .stringsdata at build.
+      - path: Husk/Localizable.xcstrings
+        buildPhase: resources
       # NOT `type: folder`: a folder reference copies the directory itself into the
       # bundle, and Bundle.path(forResource:ofType:) does not search subdirectories,
       # so the script would be present but unfindable at runtime.

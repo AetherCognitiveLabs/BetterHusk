@@ -19,6 +19,7 @@ proven but not merged yet, plus build/release infrastructure upstream lacks.
 | Per-game engine/driver override ("Runs as" picker) | [issue #149](https://github.com/Leviidev/Husk/issues/149) | unaddressed upstream |
 | JNI: no caching of failed native lookups (Dex2C/RegisterNatives timing) | [issue #152](https://github.com/Leviidev/Husk/issues/152) | unaddressed upstream |
 | Emulation userdata self-repair: `init_user0_failed` marks the disk, next launch re-seeds a never-booted /data (qcow2 header preflight, 2-attempt budget, booted/snapshot data never touched) | [issue #128](https://github.com/Leviidev/Husk/issues/128) | unaddressed upstream |
+| Simplified Chinese UI (`Localizable.xcstrings`, ~290 strings) | [issue #143](https://github.com/Leviidev/Husk/issues/143), [issue #150](https://github.com/Leviidev/Husk/issues/150) | no localization exists |
 | Bundle ID `com.betterhusk.app`, display name "BetterHusk" | this fork | n/a |
 | `altsource.json` served from this repo | this fork | n/a |
 
@@ -42,7 +43,6 @@ proven but not merged yet, plus build/release infrastructure upstream lacks.
 
 ## Watch list (upstream issues the fork could tackle next)
 
-- [#143](https://github.com/Leviidev/Husk/issues/143) — Chinese localization
 - [#146](https://github.com/Leviidev/Husk/issues/146) — HVF acceleration for
   Emulation on M1/M2 iPads (iOS 15.5–16.3)
 - [#148](https://github.com/Leviidev/Husk/issues/148) — built-in JIT errors on
@@ -57,3 +57,14 @@ proven but not merged yet, plus build/release infrastructure upstream lacks.
   as upstream names them — renaming them buys nothing and costs merge pain.
 - The PS4 runtime module is a verified binary pulled from the official Husk
   3.0 release inside CI (SHA-256 checked); there is no public source for it.
+
+## Localization
+
+`src/app/Husk/Localizable.xcstrings` holds the zh-Hans catalog. It covers
+every pure-literal `Text`/`Button`/`Section` key in the SwiftUI sources.
+Two classes of string still render in English and are the next pass:
+
+- keys containing `\(interpolation)` -- the catalog format for substituted
+  strings is best authored inside Xcode, and the fallback is safe;
+- runtime-composed strings (`state = .failed("…")`, `host.say(…)`) which need
+  `String(localized:)` call sites before a catalog key can reach them.
