@@ -22,6 +22,7 @@ const char *tl_ld_main_apk(void);
 #include <stdbool.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <stdint.h>
 #include <arpa/inet.h>
 #include <poll.h>
 #include <pthread.h>
@@ -37,6 +38,7 @@ const char *tl_ld_main_apk(void);
 #include <sys/mount.h>
 #include <sys/select.h>
 #include <sys/stat.h>
+#include <sys/sysctl.h>
 #include <sys/time.h>
 #include <sys/uio.h>
 #include <mach/mach.h>
@@ -111,7 +113,15 @@ static const char *synth_content(const char *path, char *buf, size_t n)
         return buf;
     }
     if (!strcmp(path, "/proc/meminfo")) {
-        snprintf(buf, n, "MemTotal:       11722000 kB\nMemFree:         3000000 kB\nMemAvailable:    5000000 kB\nBuffers:           10000 kB\nCached:          2000000 kB\nSwapTotal:             0 kB\nSwapFree:              0 kB\n");
+        uint64_t mem_bytes = 0; size_t mem_len = sizeof(mem_bytes);
+        if (sysctlbyname("hw.memsize", &mem_bytes, &mem_len, NULL, 0) != 0 || !mem_bytes)
+            mem_bytes = (uint64_t)4 << 30;
+        uint64_t total_kb = mem_bytes / 1024;
+        char note[96]; snprintf(note, sizeof(note), "guest /proc/meminfo reports %llu kB of RAM", (unsigned long long)total_kb);
+        tl_note_once(note);
+        snprintf(buf, n, "MemTotal:       %llu kB\nMemFree:        %llu kB\nMemAvailable:   %llu kB\nBuffers:           10000 kB\nCached:          %llu kB\nSwapTotal:             0 kB\nSwapFree:              0 kB\n",
+                 (unsigned long long)total_kb, (unsigned long long)(total_kb / 4),
+                 (unsigned long long)(total_kb / 2), (unsigned long long)(total_kb / 6));
         return buf;
     }
     if (!strncmp(path, "/sys/devices/system/cpu/", 24) && (strstr(path, "/present") || strstr(path, "/possible") || strstr(path, "/online"))) {

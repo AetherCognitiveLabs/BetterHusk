@@ -75,19 +75,21 @@ if ! grep -q "BUILD SUCCEEDED" "$DD/build.log"; then
 fi
 
 APP="$DD/Build/Products/Release-iphoneos/Husk.app"
+[ -d "$APP" ] || { echo "no app bundle at $APP" >&2; exit 1; }
 
 # The Java runtime in the app must be the one just built (build_java_runtime.sh): copied again here, and checked, so an IPA can
 # never carry an older one -- which looks exactly like Java fixes that did not work.
 JRT="$HUSK_ROOT/build/java-runtime"
-if [ -f "$JRT/husk-framework.dex" ]; then
-    rsync -a --delete "$JRT/" "$APP/java-runtime/"
-    if ! cmp -s "$JRT/husk-framework.dex" "$APP/java-runtime/husk-framework.dex"; then
-        echo "the app's Java framework is not build/java-runtime's; refusing to package" >&2
-        exit 1
-    fi
-    echo "==> java runtime: $(stat -f '%z bytes, %Sm' "$JRT/husk-framework.dex")"
+[ -s "$JRT/husk-framework.dex" ] || {
+    echo "build/java-runtime is missing; refusing to package an IPA whose Java apps cannot start" >&2
+    exit 1
+}
+rsync -a --delete "$JRT/" "$APP/java-runtime/"
+if ! cmp -s "$JRT/husk-framework.dex" "$APP/java-runtime/husk-framework.dex"; then
+    echo "the app's Java framework is not build/java-runtime's; refusing to package" >&2
+    exit 1
 fi
-[ -d "$APP" ] || { echo "no app bundle at $APP" >&2; exit 1; }
+echo "==> java runtime: $(stat -f '%z bytes, %Sm' "$JRT/husk-framework.dex")"
 
 # Stamp the build's identity into the bundle so its logs can name themselves.
 # A log from a stale install is otherwise indistinguishable from a log proving a
@@ -125,14 +127,10 @@ elif [ -n "$EXE" ]; then
     printf "  ok       %-28s %s\n" "executable present" "$EXE"
 fi
 
-# Both dylibs must be embedded, or the app dies at launch with a dyld error.
-#
-# ANGLE is checked here because it was not, and an IPA shipped without it: the
-# app reached qemu_egl_init_dpy_cocoa and aborted with "Couldn't open
-# @rpath/libANGLE-shared.dylib". Everything else in this validation passed. A
-# check that covers one of two required libraries is a check that reports
-# success on a bundle that cannot launch.
-for lib in libqemu-aarch64-softmmu.dylib libANGLE-shared.dylib libhuskps4.dylib; do
+# The QEMU and ANGLE dylibs are required at launch. The PS4 layer is an
+# optional module: Husk disables PS4 support when it is not embedded, and
+# building it needs separate FEXCore/Bachata-S4 source trees.
+for lib in libqemu-aarch64-softmmu.dylib libANGLE-shared.dylib; do
     if [ ! -f "$APP/Frameworks/$lib" ]; then
         echo "  MISSING  Frameworks/$lib" >&2
         rc=1
@@ -141,6 +139,23 @@ for lib in libqemu-aarch64-softmmu.dylib libANGLE-shared.dylib libhuskps4.dylib;
             "$(du -h "$APP/Frameworks/$lib" | cut -f1)"
     fi
 done
+
+# The PS4 layer is included only when its separate source trees were built.
+PS4_SOURCE="$HUSK_ROOT/build/ios-arm64/lib/libhuskps4.dylib"
+PS4_EMBEDDED="$APP/Frameworks/libhuskps4.dylib"
+if [ -f "$PS4_SOURCE" ]; then
+    if [ -f "$PS4_EMBEDDED" ]; then
+        printf "  ok       PS4 layer embedded          %s\n" "$(du -h "$PS4_EMBEDDED" | cut -f1)"
+    else
+        echo "  MISSING  Frameworks/libhuskps4.dylib (PS4 source exists)" >&2
+        rc=1
+    fi
+elif [ -e "$PS4_EMBEDDED" ]; then
+    echo "  MISMATCH stale PS4 layer in app without a matching source" >&2
+    rc=1
+else
+    echo "  ok       optional PS4 layer omitted"
+fi
 
 # Guest images, firmware, and blank disk seeds required by first launch.
 for f in vmlinuz-virt initramfs-virt husk-jit.js \
@@ -169,6 +184,36 @@ for f in "$APP/PlugIns/HuskJITHelper.appex/HuskJITHelper" \
 done
 
 [ $rc -eq 0 ] || { echo "==> bundle is not installable; refusing to package" >&2; exit 1; }
+
+# Java games cannot start without the boot jars and Android resources. The app
+# project used to treat these generated folders as optional, silently producing
+# an IPA that launched but failed every Java app at its splash screen.
+for f in \
+    java-runtime/com.android.art/javalib/core-oj.jar \
+    java-runtime/com.android.art/javalib/core-libart.jar \
+    java-runtime/com.android.art/javalib/okhttp.jar \
+    java-runtime/com.android.art/javalib/bouncycastle.jar \
+    java-runtime/com.android.art/javalib/apache-xml.jar \
+    java-runtime/com.android.i18n/javalib/core-icu4j.jar \
+    java-runtime/com.android.conscrypt/javalib/conscrypt.jar \
+    java-runtime/org.apache.http.legacy.jar \
+    java-runtime/framework-res.apk \
+    java-runtime/husk-framework.dex \
+    android-system/etc/fonts.xml \
+    android-system/etc/font_fallback.xml; do
+    if [ ! -s "$APP/$f" ]; then
+        echo "  MISSING  $f   <-- incomplete Android runtime; refusing to package" >&2
+        exit 1
+    fi
+done
+for dir in java-runtime/com.android.tzdata/etc java-runtime/com.android.art/lib64 \
+           java-runtime/com.android.i18n/etc/icu android-system/fonts android-system/cacerts; do
+    if [ ! -d "$APP/$dir" ] || [ -z "$(find "$APP/$dir" -type f -size +100c -print -quit)" ]; then
+        echo "  MISSING  $dir contents   <-- incomplete Android runtime; refusing to package" >&2
+        exit 1
+    fi
+done
+echo "  ok       Android Java runtime and system assets embedded"
 
 echo "==> packaging"
 # staged next to the build (DD), not in the system temp folder: a full startup disk made codesign fail with "internal error"
