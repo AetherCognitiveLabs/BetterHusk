@@ -243,9 +243,18 @@ final class JITCoordinator: ObservableObject {
                 log("TrollStore enabled JIT")
             } else {
                 status = nil
-                error = "TrollStore did not enable JIT. In TrollStore's Settings turn on URL Scheme, and make sure Husk was "
-                      + "installed through TrollStore (or is signed with get-task-allow)."
-                log("TrollStore did not enable JIT within a minute")
+                // TrollStore Lite cannot hand out JIT -- it installs without the entitlements
+                // that enable-jit relies on. On a jailbroken device the direct route is the
+                // jailbreak's own JIT marking, so point there instead of dead-ending (#148).
+                if JITBootstrap.isJailbroken {
+                    error = "TrollStore Lite cannot enable JIT. Turn on Allow JIT in Apps in "
+                          + "Dopamine's settings, then open Husk again."
+                    log("TrollStore Lite did not enable JIT; jailbroken device -- pointing at Dopamine's Allow JIT")
+                } else {
+                    error = "TrollStore did not enable JIT. In TrollStore's Settings turn on URL Scheme, and make sure Husk was "
+                          + "installed through TrollStore (or is signed with get-task-allow)."
+                    log("TrollStore did not enable JIT within a minute")
+                }
                 showSetup = true
             }
         }

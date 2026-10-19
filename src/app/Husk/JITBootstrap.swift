@@ -185,21 +185,35 @@ enum JITBootstrap {
     /// answering, that stop freezes the app. Views must never trigger this probe
     /// directly.
     static var mapJITWorks: Bool {
-        if let known = mapJITResult { return known }
+        // A probe that ran while no debugger was attached is not conclusive: an
+        // ordinary launch can fail MAP_JIT where the same process succeeds once
+        // marked debugged -- TrollStore attaches for ~100 ms, and Dopamine marks
+        // the app while it opens. Re-probe once that state change is seen;
+        // a failure measured *with* a debugger attached is final.
+        if let answer = mapJITAnswer, answer.works || answer.debugged || !debuggedFlag {
+            return answer.works
+        }
         let result: Bool
         if deviceEnforcesTXM {
             HuskLog.log("jit", "TXM device: MAP_JIT cannot execute here, not probing")
             result = false
         } else {
+            if mapJITAnswer != nil {
+                HuskLog.log("jit", "MAP_JIT probe failed while unattached; probing again now that a debugger is attached")
+            }
             result = husk_ios_jit_mapjit_works()
         }
-        mapJITResult = result
+        mapJITAnswer = (result, debuggedFlag)
         return result
     }
 
     /// The MAP_JIT answer if it has been worked out, without working it out.
     /// For display only: views must never trigger the probe.
-    nonisolated(unsafe) static private(set) var mapJITResult: Bool?
+    nonisolated(unsafe) static var mapJITResult: Bool? { mapJITAnswer?.works }
+
+    /// (works, debugged-when-measured). `debugged` is what makes a `false`
+    /// final instead of a stale first impression from launch order.
+    nonisolated(unsafe) static private var mapJITAnswer: (works: Bool, debugged: Bool)?
 
     /// True only after a JIT region has been allocated AND passed the execute
     /// self-test — which happens inside `qemu_init`. It is therefore always false
