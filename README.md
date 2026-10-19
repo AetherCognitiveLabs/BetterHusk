@@ -64,6 +64,14 @@ and fork-level work:
   methods bound late by `RegisterNatives` (Balatro's protector library)
   resolve instead of crashing with `UnsatisfiedLinkError`
   ([Leviidev/Husk#152](https://github.com/Leviidev/Husk/issues/152)).
+- **Emulation first-boot self-repair** — when Android's `init_user0_failed`
+  strands first boot in a recovery that cannot format the half-built data
+  partition, the next launch of BetterHusk resets it to a clean disk
+  automatically. A qcow2 header preflight catches the same class of dead-end
+  before QEMU ever sees it, a shipped snapshot or a disk that ever booted is
+  never touched, and two failed repairs surface an actual error instead of an
+  endless recovery loop
+  ([Leviidev/Husk#128](https://github.com/Leviidev/Husk/issues/128)).
 - **A real CI** — `.github/workflows/build-ipa.yml` builds a complete,
   verified IPA (with the checksummed PS4 module) on every push to `main` and
   publishes it as a prerelease. Upstream has no CI at all.

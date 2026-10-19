@@ -1797,8 +1797,24 @@ final class QemuRunner: ObservableObject {
                     if QemuRunner.bootCompletedAt == nil,
                        line.contains("sys.boot_completed=1") {
                         QemuRunner.bootCompletedAt = Date()
+                        GuestImage.noteUserdataBooted()
                         HuskLog.log("snap", "Android reports boot_completed; "
                                           + "will save the machine once it settles")
+                    }
+
+                    // init giving up on /data is the failure the .broken stamp
+                    // exists for: the guest cannot repair it (recovery's own
+                    // mke2fs refuses the half-built filesystem and loops), but
+                    // the next launch can -- see GuestImage.repairUserdataIfNeeded.
+                    // Said on screen too, because from here the guest reboots
+                    // into recovery and the boot UI would otherwise just hang.
+                    if line.contains("init_user0_failed") {
+                        GuestImage.noteUserdataBuildFailed()
+                        Task { @MainActor in
+                            QemuRunner.shared.setupMessage =
+                                "Android's data partition failed to build — "
+                              + "restarting Husk will reset it automatically"
+                        }
                     }
 
                     if let r = line.range(of: "HUSK-SETUP: ") ?? line.range(of: "HUSK-UI: ") {

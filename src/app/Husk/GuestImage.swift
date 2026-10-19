@@ -297,6 +297,36 @@ final class GuestImage: ObservableObject {
     nonisolated var varsPath: String { documents.appendingPathComponent("lineage-efi-vars.fd").path }
     nonisolated var firmwarePath: String { documents.appendingPathComponent("edk2-aarch64-code.fd").path }
 
+    /// Written the first time a userdata disk carries Android all the way to
+    /// sys.boot_completed. Its presence is the difference between "an install
+    /// that lost its /data" (keep, let the user decide) and "a /data that was
+    /// never built" (safe to re-seed without asking).
+    nonisolated var userdataBootedStampPath: String {
+        documents.appendingPathComponent("lineage-vdb.booted").path
+    }
+    /// Written by the serial tailer when init gives up on building /data and
+    /// reboots into recovery ("init_user0_failed"). Read on the next launch:
+    /// the guest cannot fix this itself -- recovery's mke2fs refuses to
+    /// clobber a half-built filesystem, which is the "Data wipe failed" loop
+    /// reported in #128.
+    nonisolated var userdataBrokenStampPath: String {
+        documents.appendingPathComponent("lineage-vdb.broken").path
+    }
+    /// How many automatic userdata re-seeds happened without a successful boot
+    /// between them. Capped so a deterministic fault does not wipe and retry
+    /// forever.
+    nonisolated var userdataReseedCountPath: String {
+        documents.appendingPathComponent("lineage-vdb.reseeds").path
+    }
+    /// Auto-reseed attempts before giving up and surfacing the failure.
+    nonisolated static let userdataReseedLimit = 2
+    /// Below this physical size a userdata disk cannot hold a working Android
+    /// /data -- a fresh seed is ~192 KB and a half-built ext4 stays well under
+    /// it, while any install that ever completed first boot holds gigabytes.
+    /// It is the second guard against wiping a real install that predates the
+    /// .booted stamp.
+    nonisolated static let establishedUserdataBytes: Int64 = 768 * 1024 * 1024
+
     private var task: URLSessionDownloadTask?
 
     /// Bump whenever the set or order of virtio devices in the Phase 1 command
@@ -345,12 +375,111 @@ final class GuestImage: ObservableObject {
         return (size, nil)
     }
 
+    /// Reads the fields a broken userdata disk would lie about: qcow2 version,
+    /// backing chain, and the virtual size the guest will actually see.
+    ///
+    /// `validate(path:)`'s magic+size check answers "did the download produce
+    /// an image" for the 755 MB system disk, but it is the wrong tool for
+    /// userdata: a healthy empty seed is ~192 KB, and a qcow2 whose header
+    /// parses while claiming 0 bytes of disk -- or one that still names a
+    /// backing file we never ship -- passes magic+size while handing the guest
+    /// a block device mke2fs cannot format (#128).
+    ///
+    /// Returns a description of the problem, or nil when the header is sound.
+    /// Big-endian throughout: qcow2 fields are network order.
+    nonisolated static func inspectUserdataHeader(path: String) -> String? {
+        guard let fh = FileHandle(forReadingAtPath: path) else {
+            return "could not open the userdata image"
+        }
+        defer { try? fh.close() }
+        guard let head = try? fh.read(upToCount: 80), head.count >= 80 else {
+            return "userdata image is truncated (header is incomplete)"
+        }
+        guard Array(head[0..<4]) == qcow2Magic else {
+            return "userdata image is not qcow2"
+        }
+        func be32(_ o: Int) -> UInt32 {
+            head.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: o, as: UInt32.self) }.bigEndian
+        }
+        func be64(_ o: Int) -> UInt64 {
+            head.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: o, as: UInt64.self) }.bigEndian
+        }
+        let version = be32(4)
+        guard version == 2 || version == 3 else {
+            return "unsupported qcow2 version \(version)"
+        }
+        // Our seeds and snapshots are self-contained; a backing file entry is
+        // never legitimate and means the image points at bytes that are not here.
+        guard be64(8) == 0 else {
+            return "userdata image has a backing file, which Husk never ships"
+        }
+        let virtualSize = be64(32)
+        guard virtualSize >= 1 << 30 else {
+            return "userdata image declares only \(virtualSize) bytes of disk"
+        }
+        // qcow2 v3 incompatible_features (offset 72). Bits 0 and 1 (dirty,
+        // corrupt) may legitimately be set -- a jetsam-killed guest never gets
+        // to clear its dirty flag, and wiping the disk over that would be the
+        // bug. Bit 2 onward (external data file, zstd compression, extended
+        // L2) means QEMU cannot use this image for our purpose at all.
+        if version == 3 {
+            let incompat = be64(72)
+            if incompat & ~UInt64(0x3) != 0 {
+                return "userdata image needs qcow2 features QEMU cannot use "
+                     + "(incompatible_features 0x\(String(incompat, radix: 16)))"
+            }
+        }
+        return nil
+    }
+
+    /// Records that the userdata disk on disk just carried Android to
+    /// sys.boot_completed=1. Called from the serial tailer; the stamps are
+    /// plain files precisely so they survive the app being killed mid-run.
+    /// Static and nonisolated: the tailer runs on its own thread, and asking
+    /// it to hop through the main actor for a file write would be the wrong
+    /// kind of dependency for an emergency marker.
+    nonisolated static func noteUserdataBooted() {
+        let fm = FileManager.default
+        let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let booted = docs.appendingPathComponent("lineage-vdb.booted").path
+        let isNew = !fm.fileExists(atPath: booted)
+        if isNew {
+            fm.createFile(atPath: booted, contents: Data())
+        }
+        // A disk that reached the desktop is by definition not stuck mid-build.
+        // Cleared on every boot_completed, not just the first: a transient
+        // init_user0_failed that a retry recovered from must not leave a
+        // .broken stamp accusing a working disk forever.
+        try? fm.removeItem(atPath: docs.appendingPathComponent("lineage-vdb.broken").path)
+        try? fm.removeItem(atPath: docs.appendingPathComponent("lineage-vdb.reseeds").path)
+        if isNew {
+            HuskLog.log("guest", "userdata reached boot_completed; marked healthy")
+        }
+    }
+
+    /// Records that init gave up building /data ("init_user0_failed") and the
+    /// guest is about to loop through a recovery that cannot repair it. The
+    /// actual wipe happens in prepareFirmware() on the next launch -- QEMU in
+    /// this process cannot be re-initialised, so mid-run rescue is impossible;
+    /// what the run CAN do is leave the evidence the next launch acts on.
+    nonisolated static func noteUserdataBuildFailed() {
+        let fm = FileManager.default
+        let path = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("lineage-vdb.broken").path
+        if fm.fileExists(atPath: path) { return }
+        fm.createFile(atPath: path, contents: Data())
+        HuskLog.log("guest", "init_user0_failed: userdata marked broken; "
+                           + "the next launch will re-seed it if it never booted")
+    }
+
     /// Every file the Android machine keeps: the system and userdata disks, the UEFI variables and firmware copy, the guest RAM
     /// file, the saved machine and the records about them. All of it comes back with the next download, and none of it is needed
     /// to run apps on the translation layer.
     nonisolated var androidFiles: [String] {
         let runner = QemuRunner.shared
-        return [diskPath, userdataPath, varsPath, varsPath + ".layout", firmwarePath, versionStampPath, imageDigestPath,
+        return [diskPath, userdataPath, userdataPath + ".seed", userdataBootedStampPath,
+                userdataBrokenStampPath, userdataReseedCountPath,
+                varsPath, varsPath + ".layout", firmwarePath, versionStampPath, imageDigestPath,
                 snapshotStampPath, snapshotDigestPath, snapshotPinsPath, runner.guestRamPath, runner.snapshotSizePath,
                 runner.snapshotDisplayPath, runner.memoryStrategyPath]
     }
@@ -400,10 +529,38 @@ final class GuestImage: ObservableObject {
             HuskLog.log("guest", "existing guest disk is INVALID (\(why)); removing it")
             try? FileManager.default.removeItem(atPath: diskPath)
             state = .failed("The runtime on disk is not a valid image (\(why)). Tap to retry.")
-        } else {
-            HuskLog.log("guest", "guest disk present and valid: \(check.size ?? 0) bytes")
-            state = .ready
+            return
         }
+
+        // A userdata that init_user0_failed'd out of the repair budget boots
+        // into a recovery that loops forever with no way forward. That is a
+        // state worth naming on screen instead of letting it look like a guest
+        // that merely starts slow (#128).
+        let fm = FileManager.default
+        if fm.fileExists(atPath: userdataBrokenStampPath) {
+            if !fm.fileExists(atPath: userdataBootedStampPath),
+               (Int((try? String(contentsOfFile: userdataReseedCountPath,
+                                 encoding: .utf8)) ?? "") ?? 0) >= Self.userdataReseedLimit {
+                state = .failed("Android's data partition could not be repaired "
+                              + "automatically. Remove Android in Settings and install it "
+                              + "again — and if it fails the same way, please send "
+                              + "guest-serial.log with the report.")
+                return
+            }
+            if fm.fileExists(atPath: userdataBootedStampPath), !hasShippedSnapshot {
+                // A disk that once booted and now fails is the user's own
+                // /data gone bad. Deliberately NOT a .failed state: blocking
+                // Start here would be a dead end, because a boot that somehow
+                // recovers is also the only thing that clears the stamp. The
+                // guest may still get somewhere; if it does not, Remove
+                // Android in Settings is the way out.
+                HuskLog.log("guest", "userdata previously booted but now marked "
+                                   + "broken; leaving the disk and the decision to the user")
+            }
+        }
+
+        HuskLog.log("guest", "guest disk present and valid: \(check.size ?? 0) bytes")
+        state = .ready
     }
 
     /// Create the UEFI variable store beside the bundled firmware.
@@ -518,6 +675,11 @@ final class GuestImage: ObservableObject {
                 HuskLog.log("guest", "userdata seed \(seededWith ?? "unversioned") -> \(seedVersion); "
                                    + "starting from a clean partition")
                 try? fm.removeItem(atPath: userdataPath)
+                // The health stamps describe the disk just thrown away; keeping
+                // them would protect the fresh seed as if it had ever booted.
+                try? fm.removeItem(atPath: userdataBootedStampPath)
+                try? fm.removeItem(atPath: userdataBrokenStampPath)
+                try? fm.removeItem(atPath: userdataReseedCountPath)
                 try fm.copyItem(atPath: seed, toPath: userdataPath)
                 try seedVersion.write(to: seedStamp, atomically: true, encoding: .utf8)
                 HuskLog.log("guest", "userdata disk staged to Documents")
@@ -528,10 +690,80 @@ final class GuestImage: ObservableObject {
                 throw NSError(domain: "husk", code: 3, userInfo: [
                     NSLocalizedDescriptionKey: "lineage-vdb-seed.qcow2 missing from the app bundle"])
             }
+            // No disk means no health history; stamps older than the file are lies.
+            try? fm.removeItem(atPath: userdataBootedStampPath)
+            try? fm.removeItem(atPath: userdataBrokenStampPath)
+            try? fm.removeItem(atPath: userdataReseedCountPath)
             try fm.copyItem(atPath: seed, toPath: userdataPath)
             try seedVersion.write(to: seedStamp, atomically: true, encoding: .utf8)
             HuskLog.log("guest", "userdata disk staged to Documents")
         }
+
+        try repairUserdataIfNeeded()
+    }
+
+    /// Re-seeds a userdata disk that demonstrably cannot be used. Two triggers,
+    /// same repair, because both leave the guest dead-ending in a recovery
+    /// that cannot fix itself:
+    ///
+    ///   - the serial console reported init_user0_failed on the previous run
+    ///     (the .broken stamp), which is the state the comment above describes:
+    ///     a kernel panic mid-build left a /data that boots init into failure
+    ///     and makes recovery's mke2fs refuse to overwrite it (#128);
+    ///   - the qcow2 header itself is bad, which hands QEMU a block device
+    ///     that was never going to format no matter what the guest does.
+    ///
+    /// Both repairs are gated on the disk being disposable: no successful boot
+    /// on record, no shipped snapshot riding on it, and physically too small to
+    /// hold a real /data. A disk that ever worked is the user's data, and no
+    /// automatic path may take that decision for them -- those are logged and
+    /// left alone.
+    private func repairUserdataIfNeeded() throws {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: userdataPath) else { return }
+
+        var why: String?
+        if fm.fileExists(atPath: userdataBrokenStampPath) {
+            why = "the previous boot ended in init_user0_failed"
+        } else if let problem = Self.inspectUserdataHeader(path: userdataPath) {
+            why = problem
+        }
+        guard let why = why else { return }
+
+        if fm.fileExists(atPath: userdataBootedStampPath) || hasShippedSnapshot {
+            HuskLog.log("guest", "userdata needs repair (\(why)) but it once booted "
+                               + "or holds a snapshot; leaving the user's data alone")
+            return
+        }
+        let onDisk = ((try? fm.attributesOfItem(atPath: userdataPath))?[.size] as? NSNumber)?
+            .int64Value ?? 0
+        if onDisk >= Self.establishedUserdataBytes {
+            HuskLog.log("guest", "userdata needs repair (\(why)) but holds "
+                               + "\(onDisk / 1_048_576) MiB; leaving it alone")
+            return
+        }
+
+        let reseeds = Int((try? String(contentsOfFile: userdataReseedCountPath,
+                                       encoding: .utf8)) ?? "") ?? 0
+        guard reseeds < Self.userdataReseedLimit else {
+            HuskLog.log("guest", "userdata needs repair (\(why)) but has already been "
+                               + "re-seeded \(reseeds)x without a successful boot")
+            return
+        }
+
+        guard let seed = Bundle.main.path(forResource: "lineage-vdb-seed", ofType: "qcow2") else {
+            throw NSError(domain: "husk", code: 3, userInfo: [
+                NSLocalizedDescriptionKey: "lineage-vdb-seed.qcow2 missing from the app bundle"])
+        }
+        HuskLog.log("guest", "userdata is unusable (\(why)); re-seeding a clean "
+                           + "partition (attempt \(reseeds + 1)/\(Self.userdataReseedLimit))")
+        try fm.removeItem(atPath: userdataPath)
+        try fm.copyItem(atPath: seed, toPath: userdataPath)
+        try Self.userdataSeedVersion.write(toFile: userdataPath + ".seed",
+                                           atomically: true, encoding: .utf8)
+        try "\(reseeds + 1)".write(toFile: userdataReseedCountPath,
+                                  atomically: true, encoding: .utf8)
+        try? fm.removeItem(atPath: userdataBrokenStampPath)
     }
 
     func download() {

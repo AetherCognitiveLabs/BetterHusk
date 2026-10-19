@@ -18,6 +18,7 @@ proven but not merged yet, plus build/release infrastructure upstream lacks.
 | W^X-safe xmem dual mapping + TrollStore banned-entitlement stripping | [PR #74](https://github.com/Leviidev/Husk/pull/74) | open |
 | Per-game engine/driver override ("Runs as" picker) | [issue #149](https://github.com/Leviidev/Husk/issues/149) | unaddressed upstream |
 | JNI: no caching of failed native lookups (Dex2C/RegisterNatives timing) | [issue #152](https://github.com/Leviidev/Husk/issues/152) | unaddressed upstream |
+| Emulation userdata self-repair: `init_user0_failed` marks the disk, next launch re-seeds a never-booted /data (qcow2 header preflight, 2-attempt budget, booted/snapshot data never touched) | [issue #128](https://github.com/Leviidev/Husk/issues/128) | unaddressed upstream |
 | Bundle ID `com.betterhusk.app`, display name "BetterHusk" | this fork | n/a |
 | `altsource.json` served from this repo | this fork | n/a |
 
@@ -46,8 +47,6 @@ proven but not merged yet, plus build/release infrastructure upstream lacks.
   Emulation on M1/M2 iPads (iOS 15.5–16.3)
 - [#148](https://github.com/Leviidev/Husk/issues/148) — built-in JIT errors on
   iOS 16.7 Dopamine/TrollStore
-- [#128](https://github.com/Leviidev/Husk/issues/128) — emulation first boot:
-  `init_user0_failed`, mke2fs fails on /dev/block/vdb
 
 ## Keeping the identity straight
 
