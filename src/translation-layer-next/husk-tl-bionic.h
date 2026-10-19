@@ -85,6 +85,15 @@ int tl_signal_from_darwin(int darwin_sig);
 /* Android system properties, for __system_property_get and Java's Build. */
 const char *tl_sysprop(const char *name);
 
+/* The host-chosen locale, set via husk_tl_set_locale (declared in husk-tl.h).
+ * These answer the pieces in each namespace's own form; never NULL. */
+const char *tl_guest_locale_tag(void);    /* "zh-Hans-CN"  (persist.sys.locale)   */
+const char *tl_guest_language(void);      /* "zh"          (user.language)        */
+const char *tl_guest_country(void);       /* "Hans-CN"     (user.country)         */
+const char *tl_guest_region(void);        /* "CN"          (persist.sys.country)  */
+const char *tl_guest_region_lower(void);  /* "cn"          (gsm.operator.iso-*)   */
+const char *tl_guest_timezone(void);      /* "Asia/Shanghai" (persist.sys.timezone) */
+
 /* The log. */
 void tl_log_line(const char *fmt, ...);
 

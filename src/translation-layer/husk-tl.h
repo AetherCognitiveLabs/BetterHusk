@@ -69,6 +69,26 @@ char *husk_tl_run_checks(bool may_execute);
  * husk_tl_attempt_stop() asks for an early end, and husk_tl_attempt_reset()
  * frees everything after a finished run.
  */
+/*
+ * Hand the guest the host's onboarding choice of language, region and time
+ * zone. Call before husk_tl_attempt_start so the values are in place when the
+ * runtime reads them: bionic's property table answers persist.sys.locale,
+ * persist.sys.timezone and the carrier-country keys from these, and the dvm's
+ * System properties (user.language, user.country, user.timezone -- what
+ * Locale.getDefault() and friends actually read) take their pieces.
+ *
+ *   bcp47     the full tag the guest should see, e.g. "zh-Hans-CN"
+ *   language  the bare ISO 639 code, e.g. "zh"
+ *   country   user.country in ART's shape -- script + region when the tag has
+ *             a script ("Hans-CN"), the region alone otherwise ("US")
+ *   region    the ISO 3166-1 region on its own, e.g. "CN"
+ *   timezone  the IANA zone id, e.g. "Asia/Shanghai"
+ *
+ * NULLs mean "not chosen" and everything falls back to en-US / UTC.
+ */
+void husk_tl_set_locale(const char *bcp47, const char *language, const char *country,
+                        const char *region, const char *timezone);
+
 int  husk_tl_attempt_start(const char *const *apks, int count, int seconds);
 bool husk_tl_attempt_done(int *exit_code);
 int  husk_tl_attempt_frames(void);

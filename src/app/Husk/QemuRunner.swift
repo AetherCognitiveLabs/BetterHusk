@@ -525,6 +525,39 @@ final class QemuRunner: ObservableObject {
     /// So it retries, and it confirms against init's own view of each service
     /// rather than against whether a setprop happened to return.
     @discardableResult
+    /// Hand the booted guest the language, region and time zone chosen in
+    /// onboarding (#156).
+    ///
+    /// persist.sys.locale is what init wrote at first boot and what every
+    /// Android API consults; changing it live also needs settings'
+    /// system_locales, which is what broadcasts ACTION_LOCALE_CHANGED so a
+    /// running system flips without a reboot. The bridge listener comes up on
+    /// the very property we are reacting to, so the first attempt can land
+    /// before it is listening -- hence one retry rather than logging and
+    /// giving up.
+    static func applyGuestLocale() {
+        let loc = Onboarding.guestLocale()
+        let cmd = "setprop persist.sys.locale \(loc.tag); "
+                + "setprop persist.sys.timezone \(loc.timeZone); "
+                + "setprop persist.sys.language \(loc.language); "
+                + "setprop persist.sys.country \(loc.region); "
+                + "settings put system system_locales \(loc.tag)"
+        Thread.detachNewThread {
+            for attempt in 1...2 {
+                do {
+                    let r = try GuestBridge.shared.run(cmd, timeout: 15)
+                    HuskLog.log("qemu", "guest locale applied: \(loc.tag), \(loc.timeZone) "
+                                      + "(status \(r.status))")
+                    return
+                } catch {
+                    HuskLog.log("qemu", "guest locale attempt \(attempt) failed: "
+                                      + "\(error.localizedDescription)")
+                    Thread.sleep(forTimeInterval: 5)
+                }
+            }
+        }
+    }
+
     nonisolated func startAndroidUI(why: String) -> Bool {
         var allUp = true
         // The snapshot already on disk was saved the old way, with zygote
@@ -1932,6 +1965,7 @@ final class QemuRunner: ObservableObject {
                        line.contains("sys.boot_completed=1") {
                         QemuRunner.bootCompletedAt = Date()
                         GuestImage.noteUserdataBooted()
+                        QemuRunner.applyGuestLocale()
                         HuskLog.log("snap", "Android reports boot_completed; "
                                           + "will save the machine once it settles")
                     }

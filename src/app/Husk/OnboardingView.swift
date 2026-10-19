@@ -22,10 +22,41 @@ enum Onboarding {
     }
 
     /// What apps inside Husk are told about where you are, chosen in setup.
-    // TODO: hand these to the guest (TL locale/time zone and Android's persist.sys.locale / TZ); stored only for now.
+    /// Consumed by QemuRunner (persist.sys.* over the guest bridge) and by the
+    /// translation layer (husk_tl_set_locale -> sysprops, dvm System props).
     static let languageKey = "husk.guest.language"
     static let regionKey = "husk.guest.region"
     static let timeZoneKey = "husk.guest.timeZone"
+
+    /// The setup choice in the shapes the guest's different namespaces want.
+    ///
+    /// Android keeps the BCP-47 tag in persist.sys.locale ("zh-Hans-CN"), while
+    /// ART splits it into the System properties libcore's Locale.getDefault()
+    /// reads: user.language ("zh"), user.country in ART's script-then-region
+    /// shape ("Hans-CN" -- that is genuinely how ART writes it for a scripted
+    /// tag), user.region ("CN") and user.timezone.
+    static func guestLocale() -> (tag: String, language: String, country: String,
+                                  region: String, timeZone: String) {
+        let d = UserDefaults.standard
+        let chosen = d.string(forKey: languageKey) ?? "en"
+        let region = d.string(forKey: regionKey) ?? "US"
+        let tz = d.string(forKey: timeZoneKey) ?? TimeZone.current.identifier
+        let language = String(chosen.split(separator: "-").first ?? "en")
+        var tag = chosen, country = region
+        if chosen.contains("-") {
+            // A trailing four-letter component is a script subtag (zh-Hans,
+            // zh-Hant): append the region, and user.country takes ART's
+            // script+region form. A two-letter one is already the region
+            // (pt-BR), so the tag stands as it is.
+            if let script = chosen.split(separator: "-").last, script.count == 4 {
+                tag = "\(chosen)-\(region)"
+                country = "\(script)-\(region)"
+            }
+        } else {
+            tag = "\(chosen)-\(region)"
+        }
+        return (tag, language, country, region, tz)
+    }
 
     /// Start the guest as soon as the app opens, when JIT is available.
     static var autoStart: Bool {

@@ -6,6 +6,7 @@
  */
 #define _DARWIN_C_SOURCE
 #include "husk-tl-jni.h"
+#include "husk-tl-bionic.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -559,7 +560,20 @@ static void System_loadLibrary(tl_jcall *c)
         tl_jni_throw("java/lang/UnsatisfiedLinkError", msg);
     }
 }
-static void System_getProperty(tl_jcall *c) { const char *k = S(c->args[0].l); const char *v = !strcmp(k, "os.arch") ? "aarch64" : !strcmp(k, "http.agent") ? "Dalvik/2.1.0 (Linux; U; Android 14; Pixel 8)" : NULL; c->ret = vl(v ? STR(v) : NULL); }
+static void System_getProperty(tl_jcall *c)
+{
+    const char *k = S(c->args[0].l);
+    const char *v = !strcmp(k, "os.arch") ? "aarch64"
+                  : !strcmp(k, "http.agent") ? "Dalvik/2.1.0 (Linux; U; Android 14; Pixel 8)"
+                  /* user.* are what Locale.getDefault() is actually built from */
+                  : !strcmp(k, "user.language") ? tl_guest_language()
+                  : !strcmp(k, "user.country") ? tl_guest_country()
+                  : !strcmp(k, "user.region") ? tl_guest_region()
+                  : !strcmp(k, "user.variant") ? ""
+                  : !strcmp(k, "user.timezone") ? tl_guest_timezone()
+                  : NULL;
+    c->ret = vl(v ? STR(v) : NULL);
+}
 /* android.os.SystemClock: time since boot (the host's), in ms or ns */
 static void SystemClock_uptimeMillis(tl_jcall *c) { struct timespec ts; clock_gettime(CLOCK_UPTIME_RAW, &ts); jvalue v; v.j = (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000; c->ret = v; }
 static void SystemClock_elapsedRealtime(tl_jcall *c) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); jvalue v; v.j = (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000; c->ret = v; }
@@ -615,11 +629,21 @@ static void Member_getDeclaringClass(tl_jcall *c) { c->ret = vl(tl_jni_reflected
 
 /* The DEX says getUserdataPath is currentActivity.getFilesDir().getAbsolutePath(). */
 static void Kiloo_getUserdataPath(tl_jcall *c) { c->ret = vl(STR(H.files)); }
-static void Locale_getDefault(tl_jcall *c) { c->ret = vl(make("java/util/Locale")); }
-static void Locale_toLanguageTag(tl_jcall *c) { c->ret = vl(STR("en-US")); }
-static void Locale_getLanguage(tl_jcall *c) { c->ret = vl(STR("en")); }
-static void Locale_getCountry(tl_jcall *c) { c->ret = vl(STR("US")); }
-static void PreciseLocale_getRegion(tl_jcall *c) { c->ret = vl(STR("US")); }
+/* These answer with the language the user chose in onboarding (#156), wired
+ * through husk_tl_set_locale; the fields are poked too because some callers
+ * walk past these methods straight into the object's data. */
+static void Locale_getDefault(tl_jcall *c)
+{
+    jobj *l = make("java/util/Locale");
+    set_str(l, "language", tl_guest_language());
+    set_str(l, "country",  tl_guest_region());
+    set_str(l, "variant",  "");
+    c->ret = vl(l);
+}
+static void Locale_toLanguageTag(tl_jcall *c) { c->ret = vl(STR(tl_guest_locale_tag())); }
+static void Locale_getLanguage(tl_jcall *c) { c->ret = vl(STR(tl_guest_language())); }
+static void Locale_getCountry(tl_jcall *c) { c->ret = vl(STR(tl_guest_region())); }
+static void PreciseLocale_getRegion(tl_jcall *c) { c->ret = vl(STR(tl_guest_region())); }
 static void Chipset_name(tl_jcall *c) { c->ret = vl(STR("Apple")); }
 static void Log_getStackTraceString(tl_jcall *c)
 {
@@ -1303,6 +1327,26 @@ void tl_jni_hle_install(void)
     set_int(H.config, "orientation", H.width > H.height ? 2 : 1);     /* ORIENTATION_LANDSCAPE / PORTRAIT */
     set_float(H.config, "fontScale", 1.0f);
     set_int(H.config, "screenLayout", 0x22); set_int(H.config, "keyboard", 1); set_int(H.config, "navigation", 1);
+    /* Resources.getConfiguration().locale is the read most apps actually make
+     * for the user's language; leaving it unset hands them null. The API-24
+     * path (getLocales().get(0)) reads a LocaleList, so it gets the same
+     * locale in array form. */
+    {
+        jobj *loc = make("java/util/Locale");
+        set_str(loc, "language", tl_guest_language());
+        set_str(loc, "country",  tl_guest_region());
+        set_str(loc, "variant",  "");
+        loc->refs = 1u << 30;
+        tl_jni_set_field(H.config, "locale", "Ljava/util/Locale;", vl(loc));
+        jobj *arr = tl_jni_new_obj_array(C("java/util/Locale"), 1);
+        arr->oarr.v[0] = loc;
+        arr->refs = 1u << 30;
+        jobj *ll = make("android/os/LocaleList");
+        ll->refs = 1u << 30;
+        tl_jni_set_field(ll, "list", "[Ljava/util/Locale;", vl(arr));
+        tl_jni_set_field(ll, "mList", "[Ljava/util/Locale;", vl(arr));
+        tl_jni_set_field(H.config, "mLocaleList", "Landroid/os/LocaleList;", vl(ll));
+    }
     set_int(H.config, "touchscreen", 3); set_int(H.config, "screenWidthDp", (int)(H.width / H.density));
     set_int(H.config, "screenHeightDp", (int)(H.height / H.density)); set_int(H.config, "densityDpi", (int)(H.density * 160));
     H.metrics = make("android/util/DisplayMetrics");

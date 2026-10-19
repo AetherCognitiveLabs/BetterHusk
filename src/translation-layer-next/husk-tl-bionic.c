@@ -104,6 +104,55 @@ void tl_note_once(const char *what)
 
 /* ------------------------------------------------------------ properties */
 
+/* What the user chose in onboarding, handed over by husk_tl_set_locale() before
+ * the runtime starts. Every namespace a guest can read location through is fed
+ * from these: the bionic property table below (persist.sys.locale, timezone,
+ * carrier country), the dvm's System properties (user.language et al, wired in
+ * VMR_properties), and the JNI HLE getters. Empty means unset, and every reader
+ * then falls back to the historical answers -- en-US and UTC. */
+static char g_tl_locale[64];     /* BCP-47 tag for persist.sys.locale: "zh-Hans-CN" */
+static char g_tl_lang[16];       /* user.language: "zh" */
+static char g_tl_country[48];    /* user.country, ART's script+region form: "Hans-CN" */
+static char g_tl_region[8];      /* ISO 3166-1 region alone: "CN" */
+static char g_tl_region_lc[8];   /* gsm.operator.iso-country form: "cn" */
+static char g_tl_tz[64];         /* persist.sys.timezone: "Asia/Shanghai" */
+
+void husk_tl_set_locale(const char *bcp47, const char *language, const char *country,
+                        const char *region, const char *timezone)
+{
+    snprintf(g_tl_locale,    sizeof(g_tl_locale),    "%s", bcp47    ? bcp47    : "");
+    snprintf(g_tl_lang,      sizeof(g_tl_lang),      "%s", language ? language : "");
+    snprintf(g_tl_country,   sizeof(g_tl_country),   "%s", country  ? country  : "");
+    snprintf(g_tl_region,    sizeof(g_tl_region),    "%s", region   ? region   : "");
+    snprintf(g_tl_region_lc, sizeof(g_tl_region_lc), "%s", region   ? region   : "");
+    for (char *p = g_tl_region_lc; *p; p++) if (*p >= 'A' && *p <= 'Z') *p += 'a' - 'A';
+    snprintf(g_tl_tz,        sizeof(g_tl_tz),        "%s", timezone ? timezone : "");
+    tl_log_line("locale: guest told %s (language=%s country=%s tz=%s)",
+                g_tl_locale, g_tl_lang, g_tl_country, g_tl_tz);
+}
+
+const char *tl_guest_locale_tag(void)   { return g_tl_locale[0]    ? g_tl_locale    : "en-US"; }
+const char *tl_guest_language(void)     { return g_tl_lang[0]      ? g_tl_lang      : "en"; }
+const char *tl_guest_country(void)      { return g_tl_country[0]   ? g_tl_country   : "US"; }
+const char *tl_guest_region(void)       { return g_tl_region[0]    ? g_tl_region    : "US"; }
+const char *tl_guest_region_lower(void) { return g_tl_region_lc[0] ? g_tl_region_lc : "us"; }
+const char *tl_guest_timezone(void)     { return g_tl_tz[0]        ? g_tl_tz        : "UTC"; }
+
+/* The property names that follow the host's choice rather than the table.
+ * NULL for everything else. Read through tl_sysprop and the find path alike. */
+static const char *prop_override(const char *name)
+{
+    if (!strcmp(name, "persist.sys.locale") || !strcmp(name, "ro.product.locale"))
+        return tl_guest_locale_tag();
+    if (!strcmp(name, "persist.sys.timezone"))  return tl_guest_timezone();
+    if (!strcmp(name, "persist.sys.language"))  return tl_guest_language();
+    if (!strcmp(name, "persist.sys.country") || !strcmp(name, "persist.sys.region"))
+        return tl_guest_region();
+    if (!strcmp(name, "gsm.operator.iso-country") || !strcmp(name, "gsm.sim.operator.iso-country"))
+        return tl_guest_region_lower();
+    return NULL;
+}
+
 static const struct { const char *k, *v; } k_props[] = {
     { "ro.build.version.sdk", "34" }, { "ro.build.version.release", "14" },
     { "ro.build.version.release_or_codename", "14" }, { "ro.build.version.codename", "REL" },
@@ -118,8 +167,8 @@ static const struct { const char *k, *v; } k_props[] = {
     { "ro.soc.manufacturer", "Google" }, { "ro.soc.model", "Tensor G3" },
     { "ro.opengles.version", "196610" }, { "ro.kernel.qemu", "0" }, { "ro.debuggable", "0" },
     { "ro.secure", "1" }, { "ro.zygote", "zygote64" }, { "ro.config.low_ram", "false" },
-    { "ro.sf.lcd_density", "420" }, { "ro.hwui.use_vulkan", "" }, { "persist.sys.locale", "en-US" },
-    { "persist.sys.timezone", "UTC" }, { "gsm.operator.iso-country", "us" }, { "ro.carrier", "unknown" },
+    { "ro.sf.lcd_density", "420" }, { "ro.hwui.use_vulkan", "" },
+    { "ro.carrier", "unknown" },
     { "ro.com.google.clientidbase", "android-google" }, { "debug.hwui.renderer", "" },
     { "ro.vendor.build.fingerprint", "google/shiba/shiba:14/UP1A.231105.001/11000000:user/release-keys" },
     { "ro.system.build.version.sdk", "34" }, { "ro.product.first_api_level", "34" },
@@ -127,6 +176,8 @@ static const struct { const char *k, *v; } k_props[] = {
 
 const char *tl_sysprop(const char *name)
 {
+    const char *ov = prop_override(name);
+    if (ov) return ov;
     for (size_t i = 0; i < sizeof(k_props) / sizeof(k_props[0]); i++) if (!strcmp(k_props[i].k, name)) return k_props[i].v;
     return NULL;
 }
@@ -158,6 +209,10 @@ static int bionic_sched_cpucount(size_t setsize, const unsigned char *set)
 
 static const void *bionic___system_property_find(const char *name)
 {
+    /* Same shape as a table row so read() handles it identically. */
+    static struct { const char *k, *v; } dyn;
+    const char *ov = prop_override(name);
+    if (ov) { dyn.k = name; dyn.v = ov; return &dyn; }
     for (size_t i = 0; i < sizeof(k_props) / sizeof(k_props[0]); i++) if (!strcmp(k_props[i].k, name)) return &k_props[i];
     return NULL;
 }

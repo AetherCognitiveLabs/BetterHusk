@@ -624,6 +624,18 @@ static int __system_property_get_shim(const char *name, char *value)
         strcpy(value, "33");
         return (int)strlen(value);
     }
+    /* Everything else: the shared table in translation-layer-next, which also
+     * carries the onboarding locale (persist.sys.locale, persist.sys.timezone,
+     * the carrier country) the moment the host hands it over. */
+    extern const char *tl_sysprop(const char *name);
+    const char *v = tl_sysprop(name);
+    if (v && *v) {
+        size_t n = strlen(v);
+        if (n > 91) n = 91;                  /* bionic's PROP_VALUE_MAX */
+        memcpy(value, v, n);
+        value[n] = '\0';
+        return (int)n;
+    }
     value[0] = '\0';
     return 0;
 }

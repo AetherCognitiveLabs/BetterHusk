@@ -6,6 +6,7 @@
  */
 #define _DARWIN_C_SOURCE
 #include "husk-tl-dvm-internal.h"
+#include "husk-tl-bionic.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -511,11 +512,24 @@ NAT(System_setStream) { (void)self; (void)ret; (void)a; return true; }   /* setI
 NAT(VMR_properties)
 {
     UNUSED;
+    /* user.language/user.country/user.variant/user.region/user.timezone are
+     * what libcore's Locale.getDefault() and TimeZone.getDefault() are built
+     * from, and they come from the onboarding choice (#156) -- without them
+     * every app reads "en" no matter what the user picked. country carries
+     * script+region the way ART writes it from persist.sys.locale ("Hans-CN"),
+     * which is how libcore reconstructs the script subtag. */
+    char lang[80], country[80], region[80], variant[16], tz[96];
+    snprintf(lang,    sizeof(lang),    "user.language=%s", tl_guest_language());
+    snprintf(country, sizeof(country), "user.country=%s",  tl_guest_country());
+    snprintf(region,  sizeof(region),  "user.region=%s",   tl_guest_region());
+    snprintf(variant, sizeof(variant), "user.variant=");
+    snprintf(tz,      sizeof(tz),      "user.timezone=%s", tl_guest_timezone());
     const char *v[] = { "java.vm.version=2.1.0", "java.vm.name=Dalvik", "java.home=/system", "java.io.tmpdir=/data/local/tmp",
                         "java.library.path=/system/lib64", "file.encoding=UTF-8", "line.separator=\n", "path.separator=:",
                         "file.separator=/", "os.arch=aarch64", "os.name=Linux", "os.version=6.1", "user.home=", "user.name=u0_a100",
                         "java.vendor=The Android Project", "java.version=0", "java.specification.version=0.9", "android.icu.library.version=74",
-                        "android.icu.unicode.version=15.1", "http.agent=Dalvik/2.1.0 (Linux; U; Android 14)" };
+                        "android.icu.unicode.version=15.1", "http.agent=Dalvik/2.1.0 (Linux; U; Android 14)",
+                        lang, country, region, variant, tz };
     *ret = L(string_array(v, (int)(sizeof(v) / sizeof(v[0]))));
     return true;
 }

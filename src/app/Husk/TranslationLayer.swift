@@ -661,6 +661,12 @@ final class TLAttemptRunner: ObservableObject {
         pollTicks = 0
 
         DispatchQueue.global(qos: .userInitiated).async {
+            // The onboarding language/region/zone choice, in place before the
+            // runtime reads it (#156): sysprops, the dvm's user.* System
+            // properties and the JNI getters all answer from this.
+            let loc = Onboarding.guestLocale()
+            husk_tl_set_locale(loc.tag, loc.language, loc.country, loc.region, loc.timeZone)
+
             let owned = apks.map { strdup($0) }
             defer { owned.forEach { free($0) } }
             let pointers = owned.map { UnsafePointer<CChar>($0) }
