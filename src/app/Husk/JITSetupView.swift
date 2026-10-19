@@ -65,13 +65,12 @@ struct JITSetupFlow: View {
 
     private var choose: some View {
         page(symbol: "bolt.fill", title: "Turn on JIT",
-             subtitle: "Android needs memory it can write and then run, which on iOS only an attached "
-                     + "debugger can grant. Choose how your \(device) gets one.") {
+             subtitle: String(localized: "Android needs memory it can write and then run, which on iOS only an attached debugger can grant. Choose how your \(device) gets one.")) {
             VStack(spacing: 10) {
                 let builtIn = HuskBuiltInJIT.unavailableReason
-                way("Pair on this \(device)", symbol: "iphone.radiowaves.left.and.right",
+                way(String(localized: "Pair on this \(device)"), symbol: "iphone.radiowaves.left.and.right",
                     detail: builtIn ?? (!OnDevicePairing.isSupported ? "Needs iOS 27 or later."
-                        : jit.pairingSource == .onDevice ? "Paired on this \(device)."
+                        : jit.pairingSource == .onDevice ? String(localized: "Paired on this \(device).")
                         : "No computer needed. Pairs from Settings in a minute."),
                     done: jit.pairingSource == .onDevice,
                     enabled: builtIn == nil && OnDevicePairing.isSupported) { path.append(.pairOnDevice) }
@@ -118,8 +117,8 @@ struct JITSetupFlow: View {
                     .frame(width: 34, height: 34)
                     .background(Theme.accentSoft, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(title).font(.system(size: 16, weight: .semibold)).foregroundStyle(Theme.text)
-                    Text(detail).font(.system(size: 13)).foregroundStyle(Theme.textDim)
+                    Text(title.l10n).font(.system(size: 16, weight: .semibold)).foregroundStyle(Theme.text)
+                    Text(detail.l10n).font(.system(size: 13)).foregroundStyle(Theme.textDim)
                         .fixedSize(horizontal: false, vertical: true)
                         .multilineTextAlignment(.leading)
                 }
@@ -145,14 +144,12 @@ struct JITSetupFlow: View {
     }
 
     private var pairOnDevice: some View {
-        page(symbol: "iphone.radiowaves.left.and.right", title: "Pair on this \(device)",
-             subtitle: "Husk pretends to be a computer on your Wi-Fi, and your \(device) pairs with it "
-                     + "the way it would with a Mac.") {
+        page(symbol: "iphone.radiowaves.left.and.right", title: String(localized: "Pair on this \(device)"),
+             subtitle: String(localized: "Husk pretends to be a computer on your Wi-Fi, and your \(device) pairs with it the way it would with a Mac.")) {
             VStack(alignment: .leading, spacing: 14) {
                 point(1, "Turn on Wi-Fi, tap **Start pairing** below and allow Local Network access.",
                       done: pairing.phase != .idle)
-                point(2, "Open **Settings › Privacy & Security › Developer Mode**, scroll down and tap "
-                       + "**Pair with \(OnDevicePairing.hostName)**.",
+                point(2, String(localized: "Open **Settings › Privacy & Security › Developer Mode**, scroll down and tap **Pair with \(OnDevicePairing.hostName)**."),
                       done: pairing.isShowingPin || pairedOnDevice)
                 point(3, "Enter the code Husk shows. It also appears in a banner and a notification, "
                        + "so you don't have to switch back.",
@@ -195,8 +192,7 @@ struct JITSetupFlow: View {
                 }
                 .font(.system(size: 14, weight: .semibold))
                 if pairing.backgroundLimited {
-                    Text("This installation can only wait about 30 seconds in the background, "
-                       + "so go to Settings straight away.")
+                    Text("This installation can only wait about 30 seconds in the background, so go to Settings straight away.")
                         .font(.system(size: 13)).foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -215,7 +211,7 @@ struct JITSetupFlow: View {
             .frame(maxWidth: .infinity)
             .padding(18).huskCard(high: true)
         case .paired(let name):
-            outcome("Paired with \(name)", ok: true)
+            outcome(String(localized: "Paired with \(name)"), ok: true)
         case .failed(let message):
             outcome(message, ok: false)
         }
@@ -225,12 +221,11 @@ struct JITSetupFlow: View {
 
     private var importFile: some View {
         page(symbol: "doc.badge.plus", title: "Use a pairing file",
-             subtitle: "A pairing file made on a computer lets Husk talk to this \(device) the same way.") {
+             subtitle: String(localized: "A pairing file made on a computer lets Husk talk to this \(device) the same way.")) {
             VStack(alignment: .leading, spacing: 14) {
-                point(1, "On a computer, make this \(device)'s pairing file with the "
-                       + "[StikDebug pairing-file guide](https://github.com/StikDebug/StikDebug-Guide/blob/main/pairing_file.md).",
+                point(1, String(localized: "On a computer, make this \(device)'s pairing file with the [StikDebug pairing-file guide](https://github.com/StikDebug/StikDebug-Guide/blob/main/pairing_file.md)."),
                       done: jit.pairingSource == .imported)
-                point(2, "Save it to Files, or AirDrop it to this \(device).",
+                point(2, String(localized: "Save it to Files, or AirDrop it to this \(device)."),
                       done: jit.pairingSource == .imported)
                 point(3, "Tap **Choose pairing file** and pick it.", done: jit.pairingSource == .imported)
             }
@@ -255,10 +250,9 @@ struct JITSetupFlow: View {
 
     private var connect: some View {
         page(symbol: "network.badge.shield.half.filled", title: "Connect LocalDevVPN",
-             subtitle: "Husk's helper reaches this \(device)'s debugging service through a local VPN. "
-                     + "Nothing leaves your \(device).") {
+             subtitle: String(localized: "Husk's helper reaches this \(device)'s debugging service through a local VPN. Nothing leaves your \(device).")) {
             VStack(alignment: .leading, spacing: 14) {
-                point(1, "Install [LocalDevVPN](\(LocalDevVPN.appStore.absoluteString)) from the App Store.",
+                point(1, String(localized: "Install [LocalDevVPN](\(LocalDevVPN.appStore.absoluteString)) from the App Store."),
                       done: LocalDevVPN.isInstalled)
                 point(2, "Tap **Connect LocalDevVPN**. It switches the VPN on and comes straight back to Husk.")
                 point(3, "Leave it connected whenever you turn JIT on.")
@@ -278,8 +272,7 @@ struct JITSetupFlow: View {
 
     private var enable: some View {
         page(symbol: "bolt.badge.checkmark", title: "Turn on JIT",
-             subtitle: "The first check downloads and mounts Apple's Developer Disk Image, "
-                     + "which can take a minute.") {
+             subtitle: String(localized: "The first check downloads and mounts Apple's Developer Disk Image, which can take a minute.")) {
             VStack(alignment: .leading, spacing: 14) {
                 point(1, "Tap **Check setup**. Husk checks LocalDevVPN and prepares the Developer Disk Image.",
                       done: jit.prepared || attached)
@@ -295,7 +288,7 @@ struct JITSetupFlow: View {
                 }
                 .padding(16).huskCard(high: true)
             } else if attached {
-                outcome("JIT is on. Android can start.", ok: true)
+                outcome(String(localized: "JIT is on. Android can start."), ok: true)
             } else if let error = jit.error {
                 VStack(alignment: .leading, spacing: 10) {
                     outcome(error, ok: false)
@@ -344,8 +337,8 @@ struct JITSetupFlow: View {
             VStack(alignment: .leading, spacing: 14) {
                 point(1, "Install [StikDebug](https://github.com/StikDebug/StikDebug/releases/latest).",
                       done: JITBootstrap.isStikDebugInstalled)
-                point(2, "Import this \(device)'s pairing file into StikDebug.")
-                point(3, "Install and connect [LocalDevVPN](\(LocalDevVPN.appStore.absoluteString)).")
+                point(2, String(localized: "Import this \(device)'s pairing file into StikDebug."))
+                point(3, String(localized: "Install and connect [LocalDevVPN](\(LocalDevVPN.appStore.absoluteString))."))
                 point(4, "Whenever Android starts, Husk opens StikDebug, which attaches and comes back.")
             }
             .padding(16).huskCard()
@@ -434,8 +427,8 @@ struct JITSetupFlow: View {
                         .foregroundStyle(Theme.accent)
                         .frame(width: 56, height: 56)
                         .background(Theme.accentSoft, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    Text(title).font(.system(size: 28, weight: .semibold)).foregroundStyle(Theme.text)
-                    Text(subtitle).font(.system(size: 15)).foregroundStyle(Theme.textDim)
+                    Text(title.l10n).font(.system(size: 28, weight: .semibold)).foregroundStyle(Theme.text)
+                    Text(subtitle.l10n).font(.system(size: 15)).foregroundStyle(Theme.textDim)
                         .fixedSize(horizontal: false, vertical: true)
                     content()
                 }
@@ -466,7 +459,7 @@ struct JITSetupFlow: View {
                 }
             }
             .frame(width: 26, height: 26)
-            Text(.init(text))
+            Text(text.l10n)
                 .font(.system(size: 15))
                 .foregroundStyle(Theme.text)
                 .fixedSize(horizontal: false, vertical: true)
@@ -475,7 +468,7 @@ struct JITSetupFlow: View {
     }
 
     private func outcome(_ text: String, ok: Bool) -> some View {
-        Label(text, systemImage: ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+        Label(text.l10n, systemImage: ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
             .font(.system(size: 14, weight: .medium))
             .foregroundStyle(ok ? .green : .red)
             .fixedSize(horizontal: false, vertical: true)

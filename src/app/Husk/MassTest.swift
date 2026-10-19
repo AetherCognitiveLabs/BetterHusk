@@ -125,7 +125,7 @@ final class MassTest: ObservableObject {
             var diagnosis = ""
             var lines = Self.crashBlock(of: CrashReport.previousLogURL) + ["--- end of that run's log ---"] + Self.tail(of: CrashReport.previousLogURL, 60)
             if let r = crash.pending {
-                outcome = "Husk crashed: \(r.cause.title)"
+                outcome = String(localized: "Husk crashed: \(r.cause.title)")
                 diagnosis = r.cause.detail
                 if !r.excerpt.isEmpty { lines = r.excerpt }
             }
@@ -148,7 +148,7 @@ final class MassTest: ObservableObject {
     private func runCurrent() {
         guard var s = state, s.index < s.queue.count else { writeReport(); shareResults = true; return }
         let file = s.queue[s.index]
-        status = "Testing \(s.index + 1) of \(s.queue.count): \(file)"
+        status = String(localized: "Testing \(s.index + 1) of \(s.queue.count): \(file)")
         HuskLog.log("masstest", status)
         Task {
             // Taken into the library once; a later launch for the same APK (after a crash) finds it there.
@@ -169,7 +169,7 @@ final class MassTest: ObservableObject {
                 record(file: file, app: nil, outcome: "Imported, but not in the library", frames: 0, seconds: 0); return
             }
             if let d = AppDiagnosis.preflight(app), d.blocksLaunch {
-                record(file: file, app: app, outcome: "Not started: \(d.title)", frames: 0, seconds: 0, diagnosis: d.detail); return
+                record(file: file, app: app, outcome: String(localized: "Not started: \(d.title)"), frames: 0, seconds: 0, diagnosis: d.detail); return
             }
             var st = state!
             st.launched = true
@@ -204,13 +204,13 @@ final class MassTest: ObservableObject {
             }
             if startedAt != nil, ran >= Self.watchSeconds {
                 let outcome = st == Int32(HUSK_UNITY_RUNNING)
-                    ? (frames >= 60 ? "Runs" : frames > 0 ? "Runs, but drew few frames (\(frames))" : "Runs, but drew nothing")
-                    : st == Int32(HUSK_UNITY_STARTING) ? "Still loading after \(Int(ran)) s" : "Running (no frame count for this kind of app)"
+                    ? (frames >= 60 ? "Runs" : frames > 0 ? String(localized: "Runs, but drew few frames (\(frames))") : "Runs, but drew nothing")
+                    : st == Int32(HUSK_UNITY_STARTING) ? String(localized: "Still loading after \(Int(ran)) s") : "Running (no frame count for this kind of app)"
                 record(file: file, app: app, outcome: outcome, frames: frames, seconds: ran)
                 return
             }
             if startedAt == nil, Date().timeIntervalSince(t0) > Self.startTimeout {
-                record(file: file, app: app, outcome: "Never started (\(Int(Self.startTimeout)) s)", frames: 0, seconds: 0)
+                record(file: file, app: app, outcome: String(localized: "Never started (\(Int(Self.startTimeout)) s)"), frames: 0, seconds: 0)
                 return
             }
         }
@@ -303,15 +303,15 @@ struct MassTestView: View {
         List {
             Section {
                 if let files {
-                    Text(files.isEmpty ? "The DeveloperTesting folder is empty." : "\(files.count) apps in DeveloperTesting.")
+                    Text(files.isEmpty ? String(localized: "The DeveloperTesting folder is empty.") : String(localized: "\(files.count) apps in DeveloperTesting."))
                 } else {
                     Text("Make a folder named DeveloperTesting in Husk's folder (Files > On My iPhone > Husk) and put the APKs to test in it: an APK each, or a folder per app with its base and split APKs.")
                         .foregroundStyle(.secondary)
                 }
                 if let s = test.state {
-                    Text(test.active ? "In progress: \(s.results.count) of \(s.queue.count) done." : "Last test: \(s.results.count) of \(s.queue.count) done.")
+                    Text(test.active ? String(localized: "In progress: \(s.results.count) of \(s.queue.count) done.") : String(localized: "Last test: \(s.results.count) of \(s.queue.count) done."))
                 }
-                if !test.status.isEmpty { Text(test.status).font(.caption).foregroundStyle(.secondary) }
+                if !test.status.isEmpty { Text(test.status.l10n).font(.caption).foregroundStyle(.secondary) }
             } footer: {
                 Text("Each app is played once JIT is on, watched for 15 seconds, and written down; then Husk closes. Open Husk again for the next one. At the end the results file is offered to share.")
             }

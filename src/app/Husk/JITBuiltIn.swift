@@ -75,27 +75,25 @@ enum HuskBuiltInJIT {
             return
         }
         guard let identifier = helperIdentifier else {
-            fail(2, "Husk's JIT helper is missing from this installation. Reinstall Husk, and keep "
-                  + "its app extensions if your sideloader asks, or use StikDebug.")
+            fail(2, String(localized: "Husk's JIT helper is missing from this installation. Reinstall Husk, and keep its app extensions if your sideloader asks, or use StikDebug."))
             return
         }
         if NSClassFromString("NSExtension") == nil {
             dlopen("/System/Library/Frameworks/ExtensionFoundation.framework/ExtensionFoundation", RTLD_NOW)
         }
         guard let extensionClass = NSClassFromString("NSExtension") else {
-            fail(3, "iOS did not provide the extension API Husk's JIT helper needs.")
+            fail(3, String(localized: "iOS did not provide the extension API Husk's JIT helper needs."))
             return
         }
         let factory = unsafeBitCast(extensionClass as AnyObject, to: NSExtensionClassShim.self)
         let found: AnyObject
         do { found = try factory.extension(withIdentifier: identifier) }
         catch {
-            fail(2, "Husk's JIT helper (\(identifier)) could not be found: \(error.localizedDescription) "
-                  + "Reinstall Husk.")
+            fail(2, String(localized: "Husk's JIT helper (\(identifier)) could not be found: \(error.localizedDescription) Reinstall Husk."))
             return
         }
         guard let data = try? JSONEncoder().encode(request) else {
-            fail(4, "The request for Husk's JIT helper could not be encoded.")
+            fail(4, String(localized: "The request for Husk's JIT helper could not be encoded."))
             return
         }
         let helper = HelperRequest(extension: found, operation: request.operation.rawValue,
@@ -135,7 +133,7 @@ private final class HelperRequest {
         shim.setRequestCancellationBlock { [weak self] _, error in
             let message = error?.localizedDescription ?? "the request was cancelled"
             DispatchQueue.main.async { MainActor.assumeIsolated {
-                self?.end(.failure(Self.error(5, "Husk's JIT helper stopped: \(message)")))
+                self?.end(.failure(Self.error(5, String(localized: "Husk's JIT helper stopped: \(message)"))))
             } }
         }
         shim.setRequestInterruptionBlock { [weak self] _ in

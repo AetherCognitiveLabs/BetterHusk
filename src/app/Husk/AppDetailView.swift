@@ -104,7 +104,7 @@ struct AppDetailView: View {
                 } label: {
                     HStack {
                         Spacer()
-                        Label(canOpen ? "Launch" : "Starting Android…",
+                        Label(canOpen ? String(localized: "Launch") : String(localized: "Starting Android…"),
                               systemImage: canOpen ? "play.fill" : "hourglass")
                             .font(.headline)
                         Spacer()
@@ -150,8 +150,7 @@ struct AppDetailView: View {
             }
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("Its data goes with it. Save Android afterwards or the change is "
-               + "lost on the next launch.")
+            Text("Its data goes with it. Save Android afterwards or the change is lost on the next launch.")
         }
     }
 

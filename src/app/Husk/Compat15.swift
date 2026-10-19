@@ -32,13 +32,13 @@ struct LabeledContent<Label: View, Content: View>: View {
 
 extension LabeledContent where Label == Text, Content == Text {
     init<Title: StringProtocol, Value: StringProtocol>(_ title: Title, value: Value) {
-        self.init(content: { Text(value) }, label: { Text(title) })
+        self.init(content: { Text(value.l10n) }, label: { Text(title.l10n) })
     }
 }
 
 extension LabeledContent where Label == Text {
     init<Title: StringProtocol>(_ title: Title, @ViewBuilder content: () -> Content) {
-        self.init(content: content, label: { Text(title) })
+        self.init(content: content, label: { Text(title.l10n) })
     }
 }
 

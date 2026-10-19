@@ -94,6 +94,6 @@ struct GameStatusBadge: View {
             .symbolRenderingMode(.palette)
             .foregroundStyle(.white, result.color)
             .background(Circle().fill(Color(uiColor: .systemBackground)).padding(1))
-            .accessibilityLabel(result.label)
+            .accessibilityLabel(result.label.l10n)
     }
 }

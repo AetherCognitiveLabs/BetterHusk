@@ -444,7 +444,7 @@ struct PlayAppDetailSheet: View {
             if isDownloading || progress != nil {
                 HStack(spacing: 8) {
                     ProgressView()
-                    Text(progress.map { "Downloading… \(Int($0 * 100))%" } ?? "Downloading…")
+                    Text(progress.map { String(localized: "Downloading… \(Int($0 * 100))%") } ?? String(localized: "Downloading…"))
                         .font(.caption.weight(.medium))
                         .foregroundStyle(Theme.textDim)
                     Button("Cancel", role: .destructive) { manager.cancelDownload(app.id) }
@@ -472,7 +472,7 @@ struct PlayAppDetailSheet: View {
             Text(value)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(Theme.text)
-            Text(title)
+            Text(title.l10n)
                 .font(.caption2)
                 .foregroundStyle(Theme.textDim)
         }

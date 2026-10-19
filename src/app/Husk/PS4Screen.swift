@@ -152,7 +152,7 @@ struct PS4PlayView: View {
             if !model.running {
                 VStack(spacing: 12) {
                     if model.error == nil, model.state <= Int32(HUSK_CONSOLE_BOOTING.rawValue) { ProgressView().tint(.white) }
-                    Text(model.statusText)
+                    Text(model.statusText.l10n)
                         .font(.system(size: 15, weight: .medium)).foregroundStyle(.white.opacity(0.85))
                         .multilineTextAlignment(.center).frame(maxWidth: 460)
                 }
@@ -238,14 +238,14 @@ enum PS4Keyboard {
         }
         while let p = top.presentedViewController { top = p }
         HuskLog.log("ps4", "the game asked for text (\(title.isEmpty ? "no title" : title), up to \(maxChars) characters)")
-        let alert = UIAlertController(title: title.isEmpty ? "Enter Text" : title, message: nil, preferredStyle: .alert)
+        let alert = UIAlertController(title: title.isEmpty ? String(localized: "Enter Text") : title, message: nil, preferredStyle: .alert)
         alert.addTextField {
             $0.text = initial
             $0.autocorrectionType = .no
             $0.clearButtonMode = .whileEditing
         }
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in done(ctx, nil) })
-        alert.addAction(UIAlertAction(title: "OK", style: .default) { [weak alert] _ in
+        alert.addAction(UIAlertAction(title: String(localized: "Cancel"), style: .cancel) { _ in done(ctx, nil) })
+        alert.addAction(UIAlertAction(title: String(localized: "OK"), style: .default) { [weak alert] _ in
             var text = alert?.textFields?.first?.text ?? ""
             if maxChars > 0, text.count > maxChars { text = String(text.prefix(maxChars)) }
             text.withCString { done(ctx, $0) }

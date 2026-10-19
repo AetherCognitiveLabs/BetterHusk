@@ -181,7 +181,7 @@ private struct AppWindow: View {
                     if model.frames == 0 {
                         VStack(spacing: 10) {
                             if model.state == Int32(HUSK_UNITY_FAILED) || model.state == Int32(HUSK_UNITY_ENDED) {
-                                Text(model.statusText).font(.subheadline.weight(.semibold)).foregroundStyle(.white)
+                                Text(model.statusText.l10n).font(.subheadline.weight(.semibold)).foregroundStyle(.white)
                             } else {
                                 ProgressView().tint(.white)
                                 Text("Starting \(app.label)…").font(.caption).foregroundStyle(.white.opacity(0.7))

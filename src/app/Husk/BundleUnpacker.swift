@@ -104,7 +104,7 @@ enum BundleUnpacker {
 
             let base = (name as NSString).lastPathComponent
             guard base.lowercased().hasSuffix(".apk"), !name.hasSuffix("/") else { continue }
-            guard method == 0 else { throw Failure.unsupported("\(base) is compressed inside its bundle, which Husk cannot unpack yet.") }
+            guard method == 0 else { throw Failure.unsupported(String(localized: "\(base) is compressed inside its bundle, which Husk cannot unpack yet.")) }
 
             // The local header has its own name and extra lengths; the data follows them.
             try file.seek(toOffset: localOffset)

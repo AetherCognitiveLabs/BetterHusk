@@ -157,7 +157,7 @@ final class HuskBridgeFS: ObservableObject {
                                + "(\((try? FileManager.default.attributesOfItem(atPath: dest.path)[.size] as? NSNumber)??.intValue ?? 0) bytes)")
         } catch {
             HuskLog.log("bridge", "FAILED to queue \(name): \(error.localizedDescription)")
-            lastAgentMessage = "Could not add \(name): \(error.localizedDescription)"
+            lastAgentMessage = String(localized: "Could not add \(name): \(error.localizedDescription)")
         }
     }
 
@@ -209,7 +209,7 @@ enum BridgeError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .io(let m):      return m
-        case .timeout(let m): return "timed out \(m)"
+        case .timeout(let m): return String(localized: "timed out \(m)")
         }
     }
 }
@@ -249,7 +249,7 @@ final class GuestBridge {
 
     private func openSocket(timeout: TimeInterval = 10) throws -> Int32 {
         let fd = socket(AF_INET, SOCK_STREAM, 0)
-        guard fd >= 0 else { throw BridgeError.io("socket() failed (errno \(errno))") }
+        guard fd >= 0 else { throw BridgeError.io(String(localized: "socket() failed (errno \(errno))")) }
 
         var on: Int32 = 1
         setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &on, socklen_t(MemoryLayout<Int32>.size))
@@ -272,7 +272,7 @@ final class GuestBridge {
             let e = errno
             close(fd)
             isConnected = false
-            throw BridgeError.io("connect failed (errno \(e))")
+            throw BridgeError.io(String(localized: "connect failed (errno \(e))"))
         }
         return fd
     }
@@ -353,7 +353,7 @@ final class GuestBridge {
                 let n = write(fd, raw.baseAddress!.advanced(by: off), raw.count - off)
                 if n <= 0 {
                     if n < 0 && errno == EINTR { continue }
-                    throw BridgeError.io("write failed (errno \(errno))")
+                    throw BridgeError.io(String(localized: "write failed (errno \(errno))"))
                 }
                 off += n
             }
@@ -395,14 +395,14 @@ final class GuestBridge {
             // connection every fifteen seconds.
             if n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) {
                 if Date() > deadline {
-                    throw BridgeError.timeout("waiting for `\(command.prefix(60))`")
+                    throw BridgeError.timeout(String(localized: "waiting for `\(command.prefix(60))`"))
                 }
                 continue
             }
             if n <= 0 {
-                let why = n == 0 ? "the guest closed it" : "read failed (errno \(errno))"
+                let why = n == 0 ? String(localized: "the guest closed it") : String(localized: "read failed (errno \(errno))")
                 dropControl(why)
-                throw BridgeError.io("guest closed the connection -- \(why)")
+                throw BridgeError.io(String(localized: "guest closed the connection -- \(why)"))
             }
             out += String(decoding: buf[0..<n], as: UTF8.self)
             if let r = out.range(of: token) {
@@ -419,7 +419,7 @@ final class GuestBridge {
                 // The connection is KEPT. Whatever this command eventually
                 // prints is preamble to the next command's marker, which no
                 // longer matches this one.
-                throw BridgeError.timeout("waiting for `\(command.prefix(60))`")
+                throw BridgeError.timeout(String(localized: "waiting for `\(command.prefix(60))`"))
             }
         }
     }
@@ -483,7 +483,7 @@ final class GuestBridge {
               progress: @escaping (Double) -> Void) throws {
         let size = (try FileManager.default.attributesOfItem(atPath: local.path)[.size]
                     as? NSNumber)?.intValue ?? 0
-        guard size > 0 else { throw BridgeError.io("\(local.lastPathComponent) is empty") }
+        guard size > 0 else { throw BridgeError.io(String(localized: "\(local.lastPathComponent) is empty")) }
 
         let handle = try FileHandle(forReadingFrom: local)
         defer { try? handle.close() }
@@ -530,8 +530,8 @@ final class GuestBridge {
             progress(Double(sent) / Double(size))
         }
         if sent != size {
-            dropControl("sent \(sent) of \(size) bytes; the stream is out of step")
-            throw BridgeError.io("sent \(sent) of \(size) bytes")
+            dropControl(String(localized: "sent \(sent) of \(size) bytes; the stream is out of step"))
+            throw BridgeError.io(String(localized: "sent \(sent) of \(size) bytes"))
         }
 
         // head has its N bytes and exits; the marker is the shell telling us it
@@ -546,19 +546,19 @@ final class GuestBridge {
             if n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) {
                 if Date() > deadline {
                     dropControl("no acknowledgement after the transfer")
-                    throw BridgeError.timeout("waiting for the guest to write \(remote)")
+                    throw BridgeError.timeout(String(localized: "waiting for the guest to write \(remote)"))
                 }
                 continue
             }
             if n <= 0 {
-                let why = n == 0 ? "the guest closed it" : "read failed (errno \(errno))"
+                let why = n == 0 ? String(localized: "the guest closed it") : String(localized: "read failed (errno \(errno))")
                 dropControl(why)
-                throw BridgeError.io("\(why) after sending \(sent) bytes")
+                throw BridgeError.io(String(localized: "\(why) after sending \(sent) bytes"))
             }
             out += String(decoding: buf[0..<n], as: UTF8.self)
             if Date() > deadline {
                 dropControl("no acknowledgement after the transfer")
-                throw BridgeError.timeout("waiting for the guest to finish writing \(remote)")
+                throw BridgeError.timeout(String(localized: "waiting for the guest to finish writing \(remote)"))
             }
         }
         HuskLog.log("bridge", "pushed \(sent) bytes to \(remote)")
@@ -602,7 +602,7 @@ final class GuestBridge {
     func diagnose() -> String {
         func probe(_ port: UInt16, expectBytes: Bool) -> String {
             let fd = socket(AF_INET, SOCK_STREAM, 0)
-            guard fd >= 0 else { return "socket() failed (errno \(errno))" }
+            guard fd >= 0 else { return String(localized: "socket() failed (errno \(errno))") }
             defer { close(fd) }
             var tv = timeval(tv_sec: 6, tv_usec: 0)
             setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
@@ -618,7 +618,7 @@ final class GuestBridge {
                     connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
                 }
             }
-            if rc != 0 { return "connect failed (errno \(errno))" }
+            if rc != 0 { return String(localized: "connect failed (errno \(errno))") }
             guard expectBytes else { return "connected" }
 
             _ = try? writeAll(fd, Data("echo __HUSK_ALIVE__\n".utf8))
@@ -627,18 +627,16 @@ final class GuestBridge {
             if n > 0 {
                 let got = String(decoding: buf[0..<n], as: UTF8.self)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
-                return "answered: \(got.prefix(60))"
+                return String(localized: "answered: \(got.prefix(60))")
             }
-            if n == 0 { return "connected, then the guest closed it at once "
-                             + "(the port is refused inside the guest)" }
+            if n == 0 { return String(localized: "connected, then the guest closed it at once (the port is refused inside the guest)") }
             if errno == EAGAIN || errno == EWOULDBLOCK {
-                return "connected, then silence until timeout "
-                     + "(packets dropped rather than refused)"
+                return String(localized: "connected, then silence until timeout (packets dropped rather than refused)")
             }
-            return "connected, then read failed (errno \(errno))"
+            return String(localized: "connected, then read failed (errno \(errno))")
         }
 
-        return "5599 (husk_agent): \(probe(Self.port, expectBytes: true))"
+        return String(localized: "5599 (husk_agent): \(probe(Self.port, expectBytes: true))")
     }
 
     /// Notice the moment the bridge dies, rather than at the next install.
@@ -947,8 +945,8 @@ final class AndroidHost: ObservableObject {
                 } catch {
                     GuestBridge.shared.disconnect()
                     await MainActor.run {
-                        self?.status = attempt < 4 ? "Starting Android…"
-                                                   : "Waiting for Android (\(attempt * 3)s)…"
+                        self?.status = attempt < 4 ? String(localized: "Starting Android…")
+                                                   : String(localized: "Waiting for Android (\(attempt * 3)s)…")
                     }
                 }
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
@@ -1462,7 +1460,7 @@ final class AndroidHost: ObservableObject {
     /// route in at all. Same transfer as an install, minus pm.
     func sendFiles(_ files: [URL], to directory: String = "/sdcard/Download") {
         guard !files.isEmpty else { return }
-        busy = "Sending \(files.count == 1 ? files[0].lastPathComponent : "\(files.count) files")…"
+        busy = String(localized: "Sending \(files.count == 1 ? files[0].lastPathComponent : "\(files.count) files")…")
         Task.detached { [weak self] in
             var sent = 0
             for file in files {
@@ -1489,7 +1487,7 @@ final class AndroidHost: ObservableObject {
                         "mkdir -p \(Self.quote(directory))")
                     try GuestBridge.shared.push(file, to: "'\(remote)'") { p in
                         Task { @MainActor in
-                            self?.busy = "Sending \(name) — \(Int(p * 100))%"
+                            self?.busy = String(localized: "Sending \(name) — \(Int(p * 100))%")
                         }
                     }
                     // Without this the file exists and no app can see it: the
@@ -1501,7 +1499,7 @@ final class AndroidHost: ObservableObject {
                     sent += 1
                 } catch {
                     await MainActor.run {
-                        self?.busy = "Could not send \(name): \(error.localizedDescription)"
+                        self?.busy = String(localized: "Could not send \(name): \(error.localizedDescription)")
                     }
                     try? await Task.sleep(nanoseconds: 4_000_000_000)
                     await MainActor.run { self?.busy = nil }
@@ -1512,8 +1510,8 @@ final class AndroidHost: ObservableObject {
             let where_ = (directory as NSString).lastPathComponent
             await MainActor.run {
                 self?.busy = nil
-                self?.say(n == 1 ? "File sent" : "\(n) files sent",
-                          "In Android's \(where_) folder.")
+                self?.say(n == 1 ? String(localized: "File sent") : String(localized: "\(n) files sent"),
+                          String(localized: "In Android's \(where_) folder."))
             }
         }
     }
@@ -1529,7 +1527,7 @@ final class AndroidHost: ObservableObject {
     /// it from there. This is the path for an APK that arrived through the
     /// Files tab, or that a browser in the guest downloaded itself.
     func installFromGuest(_ path: String, name: String) {
-        busy = "Installing \(name)…"
+        busy = String(localized: "Installing \(name)…")
         Task.detached { [weak self] in
             let out = (try? GuestBridge.shared.shell(
                 "pm install -r \(AndroidHost.quote(path))", timeout: 900)) ?? ""
@@ -1540,7 +1538,7 @@ final class AndroidHost: ObservableObject {
             await MainActor.run {
                 self?.busy = nil
                 self?.say(ok ? "APK installed" : "Install failed",
-                          ok ? "\(name) is ready to launch."
+                          ok ? String(localized: "\(name) is ready to launch.")
                              : String(out.prefix(120))
                                  .trimmingCharacters(in: .whitespacesAndNewlines),
                           good: ok)
@@ -1549,7 +1547,7 @@ final class AndroidHost: ObservableObject {
     }
 
     func uninstall(_ package: String) {
-        busy = "Removing \(package)…"
+        busy = String(localized: "Removing \(package)…")
         Task.detached { [weak self] in
             var out = (try? GuestBridge.shared.shell("pm uninstall \(package)",
                                                      timeout: 300)) ?? ""
@@ -1573,7 +1571,7 @@ final class AndroidHost: ObservableObject {
             await MainActor.run {
                 self?.busy = nil
                 self?.say(ok ? "Uninstalled" : "Could not uninstall",
-                          ok ? "\(label) is gone from Android." : label,
+                          ok ? String(localized: "\(label) is gone from Android.") : label,
                           good: ok)
             }
         }
@@ -1594,8 +1592,8 @@ final class AndroidHost: ObservableObject {
     func install(_ apks: [URL]) {
         guard let first = apks.first else { return }
         let name = apks.count == 1 ? first.lastPathComponent
-                                   : "\(apks.count) APKs (\(first.lastPathComponent))"
-        busy = "Installing \(name)…"
+                                   : String(localized: "\(apks.count) APKs (\(first.lastPathComponent))")
+        busy = String(localized: "Installing \(name)…")
         Task.detached { [weak self] in
             // /data/local/tmp is the one directory the shell user owns outright,
             // and the one pm will read an APK from.
@@ -1627,8 +1625,7 @@ final class AndroidHost: ObservableObject {
                     throw BridgeError.io("Android is locked. Open the Android "
                                        + "screen, unlock it, and try again.")
                 case .unreachable(let why):
-                    throw BridgeError.io("\(why). Open the Android screen and "
-                                       + "check it is running, then try again.")
+                    throw BridgeError.io(String(localized: "\(why). Open the Android screen and check it is running, then try again."))
                 case .ready:
                     break
                 }
@@ -1638,10 +1635,10 @@ final class AndroidHost: ObservableObject {
                     let scopedOne = i == 0 ? false : url.startAccessingSecurityScopedResource()
                     defer { if scopedOne { url.stopAccessingSecurityScopedResource() } }
                     let label = apks.count == 1 ? name
-                        : "\(url.lastPathComponent) (\(i + 1)/\(apks.count))"
+                        : String(localized: "\(url.lastPathComponent) (\(i + 1)/\(apks.count))")
                     try GuestBridge.shared.push(url, to: remotes[i]) { p in
                         Task { @MainActor in
-                            self?.busy = "Copying \(label) — \(Int(p * 100))%"
+                            self?.busy = String(localized: "Copying \(label) — \(Int(p * 100))%")
                         }
                     }
                     // Confirm the whole file landed before asking pm to parse it.
@@ -1652,13 +1649,12 @@ final class AndroidHost: ObservableObject {
                     let landed = Int(try GuestBridge.shared.shell("wc -c < \(remotes[i])")
                         .trimmingCharacters(in: .whitespacesAndNewlines)) ?? -1
                     guard landed == size else {
-                        throw BridgeError.io("copied \(landed) of \(size) bytes "
-                                           + "of \(url.lastPathComponent)")
+                        throw BridgeError.io(String(localized: "copied \(landed) of \(size) bytes of \(url.lastPathComponent)"))
                     }
                     expected += size
                 }
 
-                await MainActor.run { self?.busy = "Installing \(name)…" }
+                await MainActor.run { self?.busy = String(localized: "Installing \(name)…") }
                 // Installing is dex2oat's work and it is emulated, so minutes
                 // rather than seconds for anything large. -t allows test-signed
                 // APKs, which most sideloaded builds are.
@@ -1715,7 +1711,7 @@ final class AndroidHost: ObservableObject {
                         // install was already lost, which is worse than saying
                         // nothing -- it is a true-sounding statement that is no
                         // longer true.
-                        self?.busy = "Saving Android — the screen will freeze briefly"
+                        self?.busy = String(localized: "Saving Android — the screen will freeze briefly")
                         QemuRunner.shared.saveState(reason: "installed \(name)") { saved in
                             self?.busy = nil
                             if saved {
@@ -1740,7 +1736,7 @@ final class AndroidHost: ObservableObject {
                 }
             } catch {
                 HuskLog.log("bridge", "install failed: \(error.localizedDescription)")
-                await MainActor.run { self?.busy = "Install failed: \(error.localizedDescription)" }
+                await MainActor.run { self?.busy = String(localized: "Install failed: \(error.localizedDescription)") }
                 Task { try? await Task.sleep(nanoseconds: 5_000_000_000)
                        await MainActor.run { self?.busy = nil } }
             }

@@ -306,7 +306,7 @@ struct HomeView: View {
                 if let status = item.status {
                     HStack(spacing: 5) {
                         StatusDot(status: status)
-                        Text(status.label)
+                        Text(status.label.l10n)
                             .font(.system(size: 12, weight: .semibold))
                             .foregroundStyle(status.color)
                     }
@@ -319,13 +319,13 @@ struct HomeView: View {
                 .minimumScaleFactor(0.7)
                 .fixedSize(horizontal: false, vertical: true)
             if let used = item.lastPlayedText {
-                Text(used)
+                Text(used.l10n)
                     .font(.system(size: 15))
                     .foregroundStyle(Console.textDim)
             }
             HStack(spacing: 10) {
                 Button { Launcher.play(item) { router.home.append($0) } } label: {
-                    Label(item.isGame ? "Play" : "Open", systemImage: item.isGame ? "play.fill" : "arrow.up.forward.app.fill")
+                    Label(item.isGame ? String(localized: "Play") : String(localized: "Open"), systemImage: item.isGame ? "play.fill" : "arrow.up.forward.app.fill")
                 }
                 .buttonStyle(ConsolePlayButtonStyle())
                 .accessibilityLabel((item.isGame ? "Play " : "Open ") + item.title)
@@ -540,7 +540,7 @@ private struct HomeAvatar: View {
             Button { router.showFiles = true } label: { Label("Files", systemImage: "folder") }
             Divider()
             Button { JITNotice.toggle(jit) } label: {
-                Label(Launcher.jitOn ? "JIT On (\(JITNotice.via(jit)))" : "Turn On JIT", systemImage: "bolt.fill")
+                Label(Launcher.jitOn ? String(localized: "JIT On (\(JITNotice.via(jit)))") : String(localized: "Turn On JIT"), systemImage: "bolt.fill")
             }
             .disabled(jit.busy)
             Button { router.tab = .settings } label: { Label("Settings", systemImage: "gearshape") }
@@ -587,7 +587,7 @@ private struct JITNotice: View {
                         .foregroundStyle(.orange)
                     VStack(alignment: .leading, spacing: 1) {
                         Text("JIT is off").font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
-                        Text(jit.busy ? (jit.status ?? "Turning on…") : "Games need it. Tap to turn it on.")
+                        Text(jit.busy ? (jit.status?.l10n ?? String(localized: "Turning on…")) : String(localized: "Games need it. Tap to turn it on."))
                             .font(.system(size: 12)).foregroundStyle(Console.textDim).lineLimit(1)
                     }
                     Spacer(minLength: 0)
@@ -606,7 +606,7 @@ private struct JITNotice: View {
             .buttonStyle(CardButtonStyle())
             .disabled(jit.busy)
             if let error = jit.error {
-                Text(error).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                Text(error.l10n).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -624,11 +624,11 @@ private struct DownloadsNotice: View {
         if !running.isEmpty {
             let total = running.reduce(Int64(0)) { $0 + $1.total }
             let got = running.reduce(Int64(0)) { $0 + $1.received }
-            let pct = total > 0 ? " · \(Int(Double(got) / Double(total) * 100))%" : ""
-            return "\(running.count) downloading\(pct)"
+            let pct = total > 0 ? String(localized: " · \(Int(Double(got) / Double(total) * 100))%") : ""
+            return String(localized: "\(running.count) downloading") + pct
         }
         if downloads.jobs.contains(where: \.failed) { return "A download failed" }
-        if let release = updates.available { return "Husk \(release.version) is out" }
+        if let release = updates.available { return String(localized: "Husk \(release.version) is out") }
         if guest.update.isSomething { return "Android update ready" }
         return nil
     }
@@ -640,7 +640,7 @@ private struct DownloadsNotice: View {
                     Image(systemName: "arrow.down.circle.fill")
                         .font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(Theme.accent)
-                    Text(status).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
+                    Text(status.l10n).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
                     Spacer(minLength: 0)
                     Image(systemName: "chevron.right").font(.system(size: 12, weight: .bold)).foregroundStyle(Console.textDim)
                 }
@@ -668,9 +668,7 @@ private struct WelcomeCard: View {
                 Text("Add your first game")
                     .font(.system(size: 26, weight: .heavy))
                     .foregroundStyle(Console.text)
-                Text("Pick an APK or a bundle (.xapk, .apkm, .apks), or share one to Husk from Files or Safari. Games run "
-                   + "straight on your iPhone. Other apps run inside Android. PS4 games are extracted folders put in "
-                   + "Husk's PS4 Games folder.")
+                Text("Pick an APK or a bundle (.xapk, .apkm, .apks), or share one to Husk from Files or Safari. Games run straight on your iPhone. Other apps run inside Android. PS4 games are extracted folders put in Husk's PS4 Games folder.")
                     .font(.subheadline)
                     .foregroundStyle(Console.textDim)
                     .fixedSize(horizontal: false, vertical: true)
@@ -858,11 +856,11 @@ struct LibraryScreen: View {
         if !items.isEmpty || empty != nil {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(title).font(.system(size: 21, weight: .bold)).foregroundStyle(Console.text)
+                    Text(title.l10n).font(.system(size: 21, weight: .bold)).foregroundStyle(Console.text)
                     Text("\(items.count)").font(.system(size: 15, weight: .medium)).foregroundStyle(Console.textDim)
                 }
                 if items.isEmpty, let empty {
-                    Text(empty)
+                    Text(empty.l10n)
                         .font(.subheadline)
                         .foregroundStyle(Console.textDim)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -919,7 +917,7 @@ private struct LibraryCell: View {
                         .lineLimit(1)
                 }
                 if let caption {
-                    Text(caption).font(.system(size: 11)).foregroundStyle(Console.textDim).lineLimit(1)
+                    Text(caption.l10n).font(.system(size: 11)).foregroundStyle(Console.textDim).lineLimit(1)
                 }
             }
         }
@@ -963,7 +961,7 @@ struct LauncherTile: View {
                     .lineLimit(2)
                     .multilineTextAlignment(.center)
                 if let caption {
-                    Text(caption).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    Text(caption.l10n).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
             .padding(.top, item?.runsInAndroid == true ? 3 : 0)
@@ -983,7 +981,7 @@ struct LibraryItemActions: View {
 
     var body: some View {
         Button { Launcher.play(item, push: push) } label: {
-            Label(item.isGame ? "Play" : "Open", systemImage: item.isGame ? "play.fill" : "arrow.up.forward.app")
+            Label(item.isGame ? String(localized: "Play") : String(localized: "Open"), systemImage: item.isGame ? "play.fill" : "arrow.up.forward.app")
         }
         if showsDetails, !item.runsInAndroid {
             Button { push(item.route) } label: { Label("Details", systemImage: "info.circle") }
@@ -1016,15 +1014,15 @@ private struct RemoveItemDialog: ViewModifier {
                     }
                 }
             } message: {
-                Text(removeMessage)
+                Text(removeMessage.l10n)
             }
     }
 
-    private var removeVerb: String { if case .app = item { return "Uninstall" }; return "Remove" }
-    private var removeTitle: String { "\(removeVerb) \(item.title)?" }
+    private var removeVerb: String { if case .app = item { return String(localized: "Uninstall") }; return String(localized: "Remove") }
+    private var removeTitle: String { String(localized: "\(removeVerb) \(item.title)?") }
     private var removeMessage: String {
-        if case .app = item { return "It is uninstalled from Android, with its data." }
-        return "Its files and saved progress are deleted from Husk."
+        if case .app = item { return String(localized: "It is uninstalled from Android, with its data.") }
+        return String(localized: "Its files and saved progress are deleted from Husk.")
     }
 }
 
@@ -1076,7 +1074,7 @@ struct BusyStrip: View {
     var body: some View {
         HStack(spacing: 12) {
             ProgressView()
-            Text(text).font(.subheadline).lineLimit(2)
+            Text(text.l10n).font(.subheadline).lineLimit(2)
             Spacer(minLength: 0)
         }
         .padding(14)
@@ -1096,7 +1094,7 @@ struct SearchField: View {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 15, weight: .medium))
                     .foregroundStyle(.secondary)
-                TextField(prompt, text: $text)
+                TextField(prompt.l10n, text: $text)
                     .focused($focused)
                     .submitLabel(.search)
                     .autocorrectionDisabled()

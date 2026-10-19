@@ -42,7 +42,7 @@ final class CrashReport: ObservableObject {
                 let name = [11: "SIGSEGV, a bad memory access", 6: "SIGABRT, the game or a library gave up",
                             4: "SIGILL, an instruction this device does not run", 8: "SIGFPE, an arithmetic error",
                             12: "SIGSYS, a system call iOS does not allow"][s] ?? "signal \(s)"
-                return "It stopped with \(name). The report has the full log of that run."
+                return String(localized: "It stopped with \(name). The report has the full log of that run.")
             case .startFailed:
                 return "The runtime could not start it. The report says which part was missing."
             case .unknown:
@@ -184,11 +184,11 @@ struct CrashReportSheet: View {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .font(.system(size: 30)).foregroundStyle(.orange)
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(report.cause.title).font(.title3.weight(.semibold))
+                            Text(report.cause.title.l10n).font(.title3.weight(.semibold))
                             Text(report.game).foregroundStyle(.secondary)
                         }
                     }
-                    Text(report.cause.detail).font(.callout)
+                    Text(report.cause.detail.l10n).font(.callout)
 
                     if !report.excerpt.isEmpty {
                         VStack(alignment: .leading, spacing: 6) {

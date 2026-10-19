@@ -189,10 +189,10 @@ struct OnboardingView: View {
                 .font(.system(size: 50, weight: .regular))
                 .foregroundStyle(Theme.accent)
                 .frame(height: 60)
-            Text(title)
+            Text(title.l10n)
                 .font(.system(size: 32, weight: .bold))
                 .multilineTextAlignment(.center)
-            Text(subtitle)
+            Text(subtitle.l10n)
                 .font(.system(size: 16))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -234,7 +234,7 @@ struct OnboardingView: View {
                         ForEach(shown) { row in
                             Button { selection.wrappedValue = row.id } label: {
                                 HStack {
-                                    Text(row.name).foregroundStyle(Theme.text)
+                                    Text(row.name.l10n).foregroundStyle(Theme.text)
                                     Spacer()
                                     if selection.wrappedValue == row.id {
                                         Image(systemName: "checkmark").font(.body.weight(.semibold)).foregroundStyle(Theme.accent)
@@ -314,8 +314,8 @@ struct OnboardingView: View {
                 .foregroundStyle(caution ? Color.orange : Theme.accent)
                 .frame(width: 30, height: 30)
             VStack(alignment: .leading, spacing: 3) {
-                Text(title).font(.body.weight(.medium))
-                Text(detail).font(.caption).foregroundStyle(caution ? Color.orange : Color.secondary)
+                Text(title.l10n).font(.body.weight(.medium))
+                Text(detail.l10n).font(.caption).foregroundStyle(caution ? Color.orange : Color.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 8)
@@ -343,7 +343,7 @@ struct OnboardingView: View {
                    "Games need JIT, which iOS only grants to an attached debugger. StikJIT is built into Husk and turns it on from "
                  + "inside the app, with no computer. StikDebug and TrollStore work too.")
             if let state = jitState {
-                Label(state, systemImage: "checkmark.circle.fill")
+                Label(state.l10n, systemImage: "checkmark.circle.fill")
                     .font(.callout.weight(.medium)).foregroundStyle(.green)
             }
             Button(jitState == nil ? "Set Up StikJIT Now" : "Change JIT Setup") { settingUpJIT = true }
@@ -408,8 +408,8 @@ struct OnboardingView: View {
                 .foregroundStyle(Theme.accent)
                 .frame(width: 96, height: 96)
                 .background(Theme.surface, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
-            Text(card.title).font(.system(size: 32, weight: .bold))
-            Text(card.text)
+            Text(card.title.l10n).font(.system(size: 32, weight: .bold))
+            Text(card.text.l10n)
                 .font(.system(size: 17))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

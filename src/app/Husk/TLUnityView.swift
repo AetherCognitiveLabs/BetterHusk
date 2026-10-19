@@ -749,7 +749,7 @@ final class TLUnityModel: ObservableObject {
 
     var subStatusText: String {
         switch state {
-        case Int32(HUSK_UNITY_RUNNING): return "\(frames) frame(s) drawn · native runtime"
+        case Int32(HUSK_UNITY_RUNNING): return String(localized: "\(frames) frame(s) drawn · native runtime")
         case Int32(HUSK_UNITY_STARTING): return "Loading libraries and starting the engine"
         default: return "Native runtime"
         }
@@ -970,17 +970,17 @@ struct TLCocosAttemptView: View {
                 .font(.system(size: 12, weight: .medium)).foregroundStyle(.white.opacity(0.85)).lineLimit(1)
             Spacer()
             if !pads.names.isEmpty {
-                Label(pads.names.count == 1 ? pads.names[0] : "\(pads.names.count) controllers", systemImage: "gamecontroller.fill")
+                Label(pads.names.count == 1 ? pads.names[0] : String(localized: "\(pads.names.count) controllers"), systemImage: "gamecontroller.fill")
                     .font(.system(size: 11, weight: .medium)).foregroundStyle(.white.opacity(0.7)).lineLimit(1)
             }
             if padOffered {
                 Button { settings.padShown.toggle(); settings.save(app.id); if !settings.padShown { editingPad = false } } label: {
-                    Label(settings.padShown ? "Hide pad" : "Pad", systemImage: "gamecontroller").font(.system(size: 12, weight: .semibold))
+                    Label(settings.padShown ? String(localized: "Hide pad") : String(localized: "Pad"), systemImage: "gamecontroller").font(.system(size: 12, weight: .semibold))
                 }
                 .tint(.white)
                 if settings.padShown {
                     Button { padSelected = nil; editingPad.toggle() } label: {
-                        Label(editingPad ? "Done" : "Edit pad", systemImage: "slider.horizontal.below.square.and.square.filled")
+                        Label(editingPad ? String(localized: "Done") : String(localized: "Edit pad"), systemImage: "slider.horizontal.below.square.and.square.filled")
                             .font(.system(size: 12, weight: .semibold))
                     }
                     .tint(editingPad ? .yellow : .white)

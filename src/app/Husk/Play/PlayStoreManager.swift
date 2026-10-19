@@ -251,7 +251,7 @@ final class PlayStoreManager: ObservableObject {
                 self.downloadTasks[pkg] = nil
                 self.downloadTitles.removeValue(forKey: pkg)
                 if Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled { return }
-                self.errorMessage = "Failed to download \(app.title): \(error.localizedDescription)"
+                self.errorMessage = String(localized: "Failed to download \(app.title): \(error.localizedDescription)")
                 HuskLog.log("store", "Download error for \(pkg): \(error.localizedDescription)")
             }
         }

@@ -35,7 +35,7 @@ enum SaveBackup {
         let appDir = TranslationLayer.root.appendingPathComponent(app.id)
         var files: [(name: String, url: URL)] = []
         for folder in dataFolders(appDir) { collect(folder, prefix: folder.lastPathComponent, into: &files) }
-        guard !files.isEmpty else { throw Failure("\(app.label) has not saved anything yet.") }
+        guard !files.isEmpty else { throw Failure(String(localized: "\(app.label) has not saved anything yet.")) }
 
         let manifest: [String: Any] = [
             "format": 1, "package": app.packageName ?? "", "label": app.label,
@@ -81,7 +81,7 @@ enum SaveBackup {
         }
         let pkg = manifest["package"] as? String ?? ""
         if let mine = app.packageName, !pkg.isEmpty, pkg != mine {
-            throw Failure("That backup is of \(manifest["label"] as? String ?? pkg), not \(app.label).")
+            throw Failure(String(localized: "That backup is of \(manifest["label"] as? String ?? pkg), not \(app.label)."))
         }
 
         // Unpacked beside the game first, and swapped in only once all of it is out: a backup that fails halfway leaves

@@ -235,8 +235,7 @@ struct TLAppSettingsView: View {
             } header: {
                 Text("Display")
             } footer: {
-                Text("\(settings.resolution.detail) Orientation and resolution apply the next time the game starts, and a game already "
-                   + "running in this session needs Husk closed and opened again.")
+                Text("\(settings.resolution.detail) Orientation and resolution apply the next time the game starts, and a game already running in this session needs Husk closed and opened again.")
             }
 
             Section {
@@ -246,22 +245,19 @@ struct TLAppSettingsView: View {
             } header: {
                 Text("Engine")
             } footer: {
-                Text("BetterHusk detects \(app.label) as \(app.report?.nativeEngineName ?? "an unknown engine"). Pick another only when "
-                   + "detection is wrong — a setup or launcher screen can look like a different engine than the game itself, and a "
-                   + "wrong driver usually crashes. Applies the next time the game starts.")
+                Text("BetterHusk detects \(app.label) as \(app.report?.nativeEngineName ?? "an unknown engine"). Pick another only when detection is wrong — a setup or launcher screen can look like a different engine than the game itself, and a wrong driver usually crashes. Applies the next time the game starts.")
             }
 
             Section {
                 Picker("Open In", selection: $settings.window) {
                     ForEach(TLAppSettings.WindowMode.allCases) { m in
-                        Text(m == .auto ? "Default (\(AppWindows.defaultWindowed ? "Window" : "Full Screen"))" : m.title).tag(m)
+                        Text(m == .auto ? String(localized: "Default (\(AppWindows.defaultWindowed ? "Window" : "Full Screen"))") : m.title.l10n).tag(m)
                     }
                 }
             } header: {
                 Text("Multitasking")
             } footer: {
-                Text("In a window, \(app.label) runs over Husk: move it by its title bar, resize it from the corner, and minimise it to "
-                   + "the dock at the edge of the screen while you use the rest of Husk.")
+                Text("In a window, \(app.label) runs over Husk: move it by its title bar, resize it from the corner, and minimise it to the dock at the edge of the screen while you use the rest of Husk.")
             }
 
             Section {
@@ -269,8 +265,7 @@ struct TLAppSettingsView: View {
             } header: {
                 Text("Screenshots")
             } footer: {
-                Text("The game starts with nothing over it: no bar, no controller, no readout. Tap with three fingers at once to bring "
-                   + "the bar back, and again to hide it. The Hide button in the bar does the same while playing.")
+                Text("The game starts with nothing over it: no bar, no controller, no readout. Tap with three fingers at once to bring the bar back, and again to hide it. The Hide button in the bar does the same while playing.")
             }
 
             if app.packageName == GeodeSupport.gamePackage {
@@ -280,9 +275,7 @@ struct TLAppSettingsView: View {
                 } header: {
                     Text("Mods")
                 } footer: {
-                    Text("Geode is the mod loader for Geometry Dash. With it on, Husk downloads Geode for this version of the "
-                       + "game, and mods are found and installed in the game itself, from Geode's button on the main menu. "
-                       + "Applies the next time the game starts.")
+                    Text("Geode is the mod loader for Geometry Dash. With it on, Husk downloads Geode for this version of the game, and mods are found and installed in the game itself, from Geode's button on the main menu. Applies the next time the game starts.")
                 }
             }
 
@@ -300,8 +293,7 @@ struct TLAppSettingsView: View {
             } header: {
                 Text("Controller")
             } footer: {
-                Text("Automatic offers the controller for games that cannot be played without one (Unreal Engine games), when no real "
-                   + "controller is connected. Always offers it for any game that understands one. A paired controller is always used.")
+                Text("Automatic offers the controller for games that cannot be played without one (Unreal Engine games), when no real controller is connected. Always offers it for any game that understands one. A paired controller is always used.")
             }
 
             Section {
@@ -311,8 +303,7 @@ struct TLAppSettingsView: View {
             } header: {
                 Text("Home Screen")
             } footer: {
-                Text("Puts \(app.label) on your Home Screen with its own icon. Tapping it opens Husk straight into the game. Husk "
-                   + "downloads a profile: open Settings, tap Profile Downloaded, then Install.")
+                Text("Puts \(app.label) on your Home Screen with its own icon. Tapping it opens Husk straight into the game. Husk downloads a profile: open Settings, tap Profile Downloaded, then Install.")
             }
 
             Section {
@@ -356,12 +347,12 @@ struct TLAppSettingsView: View {
         case .idle:
             Button("Download Geode") { Task { await geode.prepare(app) } }
         case .working(let what):
-            HStack(spacing: 10) { ProgressView(); Text(what).foregroundStyle(.secondary) }
+            HStack(spacing: 10) { ProgressView(); Text(what.l10n).foregroundStyle(.secondary) }
         case .ready(let version):
-            LabeledContent("Geode", value: "v\(version), ready")
+            LabeledContent("Geode", value: String(localized: "v\(version), ready"))
         case .failed(let why):
             VStack(alignment: .leading, spacing: 6) {
-                Text(why).font(.footnote).foregroundStyle(.orange)
+                Text(why.l10n).font(.footnote).foregroundStyle(.orange)
                 Button("Try Again") { Task { await geode.prepare(app) } }
             }
         }

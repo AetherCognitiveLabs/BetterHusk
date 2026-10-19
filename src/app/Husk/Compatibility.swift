@@ -237,7 +237,7 @@ struct CompatibilitySection: View {
                 HStack(spacing: 12) {
                     Image(systemName: status.symbol).font(.title3).foregroundStyle(status.color)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(status.label).font(.body.weight(.semibold))
+                        Text(status.label.l10n).font(.body.weight(.semibold))
                         Text(entry.official?.note.isEmpty == false ? entry.official!.note : status.explanation)
                             .font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
@@ -279,7 +279,7 @@ struct CompatReportSheet: View {
                     ForEach([CompatibilityStore.Status.works, .opens, .broken], id: \.self) { s in
                         Button { status = s } label: {
                             HStack {
-                                Label(s == .opens ? "Opens, but Has Problems" : s.label, systemImage: s.symbol)
+                                Label(s == .opens ? String(localized: "Opens, but Has Problems") : s.label.l10n, systemImage: s.symbol)
                                     .foregroundStyle(.primary)
                                 Spacer()
                                 if status == s { Image(systemName: "checkmark").foregroundStyle(.tint) }
@@ -287,7 +287,7 @@ struct CompatReportSheet: View {
                         }
                     }
                 } header: {
-                    Text(subject.afterPlaying ? "How did \(subject.name) run?" : "How does \(subject.name) run?")
+                    Text(subject.afterPlaying ? String(localized: "How did \(subject.name) run?") : String(localized: "How does \(subject.name) run?"))
                 }
                 Section("Notes") {
                     if #available(iOS 16, *) {
@@ -312,7 +312,7 @@ struct CompatReportSheet: View {
                     Text("Your Husk log helps the developer see what went wrong. Only moderators can read it.")
                 }
                 if let error {
-                    Section { Text(error).foregroundStyle(.red) }
+                    Section { Text(error.l10n).foregroundStyle(.red) }
                 }
             }
             .navigationTitle(sent ? "Thanks!" : "Report")
@@ -364,7 +364,7 @@ struct CompatReportSheet: View {
 struct CompatBadge: View {
     let status: CompatibilityStore.Status
     var body: some View {
-        Label(status.label, systemImage: status.symbol)
+        Label(status.label.l10n, systemImage: status.symbol)
             .labelStyle(.titleAndIcon)
             .font(.caption.weight(.medium))
             .foregroundStyle(status.color)

@@ -95,7 +95,7 @@ final class GeodeSupport: ObservableObject {
             let have = (try? String(contentsOf: Self.versionFile(app.id), encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
             let haveResources = FileManager.default.fileExists(atPath: Self.resourcesZip(app.id).path)
             if have != release || !FileManager.default.fileExists(atPath: Self.releaseZip(app.id).path) || !haveResources {
-                status[app.id] = .working("Downloading Geode \(release)…")
+                status[app.id] = .working(String(localized: "Downloading Geode \(release)…"))
                 try await Self.download(zipURL, to: Self.releaseZip(app.id))
                 // Its resources, from the release on GitHub. Geode 4 kept them inside the release zip and has no such file,
                 // so a missing one is not an error.
@@ -149,7 +149,7 @@ final class GeodeSupport: ObservableObject {
         let (data, response) = try await URLSession.shared.data(for: req)
         guard (response as? HTTPURLResponse)?.statusCode == 200,
               let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw GeodeError("\(url.host ?? "The server") did not answer (HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)).")
+            throw GeodeError(String(localized: "\(url.host ?? "The server") did not answer (HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0))."))
         }
         return obj
     }
@@ -186,7 +186,7 @@ final class GeodeSupport: ObservableObject {
         req.setValue("Husk", forHTTPHeaderField: "User-Agent")
         let (tmp, response) = try await URLSession.shared.download(for: req)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-            throw GeodeError("Download failed (HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)).")
+            throw GeodeError(String(localized: "Download failed (HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0))."))
         }
         try? FileManager.default.removeItem(at: dest)
         try FileManager.default.moveItem(at: tmp, to: dest)

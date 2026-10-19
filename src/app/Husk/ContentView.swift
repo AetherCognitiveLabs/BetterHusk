@@ -138,8 +138,7 @@ struct ContentView: View {
             Button("Start") { startFromLibrary() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Full Android emulation is experimental. It is slow, takes minutes to start, and can freeze or crash Husk. "
-               + "Games and apps run much better in the Translation Layer.")
+            Text("Full Android emulation is experimental. It is slow, takes minutes to start, and can freeze or crash Husk. Games and apps run much better in the Translation Layer.")
         }
         // A game that ended Husk last time: say so, with its report.
         .sheet(item: Binding(get: { showOnboarding ? nil : crash.pending }, set: { crash.pending = $0 }),
@@ -204,7 +203,7 @@ struct ContentView: View {
             Button("Download") { guest.applyUpdate() }
             Button("Not now", role: .cancel) { guest.dismissUpdate() }
         } message: {
-            Text(guest.update.detail)
+            Text(guest.update.detail.l10n)
         }
         .sheet(isPresented: $massTest.shareResults) { ShareSheet(items: [MassTest.resultsURL]) }
         .onAppear {
@@ -425,7 +424,7 @@ struct GuestScreenView: View {
                     ProgressView(value: Double(runner.bootProgress), total: 100)
                         .progressViewStyle(.linear)
                         .frame(width: 200)
-                    Text(runner.setupMessage ?? "Starting Android…")
+                    Text((runner.setupMessage ?? "Starting Android…").l10n)
                         .font(.caption2).foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                 }
@@ -493,14 +492,14 @@ struct GuestScreenView: View {
                                 HuskGLView.rotated.toggle()
                                 rotated = HuskGLView.rotated
                             } label: {
-                                Label(rotated ? "Unrotate picture" : "Rotate picture",
+                                Label(rotated ? String(localized: "Unrotate picture") : String(localized: "Rotate picture"),
                                       systemImage: "rotate.right")
                             }
                             Divider()
                             Button {
                                 QemuRunner.shared.saveState(reason: "asked from full screen")
                             } label: {
-                                Label(runner.isSavingState ? "Saving…" : "Save Android",
+                                Label(runner.isSavingState ? String(localized: "Saving…") : String(localized: "Save Android"),
                                       systemImage: "externaldrive.badge.checkmark")
                             }
                             .disabled(runner.isSavingState)
@@ -664,8 +663,7 @@ struct ControlsSheet: View {
                     row("computermouse", "Mouse", on: false, available: false)
                 }
 
-                Text("Touch always works. A gamepad and a pointer are not wired "
-                   + "through to Android yet.")
+                Text("Touch always works. A gamepad and a pointer are not wired through to Android yet.")
                     .font(.system(size: 12))
                     .foregroundStyle(Theme.textDim)
                     .multilineTextAlignment(.center)
@@ -686,7 +684,7 @@ struct ControlsSheet: View {
                 .frame(width: 34, height: 34)
                 .background(Theme.surfaceHigh,
                             in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            Text(title)
+            Text(title.l10n)
                 .font(.system(size: 15, weight: .medium))
                 .foregroundStyle(available ? Theme.text : Theme.textDim.opacity(0.6))
             Spacer()

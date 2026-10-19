@@ -370,7 +370,7 @@ final class GuestImage: ObservableObject {
         try? fh.close()
         guard Array(head) == qcow2Magic else {
             let hex = head.map { String(format: "%02x", $0) }.joined(separator: " ")
-            return (nil, "not a qcow2 image (header was \(hex), expected 51 46 49 fb)")
+            return (nil, String(localized: "not a qcow2 image (header was \(hex), expected 51 46 49 fb)"))
         }
         return (size, nil)
     }
@@ -406,7 +406,7 @@ final class GuestImage: ObservableObject {
         }
         let version = be32(4)
         guard version == 2 || version == 3 else {
-            return "unsupported qcow2 version \(version)"
+            return String(localized: "unsupported qcow2 version \(version)")
         }
         // Our seeds and snapshots are self-contained; a backing file entry is
         // never legitimate and means the image points at bytes that are not here.
@@ -415,7 +415,7 @@ final class GuestImage: ObservableObject {
         }
         let virtualSize = be64(32)
         guard virtualSize >= 1 << 30 else {
-            return "userdata image declares only \(virtualSize) bytes of disk"
+            return String(localized: "userdata image declares only \(virtualSize) bytes of disk")
         }
         // qcow2 v3 incompatible_features (offset 72). Bits 0 and 1 (dirty,
         // corrupt) may legitimately be set -- a jetsam-killed guest never gets
@@ -528,7 +528,7 @@ final class GuestImage: ObservableObject {
         if let why = check.problem {
             HuskLog.log("guest", "existing guest disk is INVALID (\(why)); removing it")
             try? FileManager.default.removeItem(atPath: diskPath)
-            state = .failed("The runtime on disk is not a valid image (\(why)). Tap to retry.")
+            state = .failed(String(localized: "The runtime on disk is not a valid image (\(why)). Tap to retry."))
             return
         }
 
@@ -807,7 +807,7 @@ final class GuestImage: ObservableObject {
         }
         if let short = snapshotSpaceShortfall() {
             HuskLog.log("guest", "not fetching the pre-booted snapshot: \(short)")
-            failed("Not enough free space for the pre-booted snapshot: \(short).")
+            failed(String(localized: "Not enough free space for the pre-booted snapshot: \(short)."))
             return
         }
         isFetchingSnapshot = true
@@ -827,9 +827,7 @@ final class GuestImage: ObservableObject {
                         if let want = self.manifest?.snapshot.sha256, want != joined.digest {
                             try? FileManager.default.removeItem(at: joined.url)
                             self.isFetchingSnapshot = false
-                            self.failed("The snapshot did not match the release "
-                                      + "(sha256 \(joined.digest.prefix(12)), expected "
-                                      + "\(want.prefix(12))).")
+                            self.failed(String(localized: "The snapshot did not match the release (sha256 \(joined.digest.prefix(12)), expected \(want.prefix(12)))."))
                             return
                         }
                         self.finishedSnapshot(tempURL: joined.url, digest: joined.digest)
@@ -874,7 +872,7 @@ final class GuestImage: ObservableObject {
                 try? FileManager.default.removeItem(at: dest)
                 try? FileManager.default.removeItem(atPath: self.snapshotStampPath)
                 DispatchQueue.main.async {
-                    self.state = .failed("Could not unpack the snapshot: \(error.localizedDescription)")
+                    self.state = .failed(String(localized: "Could not unpack the snapshot: \(error.localizedDescription)"))
                 }
             }
         }
@@ -947,7 +945,7 @@ final class GuestImage: ObservableObject {
         else { return nil }
         guard free < need else { return nil }
         let gb = { (b: Int64) in String(format: "%.1f GB", Double(b) / 1e9) }
-        return "it needs \(gb(need)) free and the device has \(gb(free))"
+        return String(localized: "it needs \(gb(need)) free and the device has \(gb(free))")
     }
 
     /// The staging files of a download or unpack that a previous run did not live to finish: gigabytes in tmp that iOS only
@@ -1086,7 +1084,7 @@ final class GuestImage: ObservableObject {
         if let why = check.problem {
             try? FileManager.default.removeItem(at: tempURL)
             HuskLog.log("guest", "downloaded file rejected: \(why)")
-            state = .failed("Download did not produce a disk image: \(why)")
+            state = .failed(String(localized: "Download did not produce a disk image: \(why)"))
             return
         }
         let size = check.size ?? 0
@@ -1172,7 +1170,7 @@ private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate {
             let detail = body.isEmpty ? "" : " — server said: \(body.prefix(200))"
             let url = downloadTask.originalRequest?.url?.absoluteString ?? "?"
             Task { @MainActor in
-                self.owner?.failed("HTTP \(http.statusCode) from \(url)\(detail)")
+                self.owner?.failed(String(localized: "HTTP \(http.statusCode) from \(url)\(detail)"))
             }
             return
         }
@@ -1186,7 +1184,7 @@ private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate {
             try FileManager.default.moveItem(at: location, to: stable)
         } catch {
             Task { @MainActor in
-                self.owner?.failed("could not stage download: \(error.localizedDescription)")
+                self.owner?.failed(String(localized: "could not stage download: \(error.localizedDescription)"))
             }
             return
         }
@@ -1284,8 +1282,7 @@ private final class SnapshotFetcher: NSObject, URLSessionDownloadDelegate {
         // looking exactly like the file that was asked for.
         if let http = downloadTask.response as? HTTPURLResponse,
            !(200...299).contains(http.statusCode) {
-            fail("HTTP \(http.statusCode) fetching "
-               + (downloadTask.originalRequest?.url?.lastPathComponent ?? "a snapshot part"))
+            fail(String(localized: "HTTP \(http.statusCode) fetching \(downloadTask.originalRequest?.url?.lastPathComponent ?? "a snapshot part")"))
             return
         }
         do {
@@ -1300,7 +1297,7 @@ private final class SnapshotFetcher: NSObject, URLSessionDownloadDelegate {
                 bytesDone += Int64(chunk.count)
             }
         } catch {
-            fail("could not join snapshot part \(index + 1): \(error.localizedDescription)")
+            fail(String(localized: "could not join snapshot part \(index + 1): \(error.localizedDescription)"))
             return
         }
         try? FileManager.default.removeItem(at: location)

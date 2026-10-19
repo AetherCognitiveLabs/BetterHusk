@@ -139,11 +139,11 @@ import UserNotifications
         phase = .pin(pin)
         log("code shown")
         if #available(iOS 26.0, *), let task = continued as? BGContinuedProcessingTask {
-            task.updateTitle("Pairing code \(pin)", subtitle: "Enter it on this \(Self.deviceKind) to pair with Husk")
+            task.updateTitle(String(localized: "Pairing code \(pin)"), subtitle: String(localized: "Enter it on this \(Self.deviceKind) to pair with Husk"))
             task.progress.completedUnitCount = 1
         }
         if UIApplication.shared.applicationState != .active {
-            notify("Husk pairing code: \(pin)", body: "Enter this code on your \(Self.deviceKind) to finish pairing.")
+            notify(String(localized: "Husk pairing code: \(pin)"), body: String(localized: "Enter this code on your \(Self.deviceKind) to finish pairing."))
         }
     }
 
@@ -158,19 +158,19 @@ import UserNotifications
             do {
                 guard let data else { throw NSError(domain: "HuskJIT", code: 20) }
                 try JITCoordinator.shared.storeOnDevicePairing(data)
-                phase = .paired(device: device ?? "this \(Self.deviceKind)")
+                phase = .paired(device: device ?? String(localized: "this \(Self.deviceKind)"))
                 log("paired")
                 if UIApplication.shared.applicationState != .active {
-                    notify("Paired with Husk", body: "Return to Husk to finish setting up JIT.")
+                    notify(String(localized: "Paired with Husk"), body: String(localized: "Return to Husk to finish setting up JIT."))
                 }
                 endBackground(success: true)
             } catch {
-                fail("Pairing finished, but Husk could not save the pairing file.")
+                fail(String(localized: "Pairing finished, but Husk could not save the pairing file."))
             }
         case 2:
             endBackground(success: false)
         default:
-            fail(message.map { "Pairing failed: \($0)" } ?? "Pairing failed. Try again.")
+            fail(message.map { String(localized: "Pairing failed: \($0)") } ?? String(localized: "Pairing failed. Try again."))
         }
     }
 
@@ -265,8 +265,8 @@ import UserNotifications
             guard ok else { log("register refused"); backgroundLimited = true; return }
             registered = identifier
         }
-        let request = BGContinuedProcessingTaskRequest(identifier: identifier, title: "Pairing with Husk",
-                                                       subtitle: "Settings › Privacy & Security › Developer Mode")
+        let request = BGContinuedProcessingTaskRequest(identifier: identifier, title: String(localized: "Pairing with Husk"),
+                                                       subtitle: String(localized: "Settings › Privacy & Security › Developer Mode"))
         request.strategy = .fail
         do {
             try BGTaskScheduler.shared.submit(request)
@@ -283,7 +283,7 @@ import UserNotifications
         continued = task
         task.progress.totalUnitCount = 2
         if case .pin(let pin) = phase {
-            task.updateTitle("Pairing code \(pin)", subtitle: "Enter it on this \(Self.deviceKind) to pair with Husk")
+            task.updateTitle(String(localized: "Pairing code \(pin)"), subtitle: String(localized: "Enter it on this \(Self.deviceKind) to pair with Husk"))
             task.progress.completedUnitCount = 1
         }
         task.expirationHandler = {

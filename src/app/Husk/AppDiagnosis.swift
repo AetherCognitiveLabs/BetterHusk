@@ -51,7 +51,7 @@ struct AppDiagnosis: Identifiable, Equatable {
         guard let r = app.report else { return nil }
         if !r.ok || r.verdict == "unreadable" {
             return AppDiagnosis(kind: .badAPK, title: "Bad APK",
-                                detail: "This file is not an app Husk can read" + (r.error.map { ": \($0)." } ?? ".")
+                                detail: String(localized: "This file is not an app Husk can read") + (r.error.map { ": \($0)." } ?? ".")
                                     + " It may be damaged, only partly downloaded, or not an Android app at all.",
                                 evidence: r.error ?? r.summary)
         }
@@ -68,8 +68,7 @@ struct AppDiagnosis: Identifiable, Equatable {
         }
         if let lib = r.libraries.first(where: { l in protectorLibraries.contains(where: { l.name.hasPrefix($0) }) }) {
             return AppDiagnosis(kind: .protected, title: "Protected app",
-                                detail: "This app carries anti-tamper protection (\(lib.name)). Such protection checks that it runs on a certified "
-                                    + "Android phone and closes the app otherwise, so it may not start in Husk.",
+                                detail: String(localized: "This app carries anti-tamper protection (\(lib.name)). Such protection checks that it runs on a certified Android phone and closes the app otherwise, so it may not start in Husk."),
                                 evidence: lib.name)
         }
         return nil
@@ -107,13 +106,12 @@ struct AppDiagnosis: Identifiable, Equatable {
             }.first
             let signal = head.range(of: "signal \\d+", options: .regularExpression).map { String(head[$0]) } ?? "a fatal signal"
             if let lib, !lib.hasPrefix("libhusk"), !lib.contains("Husk") {
-                return AppDiagnosis(kind: .nativeCrash, title: "Crashed in \(lib)",
-                                    detail: "The app's own native code (\(lib)) stopped with \(signal). It most likely needs something from Android "
-                                        + "that Husk does not provide yet, or does something iOS does not allow.",
+                return AppDiagnosis(kind: .nativeCrash, title: String(localized: "Crashed in \(lib)"),
+                                    detail: String(localized: "The app's own native code (\(lib)) stopped with \(signal). It most likely needs something from Android that Husk does not provide yet, or does something iOS does not allow."),
                                     evidence: head)
             }
             return AppDiagnosis(kind: .nativeCrash, title: "The app crashed",
-                                detail: "It stopped with \(signal). The report has the full log of the run.", evidence: head)
+                                detail: String(localized: "It stopped with \(signal). The report has the full log of the run."), evidence: head)
         }
 
         // The app ended itself from native code: protection that found it is not on a certified phone, most of the time
@@ -121,8 +119,7 @@ struct AppDiagnosis: Identifiable, Equatable {
            let code = l.range(of: "exit\\((\\d+)\\)", options: .regularExpression).map({ String(l[$0]) }), code != "exit(0)" {
             let lib = l.components(separatedBy: "called from ").last?.split(separator: " ").first.map(String.init) ?? "its code"
             return AppDiagnosis(kind: .closedItself, title: "The app refused to run here",
-                                detail: "\(lib) closed the app on purpose (\(code)). Apps with anti-tamper or anti-cheat protection do this when "
-                                    + "they find they are not on a certified Android phone, which Husk cannot pretend to be for them.",
+                                detail: String(localized: "\(lib) closed the app on purpose (\(code)). Apps with anti-tamper or anti-cheat protection do this when they find they are not on a certified Android phone, which Husk cannot pretend to be for them."),
                                 evidence: l)
         }
 
@@ -136,14 +133,14 @@ struct AppDiagnosis: Identifiable, Equatable {
             if ["NoSuchMethodError", "NoClassDefFoundError", "UnsatisfiedLinkError", "AbstractMethodError", "NoSuchFieldError",
                 "IncompatibleClassChangeError"].contains(short) {
                 return AppDiagnosis(kind: .missingFeature, title: "Uses something Husk does not have yet",
-                                    detail: "The app needs a part of Android that Husk's runtime does not provide yet: \(apiName(firstPart)).",
+                                    detail: String(localized: "The app needs a part of Android that Husk's runtime does not provide yet: \(apiName(firstPart))."),
                                     evidence: l)
             }
             if what.localizedCaseInsensitiveContains("google play services") || what.contains("GooglePlayServices") {
                 return googleDiagnosis(l)
             }
             return AppDiagnosis(kind: .javaCrash, title: "The app crashed",
-                                detail: "Its code stopped with \(short)" + (firstPart.isEmpty ? "." : ": \(firstPart.prefix(220))"),
+                                detail: String(localized: "Its code stopped with \(short)") + (firstPart.isEmpty ? "." : ": \(firstPart.prefix(220))"),
                                 evidence: l)
         }
 
@@ -160,9 +157,7 @@ struct AppDiagnosis: Identifiable, Equatable {
            ["box64", "box86", "wine", "proot", "/usr/bin/", "imagefs", "rootfs", "termux", "ld-linux"].contains(where: { l.localizedCaseInsensitiveContains($0) }) {
             let prog = l.components(separatedBy: "the app started a process: ").last?.components(separatedBy: " -- ").first ?? "a program"
             return AppDiagnosis(kind: .missingFeature, title: "Runs Linux programs as separate processes",
-                                detail: "This app does its main work in Linux programs it starts as processes of their own (here \(prog.prefix(120))). "
-                                    + "Its own screens run in Husk, but iOS does not let an app start other processes, so those programs, and the "
-                                    + "games or tools they run, can not start yet.",
+                                detail: String(localized: "This app does its main work in Linux programs it starts as processes of their own (here \(prog.prefix(120))). Its own screens run in Husk, but iOS does not let an app start other processes, so those programs, and the games or tools they run, can not start yet."),
                                 evidence: l)
         }
 
@@ -195,7 +190,7 @@ struct AppDiagnosis: Identifiable, Equatable {
         if let l = lines.first(where: { $0.contains("CALLED an unresolved import: ") }), lines.contains(where: { $0.contains("the app finished") || $0.contains("CRASH") }) {
             let fn = l.components(separatedBy: "unresolved import: ").last?.split(separator: " ").first.map(String.init) ?? "?"
             return AppDiagnosis(kind: .missingFunction, title: "Uses something Husk does not have yet",
-                                detail: "The app called \(fn), a system function Husk does not provide yet.", evidence: l)
+                                detail: String(localized: "The app called \(fn), a system function Husk does not provide yet."), evidence: l)
         }
         return nil
     }
@@ -229,8 +224,8 @@ struct AppDiagnosisCard: View {
                 .foregroundStyle(diagnosis.blocksLaunch ? .red : .orange)
                 .frame(width: 26)
             VStack(alignment: .leading, spacing: 4) {
-                Text(diagnosis.title).font(.subheadline.weight(.semibold))
-                Text(diagnosis.detail).font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text(diagnosis.title.l10n).font(.subheadline.weight(.semibold))
+                Text(diagnosis.detail.l10n).font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 if showsEvidence, let e = diagnosis.evidence {
                     Text(e).font(.system(size: 10.5, design: .monospaced)).foregroundStyle(.secondary)
                         .lineLimit(4).textSelection(.enabled).padding(.top, 2)

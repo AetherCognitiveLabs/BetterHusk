@@ -142,7 +142,7 @@ struct ConsoleChip: View {
 
     var body: some View {
         Button(action: action) {
-            Text(title)
+            Text(title.l10n)
                 .font(.system(size: compact ? 13 : 14, weight: .semibold))
                 .foregroundStyle(selected ? Console.onText : Console.text.opacity(0.85))
                 .padding(.horizontal, compact ? 11 : 14)

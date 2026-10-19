@@ -45,7 +45,7 @@ struct JITCard: View {
                 Button { jit.showSetup = true } label: {
                     VStack(alignment: .leading, spacing: 1) {
                         Text("JIT is off").font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
-                        Text(jit.busy ? (jit.status ?? "Turning on JIT…") : "Games need it. \(offered == .builtIn ? "StikJIT" : offered.title) turns it on.")
+                        Text(jit.busy ? (jit.status?.l10n ?? String(localized: "Turning on JIT…")) : String(localized: "Games need it. \(offered == .builtIn ? "StikJIT" : offered.title) turns it on."))
                             .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -70,7 +70,7 @@ struct JITCard: View {
                 }
             }
             if let error = jit.error {
-                Text(error).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                Text(error.l10n).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(12)
@@ -130,12 +130,12 @@ struct JITCard: View {
                 Spacer(minLength: 0)
             }
 
-            Text(explanation)
+            Text(explanation.l10n)
                 .font(.subheadline)
                 .fixedSize(horizontal: false, vertical: true)
 
             if let why = HuskBuiltInJIT.unavailableReason {
-                Text(why).font(.footnote).foregroundStyle(.orange)
+                Text(why.l10n).font(.footnote).foregroundStyle(.orange)
             }
 
             if jit.busy {
@@ -151,7 +151,7 @@ struct JITCard: View {
                 } label: {
                     HStack {
                         Spacer()
-                        Label(buttonTitle, systemImage: "bolt.fill")
+                        Label(buttonTitle.l10n, systemImage: "bolt.fill")
                             .font(.headline)
                         Spacer()
                     }
@@ -161,7 +161,7 @@ struct JITCard: View {
             }
 
             if let error = jit.error {
-                Text(error).font(.footnote).foregroundStyle(.orange)
+                Text(error.l10n).font(.footnote).foregroundStyle(.orange)
             }
 
             Button { jit.showSetup = true } label: {

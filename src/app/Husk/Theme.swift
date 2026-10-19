@@ -193,7 +193,7 @@ struct Chip: View {
 
     var body: some View {
         Button(action: action) {
-            Text(title)
+            Text(title.l10n)
                 .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(selected ? .white : Theme.textDim)
                 .padding(.horizontal, 16).padding(.vertical, 8)
@@ -209,7 +209,7 @@ struct Tag: View {
     var tint: Color = Theme.textDim
 
     var body: some View {
-        Text(text)
+        Text(text.l10n)
             .font(.system(size: 12, weight: .medium))
             .foregroundStyle(tint)
             .padding(.horizontal, 10).padding(.vertical, 4)
@@ -225,9 +225,9 @@ struct DetailRow: View {
 
     var body: some View {
         HStack(alignment: .firstTextBaseline) {
-            Text(label).foregroundStyle(Theme.textDim)
+            Text(label.l10n).foregroundStyle(Theme.textDim)
             Spacer(minLength: 16)
-            Text(value)
+            Text(value.l10n)
                 .font(mono ? .technical() : .system(size: 15))
                 .foregroundStyle(Theme.text)
                 .multilineTextAlignment(.trailing)
@@ -255,11 +255,11 @@ struct HuskRow: View {
                 .background(Theme.surfaceHigh,
                             in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             VStack(alignment: .leading, spacing: 2) {
-                Text(title)
+                Text(title.l10n)
                     .font(.system(size: 15, weight: .medium))
                     .foregroundStyle(tint)
                 if let subtitle {
-                    Text(subtitle)
+                    Text(subtitle.l10n)
                         .font(.system(size: 12))
                         .foregroundStyle(Theme.textDim)
                         .lineLimit(1)
@@ -303,12 +303,12 @@ struct SectionHeader: View {
 
     var body: some View {
         HStack(alignment: .firstTextBaseline) {
-            Text(title)
+            Text(title.l10n)
                 .font(.system(size: 17, weight: .semibold))
                 .foregroundStyle(Theme.text)
             Spacer()
             if let trailing {
-                Text(trailing).font(.system(size: 13)).foregroundStyle(Theme.textDim)
+                Text(trailing.l10n).font(.system(size: 13)).foregroundStyle(Theme.textDim)
             }
         }
     }
@@ -321,7 +321,7 @@ struct StatusPill: View {
     var tint: Color = Theme.accent
 
     var body: some View {
-        Label(text, systemImage: systemImage)
+        Label(text.l10n, systemImage: systemImage)
             .font(.system(size: 12, weight: .medium))
             .padding(.horizontal, 10).padding(.vertical, 5)
             .background(tint.opacity(0.16), in: Capsule())
@@ -344,16 +344,16 @@ struct EmptyState: View {
                 .foregroundStyle(Theme.accent)
                 .frame(width: 64, height: 64)
                 .background(Theme.accentSoft, in: Circle())
-            Text(title)
+            Text(title.l10n)
                 .font(.system(size: 18, weight: .semibold))
                 .foregroundStyle(Theme.text)
-            Text(message)
+            Text(message.l10n)
                 .font(.system(size: 14))
                 .foregroundStyle(Theme.textDim)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 28)
             if let actionTitle, let action {
-                Button(actionTitle, action: action)
+                Button(actionTitle.l10n, action: action)
                     .buttonStyle(PrimaryButtonStyle())
                     .padding(.horizontal, 44)
                     .padding(.top, 6)
@@ -387,11 +387,11 @@ struct ToastView: View {
                 .font(.system(size: 19))
                 .foregroundStyle(toast.good ? Theme.good : .orange)
             VStack(alignment: .leading, spacing: 2) {
-                Text(toast.title)
+                Text(toast.title.l10n)
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(Theme.text)
                 if let detail = toast.detail {
-                    Text(detail)
+                    Text(detail.l10n)
                         .font(.system(size: 12))
                         .foregroundStyle(Theme.textDim)
                         .lineLimit(2)
@@ -438,4 +438,11 @@ struct GuestControl: View {
         .buttonStyle(.plain)
         .disabled(busy)
     }
+}
+
+extension String {
+    /// Looks this literal up in the compiled string catalog at render time.
+    /// Use for runtime `String` values shown in `Text`/`Label` — static literals
+    /// localize through `LocalizedStringKey` on their own.
+    var l10n: LocalizedStringKey { LocalizedStringKey(self) }
 }

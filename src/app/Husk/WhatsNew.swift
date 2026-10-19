@@ -67,8 +67,8 @@ struct WhatsNewSheet: View {
                                 .foregroundStyle(Color.accentColor)
                                 .frame(width: 36)
                             VStack(alignment: .leading, spacing: 3) {
-                                Text(item.title).font(.headline)
-                                Text(item.detail).font(.subheadline).foregroundStyle(.secondary)
+                                Text(item.title.l10n).font(.headline)
+                                Text(item.detail.l10n).font(.subheadline).foregroundStyle(.secondary)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                         }

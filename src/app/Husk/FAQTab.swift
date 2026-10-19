@@ -21,7 +21,7 @@ struct FAQTab: View {
                     Section {
                         ForEach(s.items) { item in FAQRow(item: item, expanded: !query.isEmpty) }
                     } header: {
-                        Label(s.title, systemImage: s.symbol)
+                        Label(s.title.l10n, systemImage: s.symbol)
                     }
                 }
                 if sections.isEmpty {
@@ -47,7 +47,7 @@ private struct FAQRow: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.vertical, 4)
         } label: {
-            Text(item.question).font(.body.weight(.medium))
+            Text(item.question.l10n).font(.body.weight(.medium))
         }
     }
 }

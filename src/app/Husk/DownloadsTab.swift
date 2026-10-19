@@ -85,7 +85,7 @@ struct DownloadsTab: View {
             }
             if guest.update.isSomething {
                 HStack {
-                    Label(guest.update.title, systemImage: "shippingbox.fill")
+                    Label(guest.update.title.l10n, systemImage: "shippingbox.fill")
                     Spacer()
                     Button("Download") { guest.applyUpdate() }.buttonStyle(.bordered)
                 }
@@ -105,16 +105,16 @@ private struct DownloadRow: View {
 
     private var status: String {
         if job.complete { return job.kind == .apk ? "Added to the library" : job.kind == .folder ? "In Shared Storage" : "In Shared Storage" }
-        if job.paused { return "Paused · \(Downloads.bytes(job.received)) of \(Downloads.bytes(job.total))" }
-        if let err = job.files.first(where: { $0.error != nil })?.error { return "Stopped: \(err)" }
-        var s = "\(Downloads.bytes(job.received)) of \(Downloads.bytes(job.total))"
-        if job.files.count > 1 { s += " · \(job.filesDone)/\(job.files.count) files" }
+        if job.paused { return String(localized: "Paused · \(Downloads.bytes(job.received)) of \(Downloads.bytes(job.total))") }
+        if let err = job.files.first(where: { $0.error != nil })?.error { return String(localized: "Stopped: \(err)") }
+        var s = String(localized: "\(Downloads.bytes(job.received)) of \(Downloads.bytes(job.total))")
+        if job.files.count > 1 { s += String(localized: " · \(job.filesDone)/\(job.files.count) files") }
         if speed > 1 {
-            s += " · \(Downloads.bytes(Int64(speed)))/s"
+            s += String(localized: " · \(Downloads.bytes(Int64(speed)))/s")
             let left = Double(job.total - job.received) / speed
             if left.isFinite, left > 0 {
                 let f = DateComponentsFormatter(); f.allowedUnits = left > 3600 ? [.hour, .minute] : [.minute, .second]; f.unitsStyle = .abbreviated
-                if let t = f.string(from: left) { s += " · \(t) left" }
+                if let t = f.string(from: left) { s += String(localized: " · \(t) left") }
             }
         }
         return s
@@ -142,7 +142,7 @@ private struct DownloadRow: View {
                 }
             }
             if !job.complete { ProgressView(value: fraction) }
-            Text(status).font(.caption).foregroundStyle(job.failed ? Color.orange : Color.secondary).lineLimit(2)
+            Text(status.l10n).font(.caption).foregroundStyle(job.failed ? Color.orange : Color.secondary).lineLimit(2)
         }
         .padding(.vertical, 4)
     }
@@ -163,7 +163,7 @@ private struct AddDownloadSheet: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                 } footer: {
-                    if let problem = downloads.problem { Text(problem).foregroundStyle(.orange) }
+                    if let problem = downloads.problem { Text(problem.l10n).foregroundStyle(.orange) }
                 }
                 Section {
                     Text("An APK is added to your library when it finishes. Anything else goes into the Shared Storage folder, which games see as their phone storage.")

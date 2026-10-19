@@ -158,7 +158,7 @@ final class Downloads: ObservableObject {
         var job = new
         let need = job.files.filter { !$0.done }.reduce(Int64(0)) { $0 + max(0, $1.size - Self.onDisk(job.kind, $1.path)) }
         if let free = Self.freeSpace(), need > free {
-            problem = "This needs \(Self.bytes(need)) more and the device has \(Self.bytes(free)) free."
+            problem = String(localized: "This needs \(Self.bytes(need)) more and the device has \(Self.bytes(free)) free.")
             return
         }
         Self.settle(&job)
@@ -587,7 +587,7 @@ final class DirectDownloadDelegate: NSObject, URLSessionDataDelegate {
             completionHandler(.cancel)
             return
         default:
-            t.error = "the server answered \(http.statusCode)"
+            t.error = String(localized: "the server answered \(http.statusCode)")
             try? h.close()
             completionHandler(.cancel)
             return
@@ -599,7 +599,7 @@ final class DirectDownloadDelegate: NSObject, URLSessionDataDelegate {
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         guard let t = transfer(dataTask), let h = t.handle else { return }
-        do { try h.write(contentsOf: data) } catch { t.error = "cannot write: \(error.localizedDescription)"; dataTask.cancel(); return }
+        do { try h.write(contentsOf: data) } catch { t.error = String(localized: "cannot write: \(error.localizedDescription)"); dataTask.cancel(); return }
         t.written += Int64(data.count)
         let now = Date()
         if now.timeIntervalSince(t.lastReport) > 0.5 {
@@ -653,7 +653,7 @@ final class BackgroundDownloadDelegate: NSObject, URLSessionDownloadDelegate {
                 try? fm.removeItem(at: part)
                 try fm.moveItem(at: location, to: part)
             } else {
-                throw NSError(domain: "HuskDownloads", code: status, userInfo: [NSLocalizedDescriptionKey: "the server answered \(status)"])
+                throw NSError(domain: "HuskDownloads", code: status, userInfo: [NSLocalizedDescriptionKey: String(localized: "the server answered \(status)")])
             }
         } catch {
             let message = error.localizedDescription
@@ -724,7 +724,7 @@ private enum Live {
         }
         let received = active.reduce(0) { $0 + $1.received }, total = active.reduce(0) { $0 + $1.total }
         let finishBy = speed > 1 && total > received ? Date().addingTimeInterval(Double(total - received) / speed) : nil
-        let title = active.count == 1 ? active[0].title : "\(active.count) downloads"
+        let title = active.count == 1 ? active[0].title : String(localized: "\(active.count) downloads")
         var state = HuskDownloadAttributes.ContentState(title: title, received: received, total: total, finishBy: finishBy, started: started,
                                                         finished: false, failed: active.contains { $0.failed })
         state.speed = speed
@@ -787,7 +787,7 @@ enum ContinuedDownload {
             registered = pattern
         }
         let id = "\(bundle).downloads.\(UUID().uuidString.prefix(8))"
-        let request = BGContinuedProcessingTaskRequest(identifier: id, title: "Downloading \(title)", subtitle: "Starting…")
+        let request = BGContinuedProcessingTaskRequest(identifier: id, title: String(localized: "Downloading \(title)"), subtitle: String(localized: "Starting…"))
         request.strategy = .fail
         do {
             try BGTaskScheduler.shared.submit(request)
@@ -821,7 +821,7 @@ enum ContinuedDownload {
         if active.isEmpty {
             let failed = jobs.contains { $0.failed }
             t.progress.completedUnitCount = t.progress.totalUnitCount
-            t.updateTitle(failed ? "Download stopped" : "Download finished", subtitle: failed ? "Open Husk to retry" : (jobs.first?.title ?? ""))
+            t.updateTitle(failed ? String(localized: "Download stopped") : String(localized: "Download finished"), subtitle: failed ? String(localized: "Open Husk to retry") : (jobs.first?.title ?? ""))
             t.setTaskCompleted(success: !failed)
             task = nil
             HuskLog.log("downloads", "background task completed")
@@ -833,16 +833,16 @@ enum ContinuedDownload {
         t.progress.completedUnitCount = min(t.progress.totalUnitCount, received / 1_000_000)
         if Date().timeIntervalSince(lastSubtitle) > 2 {
             lastSubtitle = Date()
-            var sub = "\(Downloads.bytes(received)) of \(Downloads.bytes(total))"
-            if speed > 1 { sub += " · \(Downloads.bytes(Int64(speed)))/s" }
+            var sub = String(localized: "\(Downloads.bytes(received)) of \(Downloads.bytes(total))")
+            if speed > 1 { sub += String(localized: " · \(Downloads.bytes(Int64(speed)))/s") }
             let files = active.reduce(0) { $0 + $1.files.count }
-            if files > 1 { sub += " · \(active.reduce(0) { $0 + $1.filesDone })/\(files) files" }
+            if files > 1 { sub += String(localized: " · \(active.reduce(0) { $0 + $1.filesDone })/\(files) files") }
             if speed > 1, total > received {
                 let left = Double(total - received) / speed
                 let f = DateComponentsFormatter(); f.allowedUnits = left > 3600 ? [.hour, .minute] : [.minute, .second]; f.unitsStyle = .abbreviated
-                if let tl = f.string(from: left) { sub += " · \(tl) left" }
+                if let tl = f.string(from: left) { sub += String(localized: " · \(tl) left") }
             }
-            t.updateTitle(active.count == 1 ? "Downloading \(active[0].title)" : "Downloading \(active.count) items", subtitle: sub)
+            t.updateTitle(active.count == 1 ? String(localized: "Downloading \(active[0].title)") : String(localized: "Downloading \(active.count) items"), subtitle: sub)
         }
         return true
     }
