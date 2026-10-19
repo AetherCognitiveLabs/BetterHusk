@@ -160,6 +160,32 @@ else
     echo "  ok       optional PS4 layer omitted"
 fi
 
+# Hypervisor.framework (iOS hv_* shim, scripts/build_ios.sh hypervisor) is
+# optional to BUILD but mandatory to SHIP once libqemu was linked against it:
+# the dylib then holds an @rpath/Hypervisor.framework load command and dyld
+# refuses the whole library -- every VM launch -- when the bundle lacks it.
+QEMU_DYLIB="$APP/Frameworks/libqemu-aarch64-softmmu.dylib"
+HV_EMBEDDED="$APP/Frameworks/Hypervisor.framework/Hypervisor"
+HV_STAGED="$HUSK_ROOT/build/ios-arm64/sysroot/Frameworks/Hypervisor.framework"
+if [ -f "$QEMU_DYLIB" ] && otool -L "$QEMU_DYLIB" 2>/dev/null | grep -q 'Hypervisor.framework'; then
+    if [ -f "$HV_EMBEDDED" ]; then
+        printf "  ok       %-28s %s\n" "Hypervisor embedded (hvf)" "$(du -h "$HV_EMBEDDED" | cut -f1)"
+    else
+        echo "  MISSING  Frameworks/Hypervisor.framework -- libqemu links it; no VM would boot" >&2
+        rc=1
+    fi
+elif [ -f "$HV_EMBEDDED" ]; then
+    if [ -d "$HV_STAGED" ]; then
+        echo "  MISMATCH embedded Hypervisor but this libqemu was built without hvf" >&2
+        rc=1
+    else
+        echo "  MISMATCH stale Hypervisor.framework in app without a matching build" >&2
+        rc=1
+    fi
+else
+    echo "  ok       optional Hypervisor framework omitted (TCG only)"
+fi
+
 # Guest images, firmware, and blank disk seeds required by first launch.
 for f in vmlinuz-virt initramfs-virt husk-jit.js \
          edk2-aarch64-code.fd lineage-efi-vars-seed.fd lineage-vdb-seed.qcow2; do

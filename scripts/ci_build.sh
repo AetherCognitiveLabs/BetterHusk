@@ -33,6 +33,9 @@ if [ ! -f build/ios-arm64/sysroot/lib/libvirglrenderer.a ]; then
         ./scripts/build_gpu_ios.sh
 fi
 
+step "Hypervisor.framework (iOS hv_* shim for QEMU hvf)"
+./scripts/build_ios.sh hypervisor
+
 step "QEMU"
 ./scripts/build_ios.sh qemu
 

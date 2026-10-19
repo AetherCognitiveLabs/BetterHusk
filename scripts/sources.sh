@@ -26,6 +26,14 @@ PIXMAN_SRC="https://www.cairographics.org/releases/pixman-0.38.0.tar.gz"
 LIBUCONTEXT_REPO="https://github.com/utmapp/libucontext.git"
 LIBUCONTEXT_COMMIT="9b1d8f01a6e99166f9808c79966abe10786de8b6"
 
+# Hypervisor.framework does not exist in the iPhoneOS SDK -- on iOS it is a kernel
+# service, not a framework. UTM's Hypervisor project rebuilds the public hv_* API on
+# top of the raw hv trap (hv.c + per-XNU kernel struct tables), which is what makes
+# QEMU's hvf accelerator work on the M1/M2 iPads where iOS 15.5-16.3 still honours
+# com.apple.developer.hypervisor. Same pin UTM itself builds.
+HYPERVISOR_REPO="https://github.com/utmapp/Hypervisor.git"
+HYPERVISOR_COMMIT="b2c910fb9f687929a50e5a7d62e59e43a006d47d"
+
 # User-mode networking. Not needed for Phase 0 (the Debian guest boots without a NIC),
 # but Android will not come up cleanly without a network, so build it now.
 SLIRP_SRC="https://github.com/utmapp/libslirp/releases/download/v4.9.1-release-mirror/libslirp-v4.9.1.tar.gz"

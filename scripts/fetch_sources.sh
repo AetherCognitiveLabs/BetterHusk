@@ -41,6 +41,15 @@ else
     echo "[skip] libucontext"
 fi
 
+if [ ! -d "$SRC/Hypervisor" ]; then
+    echo "[git ] Hypervisor"
+    git clone "$HYPERVISOR_REPO" "$SRC/Hypervisor" >/dev/null 2>&1 \
+        && git -C "$SRC/Hypervisor" checkout -q "$HYPERVISOR_COMMIT" \
+        || { echo "[FAIL] Hypervisor"; rc=1; }
+else
+    echo "[skip] Hypervisor"
+fi
+
 echo "--- result rc=$rc ---"
 ls -1 "$SRC" | grep -v '^\.' 
 exit $rc

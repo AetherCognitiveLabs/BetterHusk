@@ -35,11 +35,15 @@ export RANLIB="$(xcrun --sdk $SDK --find ranlib)"
 export STRIP="$(xcrun --sdk $SDK --find strip)"
 export LD="$(xcrun --sdk $SDK --find ld)"
 
-export CFLAGS="-arch $ARCH -isysroot $SDKROOT -I$PREFIX/include $CFLAGS_TARGET -O2"
+# -F$PREFIX/Frameworks makes stage_hypervisor's Hypervisor.framework visible to
+# both compiler (-I for <Hypervisor/hv.h>) and linker (-framework Hypervisor),
+# which is what lets QEMU's meson appleframeworks probe and the final link of
+# libqemu find a framework the iOS SDK does not ship.
+export CFLAGS="-arch $ARCH -isysroot $SDKROOT -I$PREFIX/include -F$PREFIX/Frameworks $CFLAGS_TARGET -O2"
 export CXXFLAGS="$CFLAGS"
-export CPPFLAGS="-arch $ARCH -isysroot $SDKROOT -I$PREFIX/include $CFLAGS_TARGET"
+export CPPFLAGS="-arch $ARCH -isysroot $SDKROOT -I$PREFIX/include -F$PREFIX/Frameworks $CFLAGS_TARGET"
 export OBJCFLAGS="$CFLAGS"
-export LDFLAGS="-arch $ARCH -isysroot $SDKROOT -L$PREFIX/lib $CFLAGS_TARGET"
+export LDFLAGS="-arch $ARCH -isysroot $SDKROOT -L$PREFIX/lib -F$PREFIX/Frameworks $CFLAGS_TARGET"
 
 # Cross pkg-config: look ONLY in our sysroot so host Homebrew libraries can never
 # leak into an iOS link.
@@ -155,6 +159,31 @@ stage_libucontext() { build_meson libucontext "$CROSS_IOS" -Dfreestanding=true; 
 stage_libslirp()    { apply_patch libslirp-v4.9.1 libslirp-v4.9.1.patch
                       build_meson libslirp-v4.9.1 "$CROSS_DARWIN"; }
 
+# Hypervisor.framework for iOS. The SDK ships no such framework: on iOS the hv_*
+# entry points are kernel traps, and UTM's Hypervisor project wraps them in the
+# public macOS API. QEMU links `-framework Hypervisor` (install name @rpath);
+# the app embeds the framework so the load command resolves on-device. Without
+# the entitlement the calls simply fail, and HVFSupport falls back to TCG.
+stage_hypervisor() {
+    local dir="$SRC/Hypervisor"
+    local log="$LOGS/hypervisor.log"
+    done_stage hypervisor && { echo "[skip] hypervisor"; return 0; }
+    banner "building Hypervisor.framework (iOS hv_* shim)"
+    [ -d "$dir" ] || fail hypervisor "$log (run ./scripts/fetch_sources.sh)"
+    ( cd "$dir" \
+      && rm -rf Hypervisor.xcarchive \
+      && xcodebuild archive -archivePath Hypervisor -scheme Hypervisor \
+            -sdk "$SDK" -configuration Release \
+            IPHONEOS_DEPLOYMENT_TARGET="$SDKMINVER" \
+            CODE_SIGNING_ALLOWED=NO \
+      && mkdir -p "$PREFIX/Frameworks" \
+      && rsync -a "Hypervisor.xcarchive/Products/Library/Frameworks/" "$PREFIX/Frameworks/" \
+    ) > "$log" 2>&1 || fail hypervisor "$log"
+    [ -f "$PREFIX/Frameworks/Hypervisor.framework/Hypervisor" ] \
+        || fail hypervisor "$log (archive produced no framework)"
+    mark_stage hypervisor
+}
+
 stage_qemu() {
     local dir="$SRC/qemu-10.0.12-utm"
     local log="$LOGS/qemu.log"
@@ -213,7 +242,7 @@ husk_stage_dylib() {
 }
 
 STAGES=("$@")
-[ ${#STAGES[@]} -eq 0 ] && STAGES=(libffi glib pixman libucontext libslirp qemu)
+[ ${#STAGES[@]} -eq 0 ] && STAGES=(libffi glib pixman libucontext libslirp hypervisor qemu)
 
 echo "HUSK build: PREFIX=$PREFIX"
 echo "            SDK=$SDKROOT ($SDKVERSION), min=$SDKMINVER, ncpu=$NCPU"

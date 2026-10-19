@@ -249,6 +249,31 @@ targets:
             echo "PS4 translation layer not built; skipping"
           fi
         basedOnDependencyAnalysis: false
+      # Hypervisor.framework is the iOS hv_* shim (utmapp/Hypervisor) that QEMU's
+      # hvf accelerator links by -framework. libqemu then carries an
+      # @rpath/Hypervisor.framework/Hypervisor load command: if the framework is
+      # missing from the bundle, dyld refuses the whole dylib and no VM boots, so
+      # a built framework MUST be embedded (package_ipa.sh hard-fails otherwise).
+      # Absent means QEMU was built with --disable-hvf and plain TCG still works.
+      - name: Embed Hypervisor framework
+        script: |
+          set -e
+          SRC="$SRCROOT/../../build/ios-arm64/sysroot/Frameworks/Hypervisor.framework"
+          DST="$TARGET_BUILD_DIR/$FRAMEWORKS_FOLDER_PATH/Hypervisor.framework"
+          if [ -d "$SRC" ]; then
+            rm -rf "$DST"
+            mkdir -p "$(dirname "$DST")"
+            ditto "$SRC" "$DST"
+            rm -rf "$DST/Headers" "$DST/Modules"
+            if [ -n "$EXPANDED_CODE_SIGN_IDENTITY" ] && [ "$CODE_SIGNING_ALLOWED" != "NO" ]; then
+              codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" --timestamp=none "$DST"
+            fi
+            echo "Embedded Hypervisor.framework (hvf accelerator)"
+          else
+            rm -rf "$DST"
+            echo "Hypervisor.framework not built; QEMU will run TCG only"
+          fi
+        basedOnDependencyAnalysis: false
       - name: Embed StikJIT
         # The helper links StikJIT; it lives here, in the app's Frameworks,
         # because sideloaders re-sign frameworks there and left one inside the
