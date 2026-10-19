@@ -885,6 +885,8 @@ void tl_javaapp_app_gone(uint32_t t0, uint32_t t1)
     pthread_mutex_lock(&E2.lk);
     if (t0 && g_dead_n < 32) g_dead_tex[g_dead_n++] = t0;
     if (t1 && g_dead_n < 32) g_dead_tex[g_dead_n++] = t1;
+    /* the frame being shown may be the dying name -- stop drawing it before the delete below lands */
+    if (E2.on && ((t0 && E2.tex == t0) || (t1 && E2.tex == t1))) { E2.on = false; E2.tex = 0; E2.seq++; }
     pthread_mutex_unlock(&E2.lk);
 }
 static uint64_t app_frame_seq(void) { pthread_mutex_lock(&E2.lk); uint64_t q = E2.seq; pthread_mutex_unlock(&E2.lk); return q; }

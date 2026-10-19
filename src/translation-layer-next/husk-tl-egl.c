@@ -301,7 +301,8 @@ PASS_BOOL(eglWaitGL, (void), ())
 PASS_BOOL(eglWaitNative, (EGLint e), (e))
 PASS_BOOL(eglReleaseThread, (void), ())
 
-static EGLBoolean w_eglDestroyContext(EGLDisplay d, EGLContext c) { ctx_leave_group(c); ctx_forget(c); return a_eglDestroyContext(d, c); }
+static void comp_ctx_gone(EGLContext c);
+static EGLBoolean w_eglDestroyContext(EGLDisplay d, EGLContext c) { comp_ctx_gone(c); ctx_leave_group(c); ctx_forget(c); return a_eglDestroyContext(d, c); }
 static const char *w_eglQueryString(EGLDisplay d, EGLint name) { return a_eglQueryString(d, name); }
 static bool g_es31_shim;           /* defined with the rest of the shim, below */
 static EGLContext w_eglCreateContext(EGLDisplay d, EGLConfig c, EGLContext share, const EGLint *at)
@@ -353,7 +354,7 @@ static bool g_offscreen_windows;
 void tl_egl_offscreen_windows(bool on) { g_offscreen_windows = on; }
 /* surfaces made on a TextureView's window: off-screen, read back into its SurfaceTexture at each swap */
 #define MAX_TEX_SURFACES 16
-static struct { EGLSurface s; void *win; EGLContext ctx; } g_tex_surf[MAX_TEX_SURFACES];
+static struct { EGLSurface s; void *win; } g_tex_surf[MAX_TEX_SURFACES];
 static pthread_mutex_t g_tex_lock = PTHREAD_MUTEX_INITIALIZER;
 static void *tex_window_of(EGLSurface s)
 {
@@ -364,8 +365,10 @@ static void *tex_window_of(EGLSurface s)
     return w;
 }
 #define MAX_COMP_SURFACES 8
-/* a composited window surface: the context that was current when it was made (it owns the swap), and the two shared textures the
- * frames are handed over as when the context joined the compositor's group */
+/* a composited window surface: the two shared textures its frames are handed over as, and the context last seen drawing it.
+ * The drawing context is read off the current context at swap time (EGL binds surface+context to the calling thread), so a
+ * surface made before any context is current -- the common order -- still takes the shared path once a grouped context draws
+ * on it; `ctx` exists for when that context dies: its shared names die with it. */
 static struct { EGLSurface s; EGLContext ctx; uint32_t tex[2]; int tw[2], th[2], cur; } g_comp_surf[MAX_COMP_SURFACES];
 static int comp_index(EGLSurface s)
 {
@@ -405,9 +408,8 @@ static EGLSurface w_eglCreateWindowSurface(EGLDisplay d, EGLConfig cfg, void *wi
         EGLint pb[] = { EGL_WIDTH, tl_nwindow_width(win), EGL_HEIGHT, tl_nwindow_height(win), EGL_NONE };
         EGLSurface s = a_eglCreatePbufferSurface(d, cfg, pb);
         if (s) {
-            EGLContext now = a_eglGetCurrentContext();
             pthread_mutex_lock(&g_tex_lock);
-            for (int i = 0; i < MAX_TEX_SURFACES; i++) if (!g_tex_surf[i].s) { g_tex_surf[i].s = s; g_tex_surf[i].win = win; g_tex_surf[i].ctx = now; break; }
+            for (int i = 0; i < MAX_TEX_SURFACES; i++) if (!g_tex_surf[i].s) { g_tex_surf[i].s = s; g_tex_surf[i].win = win; break; }
             pthread_mutex_unlock(&g_tex_lock);
         }
         tl_log_line("egl: TextureView window %dx%d -> off-screen surface %p", pb[1], pb[3], s);
@@ -417,11 +419,10 @@ static EGLSurface w_eglCreateWindowSurface(EGLDisplay d, EGLConfig cfg, void *wi
         EGLint pb[] = { EGL_WIDTH, tl_nwindow_width(win), EGL_HEIGHT, tl_nwindow_height(win), EGL_NONE };
         EGLSurface s = a_eglCreatePbufferSurface(d, cfg, pb);
         if (s) {
-            EGLContext now = a_eglGetCurrentContext();
             pthread_mutex_lock(&g_tex_lock);
-            for (int i = 0; i < MAX_COMP_SURFACES; i++) if (!g_comp_surf[i].s) { memset(&g_comp_surf[i], 0, sizeof(g_comp_surf[i])); g_comp_surf[i].s = s; g_comp_surf[i].ctx = now; break; }
+            for (int i = 0; i < MAX_COMP_SURFACES; i++) if (!g_comp_surf[i].s) { memset(&g_comp_surf[i], 0, sizeof(g_comp_surf[i])); g_comp_surf[i].s = s; break; }
             pthread_mutex_unlock(&g_tex_lock);
-            tl_log_line("egl: window %dx%d -> surface %p, composited under the app's views%s", pb[1], pb[3], s, ctx_grouped(now) ? " (shared-texture path)" : "");
+            tl_log_line("egl: window %dx%d -> surface %p, composited under the app's views", pb[1], pb[3], s);
         } else tl_log_line("egl: window %dx%d -> composited surface failed", pb[1], pb[3]);
         return s;
     }
@@ -513,10 +514,7 @@ static void tex_swap(EGLDisplay d, EGLSurface s, void *win)
     size_t need = (size_t)w * h * 4;
     if (need > cap) { free(buf); buf = malloc(need); cap = buf ? need : 0; }
     if (!buf) return;
-    int es = 3;
-    pthread_mutex_lock(&g_tex_lock);
-    for (int i = 0; i < MAX_TEX_SURFACES; i++) if (g_tex_surf[i].s == s) { es = ctx_es_any(g_tex_surf[i].ctx); break; }
-    pthread_mutex_unlock(&g_tex_lock);
+    int es = ctx_es_any(a_eglGetCurrentContext());
     int old_fb = 0, old_pack = 0;
     a_glGetIntegerv(es >= 3 ? 0x8CAA /* GL_READ_FRAMEBUFFER_BINDING */ : 0x8CA6 /* GL_FRAMEBUFFER_BINDING */, &old_fb);
     a_glGetIntegerv(0x0D05 /* GL_PACK_ALIGNMENT */, &old_pack);
@@ -535,8 +533,9 @@ static bool comp_swap_tex(EGLDisplay d, int i, EGLint *pw, EGLint *ph)
         || !a_glGetIntegerv || !a_glBindFramebuffer || !tl_javaapp_app_texture) return false;
     pthread_mutex_lock(&g_tex_lock);
     EGLSurface s = g_comp_surf[i].s;
-    EGLContext ctx = g_comp_surf[i].ctx;
     pthread_mutex_unlock(&g_tex_lock);
+    /* the context bound to this thread for the swap is the one that drew -- whatever the surface was made under */
+    EGLContext ctx = a_eglGetCurrentContext();
     if (!s || !ctx || !ctx_grouped(ctx)) return false;
     int es = ctx_es_any(ctx);
     EGLint w = 0, h = 0;
@@ -582,10 +581,28 @@ static bool comp_swap_tex(EGLDisplay d, int i, EGLint *pw, EGLint *ph)
     a_glBindFramebuffer(es >= 3 ? 0x8CA8 : 0x8D40, (unsigned)old_fb);
     if (a_glFinish) a_glFinish();            /* the copy is done before the compositor's context samples the texture */
     pthread_mutex_lock(&g_tex_lock);
-    if (g_comp_surf[i].s == s && g_comp_surf[i].tex[cur] == tex) { g_comp_surf[i].tw[cur] = w; g_comp_surf[i].th[cur] = h; g_comp_surf[i].cur = cur ^ 1; }
+    if (g_comp_surf[i].s == s && g_comp_surf[i].tex[cur] == tex) { g_comp_surf[i].tw[cur] = w; g_comp_surf[i].th[cur] = h; g_comp_surf[i].cur = cur ^ 1; g_comp_surf[i].ctx = ctx; }
     pthread_mutex_unlock(&g_tex_lock);
     *pw = w; *ph = h;
     return true;
+}
+/* A shared-group context that died: the shared texture names of surfaces it last drew die with it. Hand them to the
+ * compositor for deletion (its anchor keeps the group alive) and send those surfaces back to read-back. */
+static void comp_ctx_gone(EGLContext c)
+{
+    if (!c) return;
+    uint32_t dead[2 * MAX_COMP_SURFACES]; int nd = 0;
+    pthread_mutex_lock(&g_tex_lock);
+    for (int i = 0; i < MAX_COMP_SURFACES; i++)
+        if (g_comp_surf[i].ctx == c) {
+            for (int k = 0; k < 2; k++) if (g_comp_surf[i].tex[k]) dead[nd++] = g_comp_surf[i].tex[k];
+            g_comp_surf[i].tex[0] = g_comp_surf[i].tex[1] = 0;
+            g_comp_surf[i].tw[0] = g_comp_surf[i].tw[1] = g_comp_surf[i].th[0] = g_comp_surf[i].th[1] = 0;
+            g_comp_surf[i].ctx = NULL;
+        }
+    pthread_mutex_unlock(&g_tex_lock);
+    for (int i = 0; i < nd; i += 2)
+        if (tl_javaapp_app_gone) tl_javaapp_app_gone(dead[i], i + 1 < nd ? dead[i + 1] : 0);
 }
 static EGLBoolean w_eglSwapBuffers(EGLDisplay d, EGLSurface s)
 {
@@ -598,15 +615,14 @@ static EGLBoolean w_eglSwapBuffers(EGLDisplay d, EGLSurface s)
         if (comp_swap_tex(d, ci, &w, &h)) {
             if (tl_javaapp_app_texture) {
                 pthread_mutex_lock(&g_tex_lock);
-                uint32_t tex = g_comp_surf[ci].tex[g_comp_surf[ci].cur ^ 1];
+                uint32_t tex = g_comp_surf[ci].s == s ? g_comp_surf[ci].tex[g_comp_surf[ci].cur ^ 1] : 0;
                 pthread_mutex_unlock(&g_tex_lock);
-                tl_javaapp_app_texture(tex, w, h);
+                if (tex) tl_javaapp_app_texture(tex, w, h);
             }
             if (n <= 3 || n % 600 == 0) tl_log_line("egl: swap #%lu (composited, shared texture)", n);
             return EGL_TRUE;
         }
-        pthread_mutex_lock(&g_tex_lock); EGLContext sctx = g_comp_surf[ci].ctx; pthread_mutex_unlock(&g_tex_lock);
-        const uint8_t *px = read_back(d, s, &w, &h, sctx ? ctx_es_any(sctx) : 3);
+        const uint8_t *px = read_back(d, s, &w, &h, ctx_es_any(a_eglGetCurrentContext()));
         if (px && tl_javaapp_app_pixels) tl_javaapp_app_pixels(px, w, h);
         if (n <= 3 || n % 600 == 0) tl_log_line("egl: swap #%lu (composited)", n);
         return EGL_TRUE;
