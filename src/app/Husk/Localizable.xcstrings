@@ -9921,6 +9921,46 @@
           }
         }
       }
+    },
+    "Graphics": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "图形"
+          }
+        }
+      }
+    },
+    "Vulkan": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vulkan"
+          }
+        }
+      }
+    },
+    "OpenGL ES": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OpenGL ES"
+          }
+        }
+      }
+    },
+    "BetterHusk detects %@ as %@. Pick another only when detection is wrong — a setup or launcher screen can look like a different engine than the game itself, and a wrong driver usually crashes. Graphics decides whether the game is told Vulkan exists here: OpenGL ES hides it, for games that prefer it but then crash. Applies the next time the game starts.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "BetterHusk 检测到 %@ 是 %@。仅在检测错误时才更改——游戏的设置或启动器界面可能使用与实际游戏不同的引擎，而错误的驱动通常会崩溃。“图形”决定是否告知游戏此设备支持 Vulkan：选择 OpenGL ES 会隐藏 Vulkan，适用于那些优先选择 Vulkan 但随后崩溃的游戏。下次启动游戏时生效。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

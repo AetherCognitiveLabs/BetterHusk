@@ -134,8 +134,35 @@ struct TLAppSettings: Codable, Equatable {
     var haptics = true
     /// Geometry Dash only: load Geode, its mod loader (Geode.swift).
     var geode = false
+    /// Whether guest code can open libvulkan.so -- the closest thing to a renderer choice we control: a game that can draw
+    /// with Vulkan and OpenGL ES picks Vulkan when the library answers, OpenGL when it does not (#149). Automatic offers it
+    /// on the paths that use it today plus the ones that may probe it (Java-runtime apps, NativeActivity, Godot).
+    enum Renderer: String, Codable, CaseIterable, Identifiable {
+        case auto, vulkan, gles
+        var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .auto: return "Automatic"
+            case .vulkan: return "Vulkan"
+            case .gles: return "OpenGL ES"
+            }
+        }
+    }
+
     /// Forced runtime driver; automatic is the scan's answer.
     var engine: Engine = .auto
+    /// Forced graphics API; automatic offers Vulkan where the runtime already supports it.
+    var renderer: Renderer = .auto
+
+    /// Whether guest code can open libvulkan.so for this run, given the engine it will run on: forced by Graphics either
+    /// way; automatic offers it on the drivers that can draw with it, and the rest keep their OpenGL ES answer.
+    func vulkan(for engine: TLNativeEngine) -> Bool {
+        switch renderer {
+        case .vulkan: return true
+        case .gles: return false
+        case .auto: return engine == .sdl || engine == .ue4 || engine == .java || engine == .nativeactivity || engine == .godot || engine == .minecraft
+        }
+    }
 
     init() {}
 
@@ -154,6 +181,7 @@ struct TLAppSettings: Codable, Equatable {
         geode = try c.decodeIfPresent(Bool.self, forKey: .geode) ?? false
         window = try c.decodeIfPresent(WindowMode.self, forKey: .window) ?? .auto
         engine = try c.decodeIfPresent(Engine.self, forKey: .engine) ?? .auto
+        renderer = try c.decodeIfPresent(Renderer.self, forKey: .renderer) ?? .auto
     }
 
     private static func url(_ id: String) -> URL {
@@ -242,10 +270,13 @@ struct TLAppSettingsView: View {
                 Picker("Runs as", selection: $settings.engine) {
                     ForEach(TLAppSettings.Engine.allCases) { Text($0.title).tag($0) }
                 }
+                Picker("Graphics", selection: $settings.renderer) {
+                    ForEach(TLAppSettings.Renderer.allCases) { Text($0.title).tag($0) }
+                }
             } header: {
                 Text("Engine")
             } footer: {
-                Text("BetterHusk detects \(app.label) as \(app.report?.nativeEngineName ?? "an unknown engine"). Pick another only when detection is wrong — a setup or launcher screen can look like a different engine than the game itself, and a wrong driver usually crashes. Applies the next time the game starts.")
+                Text("BetterHusk detects \(app.label) as \(app.report?.nativeEngineName ?? "an unknown engine"). Pick another only when detection is wrong — a setup or launcher screen can look like a different engine than the game itself, and a wrong driver usually crashes. Graphics decides whether the game is told Vulkan exists here: OpenGL ES hides it, for games that prefer it but then crash. Applies the next time the game starts.")
             }
 
             Section {

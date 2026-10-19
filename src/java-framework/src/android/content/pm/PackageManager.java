@@ -108,6 +108,10 @@ public class PackageManager {
         if (name.startsWith("android.hardware.touchscreen") || name.equals(FEATURE_FAKETOUCH) || name.equals(FEATURE_SCREEN_PORTRAIT) || name.equals(FEATURE_SCREEN_LANDSCAPE)) return true;
         if (name.equals(FEATURE_WIFI) || name.equals(FEATURE_AUDIO_OUTPUT) || name.equals(FEATURE_OPENGLES_EXTENSION_PACK) || name.equals(FEATURE_SENSOR_ACCELEROMETER)) return true;
         if (name.equals(FEATURE_INPUT_METHODS) || name.equals(FEATURE_GAMEPAD)) return true;
+        // Vulkan tracks whether libvulkan.so actually resolves for the guest (MoltenVK was configured): a setup screen
+        // that asks for android.hardware.vulkan.level, or version, or deqp, hears the same answer it would get by trying it.
+        if (name.startsWith("android.hardware.vulkan.") || name.equals(FEATURE_VULKAN_DEQP_LEVEL) || name.equals(FEATURE_VULKAN_HARDWARE_COMPUTE))
+            return husk.Native.vulkan();
         return false;
     }
     public FeatureInfo[] getSystemAvailableFeatures() { return new FeatureInfo[0]; }

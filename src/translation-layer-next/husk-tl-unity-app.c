@@ -299,6 +299,12 @@ static void *launch_thread(void *arg)
     if (A.engine == ENGINE_UNITY) tl_unity_register_pad_sink();
     else if (A.engine == ENGINE_COCOS) tl_cocos_register_pad_sink();
 
+    /* MoltenVK for whatever the game turns out to be: it used to be wired only into the SDL and Unreal branches, so a game
+     * running on the Java runtime -- or any other driver -- that probes libvulkan.so (a setup screen checking for support,
+     * say) always heard "no Vulkan" (#149). Which engine can draw with it is the game's choice; the app's per-game Graphics
+     * setting decides whether the host names the library at all. */
+    if (A.vulkan[0]) tl_vk_configure(A.vulkan, NULL, 0);
+
     bool ok;
     if (A.engine == ENGINE_GAMEACTIVITY) {
         tl_ga_config cfg = {
@@ -320,8 +326,6 @@ static void *launch_thread(void *arg)
             return NULL;
         }
         for (int i = 0; i < A.nextra; i++) if (!tl_sdl_add_package(A.extra[i])) tl_log_line("sdl: cannot add %s", A.extra[i]);
-        /* SDL games may draw with Vulkan (SDL_WINDOW_VULKAN, or DXVK under a Direct3D port): MoltenVK, when the app named it */
-        if (A.vulkan[0]) tl_vk_configure(A.vulkan, NULL, 0);
         tl_log_line("sdl: starting %s (%s) as %s, %dx%d (Vulkan: %s)", A.apk, activity, A.package, A.width, A.height, A.vulkan[0] ? "yes" : "no");
         tl_audio_install();
         ok = tl_sdl_start(&cfg, activity) && tl_sdl_run();
@@ -386,7 +390,6 @@ static void *launch_thread(void *arg)
             .apk_path = A.apk, .data_dir = A.data, .package_name = A.package, .width = A.width, .height = A.height,
             .metal_layer = A.layer, .angle_egl = A.angle, .angle_gles = NULL, .frame_dir = NULL, .frame_every = 0,
         };
-        if (A.vulkan[0]) tl_vk_configure(A.vulkan, NULL, 0);
         tl_log_line("ue4: starting %s as %s, %dx%d (Vulkan: %s)", A.apk, A.package, A.width, A.height, A.vulkan[0] ? A.vulkan : "none");
         tl_audio_install();
         ok = tl_na_start(&cfg) && tl_na_run();

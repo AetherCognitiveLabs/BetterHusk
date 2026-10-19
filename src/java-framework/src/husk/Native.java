@@ -43,4 +43,5 @@ public final class Native {
     public static native void openUrl(String url);
     public static native void exit();
     public static native long uptimeNanos();
+    public static native boolean vulkan();                // guest code can open libvulkan.so (MoltenVK was configured)
 }
