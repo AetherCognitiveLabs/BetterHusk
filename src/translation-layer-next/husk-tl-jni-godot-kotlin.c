@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <unistd.h>
 
 #include "husk-tl-bionic.h"
@@ -323,6 +324,37 @@ static void unit_fileClose(tl_jcall *c)
     if (fd >= 0) close(fd);
 }
 
+/* ------------------------------------------------- Godot 4.7's other asks */
+
+/* The #140 log's remaining NoSuchMethodError calls: getDrive/getSpaceLeft
+ * landed on GodotNetUtils, multicastLockAcquire/Release on GodotIO, and a
+ * handful of probes on GodotNativeBridge and AssetManager. Each gets a real
+ * or a harmless answer so the engine stops seeing exceptions on its startup
+ * path -- the GLThread SIGSEGV at fault address 0x28 follows a directory
+ * call having returned nonsense it then dereferences. */
+static void void_noop(tl_jcall *c) { c->ret.j = 0; }
+
+/* getDriveCount(access) / getDrive(access, index): the drives the engine
+ * lists its folders on. One suffices -- "user://" is the app's own volume,
+ * and the path goes back through tl_path_resolve the next time the engine
+ * touches it. */
+static void net_driveCount(tl_jcall *c) { (void)c; c->ret.i = 1; }
+static void net_getDrive(tl_jcall *c)
+{
+    c->ret.j = 0;
+    if (c->args[1].i == 0) c->ret.l = tl_jni_new_string("user://");
+}
+
+/* getSpaceLeft(access): free bytes on the volume user:// lives on. Zero or a
+ * failure answer would tell the engine its disk is full. */
+static void net_getSpaceLeft(tl_jcall *c)
+{
+    char host[1100];
+    host_path("user://", host, sizeof(host));
+    struct statvfs v;
+    c->ret.j = statvfs(host, &v) == 0 ? (int64_t)v.f_bavail * (int64_t)v.f_frsize : (int64_t)4 << 30;
+}
+
 /* ------------------------------------------------------- what it installs */
 
 /*
@@ -392,4 +424,18 @@ void tl_godot_kotlin_install(void)
     kf[nf] = (tl_jhle){ NULL, NULL, NULL, NULL };
     tl_jni_register_hle(k);
     tl_jni_register_hle(kf);
+
+    /* The #140 calls that landed on classes the base tables do not cover:
+     * getDrive/getSpaceLeft went to GodotNetUtils, and the multicast lock to
+     * GodotIO. The rest of that log's probes are already answered through the
+     * GodotNativeBridge fanout in tl_godot_hle_install. */
+    static const tl_jhle ke[] = {
+        { "org/godotengine/godot/utils/GodotNetUtils", "getDriveCount", "(I)I", net_driveCount },
+        { "org/godotengine/godot/utils/GodotNetUtils", "getDrive", "(II)Ljava/lang/String;", net_getDrive },
+        { "org/godotengine/godot/utils/GodotNetUtils", "getSpaceLeft", "(I)J", net_getSpaceLeft },
+        { "org/godotengine/godot/GodotIO", "multicastLockAcquire", "()V", void_noop },
+        { "org/godotengine/godot/GodotIO", "multicastLockRelease", "()V", void_noop },
+        { NULL, NULL, NULL, NULL },
+    };
+    tl_jni_register_hle(ke);
 }

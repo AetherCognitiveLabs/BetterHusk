@@ -63,7 +63,15 @@ static void mkdirs(const char *path)
 
 static void IO_dataDir(tl_jcall *c) { c->ret = vl(STR(G.files)); }
 static void IO_cacheDir(tl_jcall *c) { c->ret = vl(STR(G.cache)); }
-static void IO_locale(tl_jcall *c) { c->ret = vl(STR("en_US")); }
+/* The locale the onboarding choice set (husk_tl_set_locale), in Java's ll_RR
+ * form for the engine's translation lookup. */
+static void IO_locale(tl_jcall *c)
+{
+    char tag[72];
+    snprintf(tag, sizeof(tag), "%s", tl_guest_locale_tag());
+    for (char *p = tag; *p; p++) if (*p == '-') *p = '_';
+    c->ret = vl(STR(tag));
+}
 static void IO_model(tl_jcall *c) { c->ret = vl(STR("Pixel 8")); }
 static void IO_dpi(tl_jcall *c) { c->ret = vi(460); }
 static void IO_density(tl_jcall *c) { c->ret = vf(3.0f); }
@@ -316,7 +324,7 @@ static void DA4_next(tl_jcall *c) { shift1(c, DA_next); }
 static void DA4_close(tl_jcall *c) { shift1(c, DA_close); }
 static void DA4_isDir(tl_jcall *c) { shift1(c, DA_isDir); }
 static void DA4_hidden(tl_jcall *c) { shift1(c, DA_hidden); }
-static void DA_spaceLeft(tl_jcall *c) { struct statvfs v; c->ret = vj(statvfs(G.data, &v) == 0 ? (int64_t)v.f_bavail * (int64_t)v.f_frsize : 0); }
+static void DA_spaceLeft(tl_jcall *c) { struct statvfs v; c->ret = vj(statvfs(G.data, &v) == 0 ? (int64_t)v.f_bavail * (int64_t)v.f_frsize : (int64_t)4 << 30); }
 static void DA_drive(tl_jcall *c) { c->ret = vl(STR("")); }
 
 /* ------------------------------------------------------------------ Godot */
