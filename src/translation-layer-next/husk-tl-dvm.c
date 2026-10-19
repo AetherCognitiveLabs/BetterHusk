@@ -1108,6 +1108,10 @@ static void *find_jni(dvm_method *m)
             fn = tl_ld_sym(NULL, sym);
         }
     }
+    /* Only a hit is cached. ART resolves a native anew on every call until one exists, and Dex2C-style libraries
+     * (Balatro's libandroidoyunclub, NetGuard protectors) bind their methods with RegisterNatives inside the
+     * class initializer: a method touched before that runs must not stay "missing" forever. */
+    if (!fn) return NULL;
     m->jni = fn;
     m->jni_looked = true;
     return fn;
