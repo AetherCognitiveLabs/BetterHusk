@@ -56,6 +56,14 @@ and fork-level work:
   RWX-max then demotes to RX via `vm_protect`, and `package_ipa.sh` strips the
   `dynamic-codesigning` entitlement that TrollStore bans under PPL/TXM
   ([Leviidev/Husk#74](https://github.com/Leviidev/Husk/pull/74)).
+- **Per-game engine override** — a "Runs as" picker in each game's settings
+  forces the runtime driver (SDL, Unreal/Vulkan, Godot…), for games whose
+  setup screen runs on a different engine than the game itself
+  ([Leviidev/Husk#149](https://github.com/Leviidev/Husk/issues/149)).
+- **Dex2C timing fix** — a failed JNI native lookup is no longer cached, so
+  methods bound late by `RegisterNatives` (Balatro's protector library)
+  resolve instead of crashing with `UnsatisfiedLinkError`
+  ([Leviidev/Husk#152](https://github.com/Leviidev/Husk/issues/152)).
 - **A real CI** — `.github/workflows/build-ipa.yml` builds a complete,
   verified IPA (with the checksummed PS4 module) on every push to `main` and
   publishes it as a prerelease. Upstream has no CI at all.

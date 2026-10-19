@@ -16,6 +16,8 @@ proven but not merged yet, plus build/release infrastructure upstream lacks.
 | Manifest-based base-APK selection for split bundles | [PR #106](https://github.com/Leviidev/Husk/pull/106) | open |
 | RemotePairing port discovery for built-in StikJIT | [PR #153](https://github.com/Leviidev/Husk/pull/153) | open |
 | W^X-safe xmem dual mapping + TrollStore banned-entitlement stripping | [PR #74](https://github.com/Leviidev/Husk/pull/74) | open |
+| Per-game engine/driver override ("Runs as" picker) | [issue #149](https://github.com/Leviidev/Husk/issues/149) | unaddressed upstream |
+| JNI: no caching of failed native lookups (Dex2C/RegisterNatives timing) | [issue #152](https://github.com/Leviidev/Husk/issues/152) | unaddressed upstream |
 | Bundle ID `com.betterhusk.app`, display name "BetterHusk" | this fork | n/a |
 | `altsource.json` served from this repo | this fork | n/a |
 
@@ -40,11 +42,12 @@ proven but not merged yet, plus build/release infrastructure upstream lacks.
 ## Watch list (upstream issues the fork could tackle next)
 
 - [#143](https://github.com/Leviidev/Husk/issues/143) — Chinese localization
-- [#149](https://github.com/Leviidev/Husk/issues/149) — per-game renderer selection
 - [#146](https://github.com/Leviidev/Husk/issues/146) — HVF acceleration for
   Emulation on M1/M2 iPads (iOS 15.5–16.3)
-- [#152](https://github.com/Leviidev/Husk/issues/152) — Balatro: unresolved
-  Dex2C JNI native method crash
+- [#148](https://github.com/Leviidev/Husk/issues/148) — built-in JIT errors on
+  iOS 16.7 Dopamine/TrollStore
+- [#128](https://github.com/Leviidev/Husk/issues/128) — emulation first boot:
+  `init_user0_failed`, mke2fs fails on /dev/block/vdb
 
 ## Keeping the identity straight
 
