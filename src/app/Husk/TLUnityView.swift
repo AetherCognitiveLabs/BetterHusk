@@ -1036,6 +1036,9 @@ struct TLCocosAttemptView: View {
 extension TLApp {
     /// Geometry Dash and the like are cocos2d-x; Minecraft is built on GameActivity. Both are landscape.
     var screenEngine: TLNativeEngine {
+        // A per-game override beats the scan (settings.json's engine): its first screen can look like another
+        // engine than the game itself, which is how detection picks wrong.
+        if let forced = TLAppSettings.load(id).engine.override { return forced }
         switch report?.nativeEngine {
         case .minecraft: return .minecraft
         case .sdl: return .sdl

@@ -77,6 +77,47 @@ struct TLAppSettings: Codable, Equatable {
         }
     }
 
+    /// Which of the native runtime's drivers runs the game. Automatic trusts the scan; anything else forces it, for games
+    /// whose first screen runs on a different engine than the game itself (a setup or launcher screen on SDL when the game
+    /// needs Vulkan, say), which makes detection pick the wrong driver.
+    enum Engine: String, Codable, CaseIterable, Identifiable {
+        case auto, unity, cocos, minecraft, sdl, gta, ue4, godot, nativeactivity, gamemaker, java, flutter
+        var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .auto: return "Automatic"
+            case .unity: return "Unity"
+            case .cocos: return "Cocos2d-x"
+            case .minecraft: return "Minecraft / GameActivity"
+            case .sdl: return "SDL"
+            case .gta: return "Rockstar"
+            case .ue4: return "Unreal Engine (Vulkan)"
+            case .godot: return "Godot"
+            case .nativeactivity: return "NativeActivity"
+            case .gamemaker: return "GameMaker"
+            case .java: return "Java app"
+            case .flutter: return "Flutter"
+            }
+        }
+        /// nil when automatic: the scan's answer is used.
+        var override: TLNativeEngine? {
+            switch self {
+            case .auto: return nil
+            case .unity: return .unity
+            case .cocos: return .cocos
+            case .minecraft: return .minecraft
+            case .sdl: return .sdl
+            case .gta: return .gta
+            case .ue4: return .ue4
+            case .godot: return .godot
+            case .nativeactivity: return .nativeactivity
+            case .gamemaker: return .gamemaker
+            case .java: return .java
+            case .flutter: return .flutter
+            }
+        }
+    }
+
     var orientation: Orientation = .auto
     var window: WindowMode = .auto
     var resolution: Resolution = .high
@@ -93,6 +134,8 @@ struct TLAppSettings: Codable, Equatable {
     var haptics = true
     /// Geometry Dash only: load Geode, its mod loader (Geode.swift).
     var geode = false
+    /// Forced runtime driver; automatic is the scan's answer.
+    var engine: Engine = .auto
 
     init() {}
 
@@ -110,6 +153,7 @@ struct TLAppSettings: Codable, Equatable {
         haptics = try c.decodeIfPresent(Bool.self, forKey: .haptics) ?? true
         geode = try c.decodeIfPresent(Bool.self, forKey: .geode) ?? false
         window = try c.decodeIfPresent(WindowMode.self, forKey: .window) ?? .auto
+        engine = try c.decodeIfPresent(Engine.self, forKey: .engine) ?? .auto
     }
 
     private static func url(_ id: String) -> URL {
@@ -193,6 +237,18 @@ struct TLAppSettingsView: View {
             } footer: {
                 Text("\(settings.resolution.detail) Orientation and resolution apply the next time the game starts, and a game already "
                    + "running in this session needs Husk closed and opened again.")
+            }
+
+            Section {
+                Picker("Runs as", selection: $settings.engine) {
+                    ForEach(TLAppSettings.Engine.allCases) { Text($0.title).tag($0) }
+                }
+            } header: {
+                Text("Engine")
+            } footer: {
+                Text("BetterHusk detects \(app.label) as \(app.report?.nativeEngineName ?? "an unknown engine"). Pick another only when "
+                   + "detection is wrong — a setup or launcher screen can look like a different engine than the game itself, and a "
+                   + "wrong driver usually crashes. Applies the next time the game starts.")
             }
 
             Section {
