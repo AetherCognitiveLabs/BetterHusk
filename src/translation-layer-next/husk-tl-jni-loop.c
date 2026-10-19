@@ -291,7 +291,7 @@ static jobj *proxy_call(jobj *proxy, const char *iface, const char *name, const 
         proxy_invoke_fn pf = tl_jni_native("com/unity3d/player/ReflectionHelper", "nativeProxyInvoke", "(JLjava/lang/String;[Ljava/lang/Object;)Ljava/lang/Object;");
         if (!pf) return NULL;
         jobj *arr2 = tl_jni_new_obj_array(C("java/lang/Object"), (uint32_t)nargs);
-        for (int i = 0; i < nargs; i++) arr2->oarr.v[i] = tl_jni_ref(args[i]);
+        for (int i = 0; i < nargs; i++) arr2->oarr.v[i] = args[i];
         jobj *nm = tl_jni_new_string(name);
         jobj *r2 = pf(tl_jni_env(), tl_jni_class_object("com/unity3d/player/ReflectionHelper"), tl_jni_get_field(proxy, "handle", "J").j, nm, arr2);
         if (tl_jni_pending()) tl_jni_clear();
@@ -303,7 +303,7 @@ static jobj *proxy_call(jobj *proxy, const char *iface, const char *name, const 
     jobj *icls = tl_jni_class_object(iface);
     jobj *method = tl_jni_reflect_method(icls, name, sig, false);
     jobj *arr = tl_jni_new_obj_array(C("java/lang/Object"), (uint32_t)nargs);
-    for (int i = 0; i < nargs; i++) arr->oarr.v[i] = tl_jni_ref(args[i]);
+    for (int i = 0; i < nargs; i++) arr->oarr.v[i] = args[i];
     int64_t handle = tl_jni_get_field(proxy, "handle", "J").j;
     jobj *r = fn(tl_jni_env(), tl_jni_class_object("bitter/jnibridge/JNIBridge"), handle, icls, method, arr);
     if (tl_jni_pending()) tl_jni_clear();

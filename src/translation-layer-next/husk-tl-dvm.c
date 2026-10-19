@@ -268,7 +268,6 @@ jobj *tl_dvm_string_u16(const uint16_t *s, int32_t n)
     o->str.u16 = malloc((size_t)(n ? n : 1) * 2);
     if (n) memcpy(o->str.u16, s, (size_t)n * 2);
     o->str.len16 = n;
-    o->refs = 1u << 30;
     if (g_string_class) { o->cls = g_string_class; dvm_slots(o); }
     return o;
 }
@@ -276,7 +275,6 @@ jobj *tl_dvm_string_u16(const uint16_t *s, int32_t n)
 jobj *dvm_new_string_utf8(const char *s)
 {
     jobj *o = tl_jni_new_string(s);
-    o->refs = 1u << 30;
     if (g_string_class) { o->cls = g_string_class; dvm_slots(o); }
     return o;
 }
@@ -634,8 +632,8 @@ jvalue *dvm_slots(jobj *o)
 }
 
 /* An object with fewer slots than its class has (made before the class was linked, or through JNI): grown under the lock, to the
- * class's full size, and the old array is kept, not freed -- another thread may be reading it this moment, and a freed array read
- * that way is how a register ends up holding garbage. */
+ * class's full size, and the old array is retired, not freed -- another thread may be reading it this moment, and a freed array
+ * read that way is how a register ends up holding garbage. The collector frees it a round later, once no reader remains. */
 jvalue *dvm_grow_slots(jobj *o, uint32_t need)
 {
     pthread_mutex_lock(&g_lock);
@@ -645,8 +643,10 @@ jvalue *dvm_grow_slots(jobj *o, uint32_t need)
         if (c && c->nslots > nn) nn = c->nslots;
         jvalue *f = calloc(nn, sizeof(jvalue));
         if (o->fields && o->nfields) memcpy(f, o->fields, (size_t)o->nfields * sizeof(jvalue));
+        jvalue *old = o->fields;
         __atomic_store_n(&o->fields, f, __ATOMIC_RELEASE);
         __atomic_store_n(&o->nfields, nn, __ATOMIC_RELEASE);
+        tl_jni_gc_retire(old);                  /* freed at the next collection, after stragglers let go */
     }
     jvalue *r = o->fields;
     pthread_mutex_unlock(&g_lock);
@@ -673,7 +673,6 @@ jvalue *dvm_slots_for(jobj *o, uint32_t slot)
 jobj *dvm_new_object(tl_jclass *jc)
 {
     jobj *o = tl_jni_new_object(jc);
-    o->refs = 1u << 30;
     return o;
 }
 
@@ -1060,8 +1059,11 @@ static bool dvm_call_inner(dvm_method *m, jobj *self, const jvalue *params, jval
         default: regs[r++] = (uint32_t)params[i].i; break;
         }
     }
+    tl_jni_gc_win_push(regs, m->regs);            /* live Java references for the collector */
     bool ok = interpret(m, regs, ret);
-    if (regs != small) free(regs);
+    tl_jni_gc_win_pop();
+    /* the collector may already hold this frame's registers: retire while it scans, free when it does not */
+    if (regs != small) { if (tl_jni_gc_live()) tl_jni_gc_retire(regs); else free(regs); }
     return ok;
 }
 
@@ -1202,7 +1204,8 @@ static bool call_native(dvm_method *m, jobj *self, const jvalue *params, jvalue 
         case 'I': ret->i = (int32_t)r; break;
         case 'J': ret->j = r; break;
         case 'V': ret->j = 0; break;
-        default: ret->l = (void *)(uintptr_t)r; if (ret->l) ((jobj *)ret->l)->refs = 1u << 30; break;
+        /* no pin: the caller's registers name it for the collector, and a pin would keep every native result forever */
+        default: ret->l = (void *)(uintptr_t)r; break;
         }
     }
     return !tl_jni_pending();
@@ -1365,7 +1368,6 @@ static jobj *new_array(tl_jclass *arrcls, int32_t n)
     } else {
         a = tl_jni_new_prim_array(name[1], (uint32_t)n);
     }
-    a->refs = 1u << 30;
     return a;
 }
 
@@ -2054,7 +2056,25 @@ static bool hook_find_field(tl_jclass *jc, const char *name, const char *sig, bo
 }
 static uint32_t hook_slots(tl_jclass *jc) { dvm_class *c = dvm_class_of(jc); return c ? c->nslots : 0; }
 
-static const tl_dvm_hooks k_hooks = { hook_attach, hook_find_method, hook_invoke, hook_find_field, hook_slots };
+/* The collector's interpreter-side roots: string caches the dexes fill, and the reflection objects proxy methods keep. */
+static void hook_gc_class(tl_jclass *jc)
+{
+    dvm_class *c = jc ? jc->dvm : NULL;
+    if (!c) return;
+    for (int i = 0; i < c->ndm; i++) { tl_jni_gc_see(c->dm[i].proxy_method); tl_jni_gc_see(c->dm[i].proxy_throws); }
+    for (int i = 0; i < c->nvm; i++) { tl_jni_gc_see(c->vm[i].proxy_method); tl_jni_gc_see(c->vm[i].proxy_throws); }
+}
+static void hook_gc_roots(void)
+{
+    for (int i = 0; i < g_ndex; i++) {
+        dvm_dex *d = g_dex[i];
+        if (!d) continue;                       /* a dex can be mid-load while the collector walks */
+        for (uint32_t s = 0; s < d->nstr; s++) if (d->scache) tl_jni_gc_see(d->scache[s]);
+    }
+    tl_jni_each_declared(hook_gc_class);
+}
+
+static const tl_dvm_hooks k_hooks = { hook_attach, hook_find_method, hook_invoke, hook_find_field, hook_slots, hook_gc_roots };
 
 static bool g_running;
 
@@ -2139,7 +2159,6 @@ static pthread_mutex_t g_open_lock = PTHREAD_MUTEX_INITIALIZER;
 static jobj *dex_cookie(int first, int count)
 {
     jobj *c = tl_jni_new_prim_array('J', 2);
-    c->refs = 1u << 30;
     ((int64_t *)c->arr.data)[0] = first; ((int64_t *)c->arr.data)[1] = count;
     return c;
 }
@@ -2286,7 +2305,6 @@ static bool DexFile_names(jobj *self, const jvalue *a, jvalue *ret)
     for (int i = first; i < first + count; i++) total += g_dex[i]->ncls;
     jobj *arr = tl_jni_new_obj_array(tl_jni_class("java/lang/String"), total);
     arr->cls = tl_jni_class("[Ljava/lang/String;");
-    arr->refs = 1u << 30;
     uint32_t k = 0;
     for (int i = first; i < first + count; i++) {
         dvm_dex *d = g_dex[i];

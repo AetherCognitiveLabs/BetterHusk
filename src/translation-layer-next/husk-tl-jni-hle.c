@@ -1336,13 +1336,10 @@ void tl_jni_hle_install(void)
         set_str(loc, "language", tl_guest_language());
         set_str(loc, "country",  tl_guest_region());
         set_str(loc, "variant",  "");
-        loc->refs = 1u << 30;
         tl_jni_set_field(H.config, "locale", "Ljava/util/Locale;", vl(loc));
         jobj *arr = tl_jni_new_obj_array(C("java/util/Locale"), 1);
         arr->oarr.v[0] = loc;
-        arr->refs = 1u << 30;
         jobj *ll = make("android/os/LocaleList");
-        ll->refs = 1u << 30;
         tl_jni_set_field(ll, "list", "[Ljava/util/Locale;", vl(arr));
         tl_jni_set_field(ll, "mList", "[Ljava/util/Locale;", vl(arr));
         tl_jni_set_field(H.config, "mLocaleList", "Landroid/os/LocaleList;", vl(ll));

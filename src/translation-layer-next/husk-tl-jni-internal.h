@@ -63,8 +63,20 @@ typedef struct tl_dvm_hooks {
     bool (*find_field)(tl_jclass *jc, const char *name, const char *sig, bool is_static, tl_jclass **decl, uint32_t *slot);
     /* Instance slots an object of the class needs. */
     uint32_t (*instance_slots)(tl_jclass *jc);
+    /* The interpreter's own object roots for the collector (dex string caches, proxy reflection objects). */
+    void (*gc_roots)(void);
 } tl_dvm_hooks;
 extern const tl_dvm_hooks *tl_dvm;
+
+/* The mark/sweep heap (husk-tl-jni.c). The interpreter registers each live frame's registers; the heartbeat collects
+ * under memory pressure or periodically. */
+void tl_jni_gc(void);
+void tl_jni_gc_pressure(uint64_t avail_bytes);
+void tl_jni_gc_win_push(const uint64_t *regs, uint32_t n);
+void tl_jni_gc_win_pop(void);
+bool tl_jni_gc_live(void);                            /* thread-window scan in flight: retire frees, don't free */
+void tl_jni_gc_see(jobj *o);                          /* mark one root -- for the interpreter's gc_roots */
+void tl_jni_gc_retire(void *p);                       /* an array swapped out under live readers: freed next round */
 
 /* Exceptions, for the interpreter. */
 jobj *tl_jni_pending_object(void);

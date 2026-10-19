@@ -96,7 +96,6 @@ bool dvm_proxy_invoke(dvm_method *m, jobj *self, const jvalue *params, jvalue *r
     if (m->nparams > 0) {
         args = tl_jni_new_obj_array(tl_jni_class("java/lang/Object"), (uint32_t)m->nparams);
         args->cls = tl_jni_class("[Ljava/lang/Object;");
-        args->refs = 1u << 30;
         for (int i = 0; i < m->nparams; i++) {
             char k = m->shorty[1 + i];
             jvalue v = params[i];
@@ -180,8 +179,6 @@ NAT(Proxy_generateProxy)
 
     uint32_t nm = methods->oarr.len;
     c->vm = calloc(nm ? nm : 1, sizeof(dvm_method));
-    methods->refs = 1u << 30;
-    if (throws) throws->refs = 1u << 30;
     for (uint32_t i = 0; i < nm; i++) {
         dvm_method *src = dvm_method_of_reflect(methods->oarr.v[i]);
         if (!src) continue;

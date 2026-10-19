@@ -398,7 +398,6 @@ NAT(M_nextPcm)
     int64_t *info = a[1].l ? (int64_t *)((jobj *)a[1].l)->arr.data : NULL;
     if (info) { info[0] = p->pts; info[1] = c->rate; info[2] = c->channels; }
     jobj *arr = tl_jni_new_prim_array('B', (uint32_t)p->len);
-    arr->refs = 1u << 30;
     memcpy(arr->arr.data, p->data, (size_t)p->len);
     free(p->data); free(p);
     *ret = L(arr);

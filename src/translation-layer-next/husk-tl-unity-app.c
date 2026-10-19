@@ -8,6 +8,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <stdatomic.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,6 +23,7 @@
 #include "husk-tl-bionic.h"
 #include "husk-tl-internal.h"
 #include "husk-tl-jni.h"
+#include "husk-tl-jni-internal.h"
 #include "husk-tl-ld.h"
 #include "husk-tl-godot.h"
 #include "husk-tl-unity.h"
@@ -170,9 +172,12 @@ static void *heartbeat_thread(void *arg)
         if (tick < 40) usleep(500000); else sleep(3);          /* twice a second for the first twenty seconds */
         unsigned long f = engine_frames();
 #if TARGET_OS_IPHONE
-        tl_log_line("unity: alive: %lu frames (+%lu), %zu MiB left before jetsam", f, f - last, os_proc_available_memory() >> 20);
+        uint64_t avail = os_proc_available_memory();
+        tl_log_line("unity: alive: %lu frames (+%lu), %zu MiB left before jetsam", f, f - last, avail >> 20);
+        tl_jni_gc_pressure(avail);          /* the interpreter's heap collects what Java can no longer reach */
 #else
         tl_log_line("unity: alive: %lu frames (+%lu)", f, f - last);
+        tl_jni_gc_pressure(UINT64_MAX);
 #endif
         last = f;
         { extern volatile struct { uint64_t count, x21, impl, mask; } tl_va_clobber;

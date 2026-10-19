@@ -135,7 +135,7 @@ static void Signature_getInstance(tl_jcall *c)
     snprintf(sig_of(s)->algo, sizeof(sig_of(s)->algo), "%s", S(c->args[0].l));
     c->ret = vl(s);
 }
-static void Signature_initVerify(tl_jcall *c) { sigstate *st = sig_of(c->self); st->key = c->args[0].l; st->n = 0; }
+static void Signature_initVerify(tl_jcall *c) { sigstate *st = sig_of(c->self); if (st->key) tl_jni_unref(st->key); st->key = tl_jni_ref(c->args[0].l); st->n = 0; }
 static void sig_add(sigstate *st, const uint8_t *p, size_t n)
 {
     if (st->n + n > st->cap) { st->cap = (st->n + n) * 2; st->msg = realloc(st->msg, st->cap); }

@@ -53,7 +53,6 @@ NAT(Object_internalClone)
         c = dvm_new_object(self->cls);
         if (self->nfields) { c->fields = calloc(self->nfields, sizeof(jvalue)); memcpy(c->fields, self->fields, self->nfields * sizeof(jvalue)); c->nfields = self->nfields; }
     }
-    c->refs = 1u << 30;
     *ret = L(c);
     return true;
 }
@@ -191,7 +190,6 @@ NAT(String_toCharArray)
     (void)a;
     int32_t n; const uint16_t *s = chars(self, &n);
     jobj *arr = tl_jni_new_prim_array('C', (uint32_t)n);
-    arr->refs = 1u << 30;
     memcpy(arr->arr.data, s, (size_t)n * 2);
     *ret = L(arr);
     return true;
@@ -344,7 +342,6 @@ NAT(Memory_peekByteArray)
 static jobj *bytes_of(const uint8_t *b, size_t n)
 {
     jobj *arr = tl_jni_new_prim_array('B', (uint32_t)n);
-    arr->refs = 1u << 30;
     memcpy(arr->arr.data, b, n);
     return arr;
 }
@@ -488,7 +485,6 @@ static jobj *string_array(const char *const *v, int n)
 {
     jobj *arr = tl_jni_new_obj_array(tl_jni_class("java/lang/String"), (uint32_t)n);
     arr->cls = tl_jni_class("[Ljava/lang/String;");
-    arr->refs = 1u << 30;
     for (int i = 0; i < n; i++) arr->oarr.v[i] = dvm_new_string_utf8(v[i]);
     return arr;
 }
@@ -555,7 +551,6 @@ NAT(VMR_newArray)
         char nm[400]; snprintf(nm, sizeof(nm), cls->klass.jc->name[0] == '[' ? "[%s" : "[L%s;", cls->klass.jc->name);
         arr->cls = tl_jni_class(nm);
     }
-    arr->refs = 1u << 30;
     *ret = L(arr);
     return true;
 }
@@ -585,7 +580,7 @@ jobj *dvm_current_thread(void)
     if (!c) return NULL;
     jobj *t = dvm_new_object(tc);
     dvm_slots(t);
-    t_thread = t;
+    t_thread = tl_jni_ref(t);           /* ours to keep while the thread lives: a claim the collector respects */
     pthread_mutex_lock(&g_tid_lock);
     pthread_mutex_unlock(&g_tid_lock);
     dvm_class *tg = dvm_class_of(dvm_class_named("java/lang/ThreadGroup"));
@@ -759,20 +754,21 @@ static void *thread_main(void *p)
     if (!lf) { dvm_class *tc = dvm_class_of(dvm_class_named("java/lang/Thread")); lf = tc ? dvm_find_field(tc, "lock", false) : NULL; }
     jobj *lk = lf ? dvm_slots(t)[lf->slot].l : NULL;
     if (lk) { dvm_monitor_enter(lk); dvm_monitor_notify(lk, true); dvm_monitor_exit(lk); }
+    tl_jni_unref(t_thread); t_thread = NULL;    /* the running thread's own object: claim from nativeCreate lapses here */
     return NULL;
 }
 NAT(Thread_nativeCreate)
 {
     (void)self; (void)ret;
     start_arg *s = malloc(sizeof(*s));
-    s->thread = a[0].l;
+    s->thread = tl_jni_ref(a[0].l);             /* claimed until the new thread ends: only the heap arg carries it over */
     dvm_field *pf = s->thread ? thread_peer(s->thread) : NULL;
     if (pf) dvm_slots(s->thread)[pf->slot].j = (int64_t)(uintptr_t)s->thread;     /* alive from here (before it runs: start() then isAlive() is true) */
     pthread_attr_t at; pthread_attr_init(&at);
     pthread_attr_setstacksize(&at, 32u << 20);
     pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
     pthread_t th;
-    if (pthread_create(&th, &at, thread_main, s) != 0) { free(s); return dvm_throw("java/lang/OutOfMemoryError", "pthread_create"); }
+    if (pthread_create(&th, &at, thread_main, s) != 0) { tl_jni_unref(s->thread); free(s); return dvm_throw("java/lang/OutOfMemoryError", "pthread_create"); }
     return true;
 }
 
@@ -796,7 +792,6 @@ NAT(Throwable_fill)
         skip++;
     }
     jobj *arr = tl_jni_new_prim_array('J', (uint32_t)(2 * (n - skip)));
-    arr->refs = 1u << 30;
     int64_t *v = arr->arr.data;
     for (int i = skip; i < n; i++) { v[2 * (i - skip)] = (int64_t)(uintptr_t)fr[i]; v[2 * (i - skip) + 1] = pcs[i]; }
     *ret = L(arr);
@@ -810,7 +805,6 @@ NAT(Throwable_getStack)
     tl_jclass *ec = tl_jni_class("java/lang/StackTraceElement");
     jobj *arr = tl_jni_new_obj_array(ec, (uint32_t)n);
     arr->cls = tl_jni_class("[Ljava/lang/StackTraceElement;");
-    arr->refs = 1u << 30;
     dvm_method *ctor = dvm_find_method(dvm_class_of(ec), "<init>", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;I)V", false);
     const int64_t *v = n ? bt->arr.data : NULL;
     for (int i = 0; i < n && ctor; i++) {
@@ -818,7 +812,6 @@ NAT(Throwable_getStack)
         char cls[512]; snprintf(cls, sizeof(cls), "%s", m->cls->name);
         for (char *p = cls; *p; p++) if (*p == '/') *p = '.';
         jobj *e = dvm_new_object(ec);
-        e->refs = 1u << 30;
         const char *file = dvm_source_file(m->cls);
         jvalue args[4];
         args[0].j = 0; args[0].l = dvm_new_string_utf8(cls);
@@ -936,7 +929,6 @@ void dvm_fill_mirror(jobj *mirror)
         if (n) {
             jobj *t = tl_jni_new_obj_array(tl_jni_class("java/lang/Object"), (uint32_t)(2 * n));
             t->cls = tl_jni_class("[Ljava/lang/Object;");
-            t->refs = 1u << 30;
             for (int i = 0; i < n; i++) t->oarr.v[2 * i] = list[i]->mirror;
             s[f->slot] = L(t);
         }
@@ -1270,7 +1262,6 @@ static jobj *exe_array(dvm_method **list, int n, bool ctor)
 {
     jobj *arr = tl_jni_new_obj_array(tl_jni_class(ctor ? "java/lang/reflect/Constructor" : "java/lang/reflect/Method"), (uint32_t)n);
     arr->cls = tl_jni_class(ctor ? "[Ljava/lang/reflect/Constructor;" : "[Ljava/lang/reflect/Method;");
-    arr->refs = 1u << 30;
     for (int i = 0; i < n; i++) arr->oarr.v[i] = make_executable(list[i]);
     return arr;
 }
@@ -1759,7 +1750,6 @@ NAT(Array_createObjectArray)
     jobj *arr = tl_jni_new_obj_array(cls->klass.jc, (uint32_t)a[1].i);
     char nm[400]; snprintf(nm, sizeof(nm), cls->klass.jc->name[0] == '[' ? "[%s" : "[L%s;", cls->klass.jc->name);
     arr->cls = tl_jni_class(nm);
-    arr->refs = 1u << 30;
     *ret = L(arr);
     return true;
 }
@@ -1769,13 +1759,10 @@ static jobj *multi_array(const char *elem_desc, const int32_t *dims, int ndims)
     char name[400];
     snprintf(name, sizeof(name), "%.*s%s", ndims, "[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[", elem_desc);
     if (ndims == 1) {
-        if (elem_desc[0] != 'L' && elem_desc[0] != '[') { jobj *a = tl_jni_new_prim_array(elem_desc[0], (uint32_t)dims[0]); a->refs = 1u << 30; return a; }
         jobj *a = tl_jni_new_obj_array(NULL, (uint32_t)dims[0]);
-        a->cls = tl_jni_class(name); a->refs = 1u << 30;
         return a;
     }
     jobj *a = tl_jni_new_obj_array(NULL, (uint32_t)dims[0]);
-    a->cls = tl_jni_class(name); a->refs = 1u << 30;
     for (int32_t i = 0; i < dims[0]; i++) a->oarr.v[i] = multi_array(elem_desc, dims + 1, ndims - 1);
     return a;
 }

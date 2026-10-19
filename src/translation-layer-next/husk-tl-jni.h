@@ -48,6 +48,9 @@ struct jobj {
     uint32_t nfields;
     void *native;                       /* an implementation's own state */
     void *monitor;
+    struct jobj *gc_next;               /* the collector's registry chain (husk-tl-jni.c) */
+    uint32_t gcm;                       /* the collection round that last marked it */
+    uint8_t gcq;                        /* unreachable once already: freed if it is again */
 };
 
 /* What an implemented Java method receives. */

@@ -211,7 +211,6 @@ NAT(N_readAsset)
     const uint8_t *d; size_t len; bool owned; char err[160];
     if (!tl_zip_data(z, e, (size_t)1 << 30, &d, &len, &owned, err, sizeof(err))) { *ret = L(NULL); return true; }
     jobj *arr = tl_jni_new_prim_array('B', (uint32_t)len);
-    arr->refs = 1u << 30;
     memcpy(arr->arr.data, d, len);
     if (owned) free((void *)d);
     *ret = L(arr);
@@ -242,7 +241,6 @@ NAT(N_listAssets)
     }
     jobj *arr = tl_jni_new_obj_array(tl_jni_class("java/lang/String"), (uint32_t)n);
     arr->cls = tl_jni_class("[Ljava/lang/String;");
-    arr->refs = 1u << 30;
     for (int i = 0; i < n; i++) { arr->oarr.v[i] = jstr(names[i]); free(names[i]); }
     free(names);
     *ret = L(arr);
@@ -281,7 +279,6 @@ NAT(N_pollInput)
     int n = A.qn / 4;
     if (!n) { pthread_mutex_unlock(&A.q_lock); *ret = L(NULL); return true; }
     jobj *arr = tl_jni_new_prim_array('I', (uint32_t)(1 + A.qn));
-    arr->refs = 1u << 30;
     int32_t *v = arr->arr.data;
     v[0] = n;
     memcpy(v + 1, A.q, (size_t)A.qn * 4);
@@ -330,7 +327,6 @@ NAT(N_splitPaths)
     while (n < 16 && tl_ld_queued_split(n)) n++;
     jobj *arr = tl_jni_new_obj_array(tl_jni_class("java/lang/String"), (uint32_t)n);
     arr->cls = tl_jni_class("[Ljava/lang/String;");
-    arr->refs = 1u << 30;
     for (int i = 0; i < n; i++) arr->oarr.v[i] = jstr(tl_ld_queued_split(i));
     *ret = L(arr);
     return true;
@@ -345,7 +341,6 @@ NAT(N_readApkFile)
     const uint8_t *d; size_t len; bool owned; char err[160];
     if (!tl_zip_data(z, e, (size_t)1 << 30, &d, &len, &owned, err, sizeof(err))) { *ret = L(NULL); return true; }
     jobj *arr = tl_jni_new_prim_array('B', (uint32_t)len);
-    arr->refs = 1u << 30;
     memcpy(arr->arr.data, d, len);
     if (owned) free((void *)d);
     *ret = L(arr);
@@ -409,7 +404,6 @@ NAT(N_pollText)
     if (!n) { pthread_mutex_unlock(&A.t_lock); *ret = L(NULL); return true; }
     jobj *arr = tl_jni_new_obj_array(tl_jni_class("java/lang/String"), (uint32_t)n);
     arr->cls = tl_jni_class("[Ljava/lang/String;");
-    arr->refs = 1u << 30;
     for (int i = 0; i < n; i++) { arr->oarr.v[i] = jstr(A.text[i]); free(A.text[i]); }
     A.ntext = 0;
     pthread_mutex_unlock(&A.t_lock);
@@ -442,7 +436,6 @@ NAT(N_insets)
 {
     (void)self; (void)a;
     jobj *arr = tl_jni_new_prim_array('I', 5);
-    arr->refs = 1u << 30;
     memcpy(arr->arr.data, A.insets, sizeof(A.insets));
     *ret = L(arr);
     return true;

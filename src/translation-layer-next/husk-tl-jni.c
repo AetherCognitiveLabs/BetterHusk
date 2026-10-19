@@ -8,6 +8,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <TargetConditionals.h>
+#include <mach-o/dyld.h>
+#include <mach-o/getsect.h>
 
 #include "husk-tl-bionic.h"
 #include "husk-tl-dexindex.h"
@@ -35,12 +39,21 @@ static uint32_t hash_str(const char *s) { uint32_t h = 2166136261u; while (*s) {
 
 /* --------------------------------------------------------------- objects */
 
+static void gc_track(jobj *o);
+static void gc_drop(jobj *o);
+static void gc_free(jobj *o);
+static struct tl_thr *thr(void);        /* registers the calling thread with the collector */
+static _Atomic uint32_t g_allocs;       /* since the last collection: the pressure trigger's workload signal */
+
 static jobj *obj_alloc(uint8_t kind, tl_jclass *cls)
 {
     jobj *o = calloc(1, sizeof(*o));
     o->refs = 1;
     o->kind = kind;
     o->cls = cls;
+    gc_track(o);
+    atomic_fetch_add_explicit(&g_allocs, 1, memory_order_relaxed);
+    thr();                              /* a thread making objects can also keep them: register it */
     return o;
 }
 
@@ -49,10 +62,138 @@ jobj *tl_jni_ref(jobj *o) { if (o) __atomic_add_fetch(&o->refs, 1, __ATOMIC_RELA
 void tl_jni_unref(jobj *o)
 {
     if (!o || o->kind == TL_K_CLASS) return;
-    /* With the Java runtime up, objects live as long as Java can reach them, which reference counts from native code do not
-     * know about: nothing is freed here (a tracing collector's job). */
-    if (tl_dvm) return;
+    /* With the Java runtime up, objects live as long as Java can reach them: the collector frees them. But a released
+     * claim still lapses -- refs counts what C still holds (a global ref, a cache, a queued message), and an object whose
+     * last claim lapses becomes collectable the moment Java drops it too. */
+    if (tl_dvm) { if (o->refs) __atomic_sub_fetch(&o->refs, 1, __ATOMIC_ACQ_REL); return; }
     if (__atomic_sub_fetch(&o->refs, 1, __ATOMIC_ACQ_REL) != 0) return;
+    gc_drop(o);
+    gc_free(o);
+}
+
+/* ------------------------------------------------------ the mark/sweep heap
+ *
+ * With the interpreter running, Java references are what keeps an object alive and nothing ever freed it -- a busy app
+ * allocated until jetsam (#124). This collector reclaims what is unreachable. An object survives while any of these
+ * can still name it:
+ *   - a claim from C: refs > 1 (a global ref, a cache, a queued message -- the code's own ownership convention), or a pin
+ *   - a class's static fields
+ *   - an interpreter frame's registers, on any live thread
+ *   - a pending exception
+ *   - this image's own writable sections (__DATA __bss/__common/__data): every file-scope C jobj *
+ *   - any registered thread's C stack, scanned word by word
+ * and anything reachable from such an object through fields/array elements/native back-pointers.
+ *
+ * An object must stay unreachable across two whole rounds to die (gcq): a pointer a native is in the middle of storing
+ * somewhere visible -- a just-written register, a just-filled field -- cannot be caught mid-flight.
+ */
+#define TL_PIN (1u << 30)
+
+/* The registry: every live jobj, chained through gc_next by pointer hash. Header and buckets are one block so a reader
+ * can never pair a new capacity with an old array -- the pointer is swapped whole and the old block is retired. */
+typedef struct { uint32_t cap, n; jobj *b[]; } gc_set;
+static _Atomic(gc_set *) g_set;
+static uint32_t gc_epoch;
+static pthread_mutex_t g_gc = PTHREAD_MUTEX_INITIALIZER;
+static _Atomic int g_gc_live;                   /* set while thread register windows are read: frees of them retire then */
+
+/* An array swapped out while the collector (or a slot reader) may still be walking it is retired, never freed in place:
+ * the free lands at the next collection's start, after any such read has long ended. One epoch is the grace window. */
+typedef struct gc_retired { struct gc_retired *next; void *p; } gc_retired;
+static _Atomic(gc_retired *) g_retired;
+
+static void gc_retire(void *p)
+{
+    gc_retired *n = malloc(sizeof(*n));
+    n->p = p;
+    gc_retired *h;
+    do { h = atomic_load(&g_retired); n->next = h; } while (!atomic_compare_exchange_weak(&g_retired, &h, n));
+}
+
+static void gc_drain_retired(void)
+{
+    gc_retired *n = atomic_exchange(&g_retired, NULL);
+    while (n) { gc_retired *nx = n->next; free(n->p); free(n); n = nx; }
+}
+
+void tl_jni_gc_retire(void *p) { if (p) gc_retire(p); }
+
+static uint32_t set_bucket(const gc_set *s, const jobj *o) { return (uint32_t)((((uintptr_t)o) >> 4) * 2654435761u) & (s->cap - 1); }
+
+static void set_grow(void)
+{
+    gc_set *s = atomic_load_explicit(&g_set, memory_order_acquire);
+    uint32_t cap = s ? s->cap * 2 : 1 << 14;
+    gc_set *ns = calloc(1, sizeof(*ns) + (size_t)cap * sizeof(jobj *));
+    ns->cap = cap;
+    if (s) {
+        ns->n = s->n;
+        for (uint32_t i = 0; i < s->cap; i++)
+            for (jobj *o = s->b[i], *nx; o; o = nx) { nx = o->gc_next; uint32_t b = set_bucket(ns, o); o->gc_next = ns->b[b]; ns->b[b] = o; }
+        gc_retire(s);
+    }
+    atomic_store_explicit(&g_set, ns, memory_order_release);
+}
+
+static void set_add(jobj *o)
+{
+    gc_set *s = atomic_load_explicit(&g_set, memory_order_acquire);
+    if (!s || (s->n + 1) * 10 >= s->cap * 7) { set_grow(); s = atomic_load_explicit(&g_set, memory_order_acquire); }
+    uint32_t b = set_bucket(s, o);
+    o->gc_next = s->b[b]; s->b[b] = o; s->n++;
+}
+
+static bool set_has(const jobj *o)
+{
+    gc_set *s = atomic_load_explicit(&g_set, memory_order_acquire);
+    if (!s) return false;
+    for (jobj *x = s->b[set_bucket(s, o)]; x; x = x->gc_next) if (x == o) return true;
+    return false;
+}
+
+static void set_del(jobj *o)
+{
+    gc_set *s = atomic_load_explicit(&g_set, memory_order_acquire);
+    if (!s) return;
+    jobj **pp = &s->b[set_bucket(s, o)];
+    for (jobj *x = *pp; x; pp = &x->gc_next, x = *pp) if (x == o) { *pp = x->gc_next; s->n--; return; }
+}
+
+/* obj_alloc runs with the class lock held in places, so this never blocks on the collection lock: while a collection
+ * is in flight the object queues lock-free instead, and the collector drains the queue itself. (Objects queued this way
+ * cannot have been freed: freeing needs refs to hit 0, which only happens while the interpreter -- and so the collector
+ * -- is not running.) */
+static _Atomic(jobj *) g_pending;
+
+static void gc_drain_locked(void)
+{
+    jobj *p = atomic_exchange(&g_pending, NULL);
+    while (p) { jobj *nx = p->gc_next; set_add(p); p = nx; }
+}
+
+static void gc_track(jobj *o)
+{
+    if (o->kind == TL_K_CLASS) return;         /* classes and their mirrors never die anyway */
+    if (pthread_mutex_trylock(&g_gc) == 0) {
+        gc_drain_locked();
+        set_add(o);
+        pthread_mutex_unlock(&g_gc);
+        return;
+    }
+    jobj *head;
+    do { head = atomic_load(&g_pending); o->gc_next = head; } while (!atomic_compare_exchange_weak(&g_pending, &head, o));
+}
+
+static void gc_drop(jobj *o)
+{
+    if (o->kind == TL_K_CLASS || !atomic_load_explicit(&g_set, memory_order_acquire)) return;
+    pthread_mutex_lock(&g_gc);
+    set_del(o);
+    pthread_mutex_unlock(&g_gc);
+}
+
+static void gc_free(jobj *o)
+{
     switch (o->kind) {
     case TL_K_STRING: free(o->str.utf8); free(o->str.u16); break;
     case TL_K_PRIM_ARRAY: free(o->arr.data); break;
@@ -61,6 +202,202 @@ void tl_jni_unref(jobj *o)
     }
     free(o->fields);
     free(o);
+}
+
+static __thread jobj *t_pending;        /* declared properly below; the thread record roots it */
+
+/* A thread that can hold objects: its pending exception, its interpreter register windows, and its stack. */
+#define TL_GC_WINS 1024                         /* frames deeper than this root through their caller's registers */
+typedef struct tl_thr {
+    struct tl_thr *next;
+    uintptr_t lo, hi;                           /* stack bounds, scanned word by word */
+    jobj **pending;                             /* &t_pending while the thread lives */
+    /* Live interpreter frames' register blocks. Fixed size and never reallocated: the collector reads it while the
+     * owner writes, so entries are published with a release store on nw and read under the matching load. */
+    _Atomic uint32_t nw;
+    uint64_t *wins[TL_GC_WINS]; uint32_t winn[TL_GC_WINS];
+} tl_thr;
+
+static tl_thr *g_thrs;
+static _Thread_local tl_thr *t_thr;
+static pthread_key_t t_key;
+static pthread_once_t t_once = PTHREAD_ONCE_INIT;
+
+static void thr_die(void *p)
+{
+    tl_thr *t = p;
+    pthread_mutex_lock(&g_gc);
+    for (tl_thr **pp = &g_thrs; *pp; pp = &(*pp)->next)
+        if (*pp == t) { *pp = t->next; break; }
+    pthread_mutex_unlock(&g_gc);
+    free(t);
+}
+
+static void thr_init(void) { pthread_key_create(&t_key, thr_die); }
+
+static tl_thr *thr(void)
+{
+    if (t_thr) return t_thr;
+    pthread_once(&t_once, thr_init);
+    tl_thr *t = calloc(1, sizeof(*t));
+    pthread_t me = pthread_self();
+    uintptr_t hi = (uintptr_t)pthread_get_stackaddr_np(me);
+    size_t sz = pthread_get_stacksize_np(me);
+    if (!hi || !sz || sz > (64u << 20)) sz = 0, hi = 0;   /* unanswerable: a thread with no readable stack */
+    t->hi = hi; t->lo = hi - sz;
+    t->pending = &t_pending;
+    pthread_setspecific(t_key, t);
+    pthread_mutex_lock(&g_gc);
+    t->next = g_thrs; g_thrs = t;
+    pthread_mutex_unlock(&g_gc);
+    t_thr = t;
+    return t;
+}
+
+/* The interpreter tells the collector about each live frame's registers (its regs[] is a heap block invisible to a
+ * stack scan). Called on the running thread only. */
+void tl_jni_gc_win_push(const uint64_t *regs, uint32_t n)
+{
+    tl_thr *t = thr();
+    uint32_t d = atomic_load_explicit(&t->nw, memory_order_relaxed);
+    if (d >= TL_GC_WINS) return;                /* deeper frames still see their args through shallower registers */
+    t->wins[d] = (uint64_t *)regs; t->winn[d] = n;
+    atomic_store_explicit(&t->nw, d + 1, memory_order_release);
+}
+void tl_jni_gc_win_pop(void) { if (t_thr && atomic_load_explicit(&t_thr->nw, memory_order_relaxed)) t_thr->nw--; }
+
+/* A register window's free: retire while a scan is (or is about to be) in flight, free outright otherwise. The pop
+ * happens before this check, so a 0 here and a still-visible nw ordered before the collector's nw read can never
+ * coincide -- either the scan already passed the frame, or it never saw the slot. */
+bool tl_jni_gc_live(void) { return atomic_load_explicit(&g_gc_live, memory_order_seq_cst) != 0; }
+
+static jobj **g_wl; static uint32_t g_nwl, g_awl;
+
+static void gc_see(const void *p)
+{
+    jobj *o = (jobj *)p;
+    /* p may be any word that happens to look like a pointer: membership before any dereference. */
+    if (!o || ((uintptr_t)o & 7) || !set_has(o) || o->gcm == gc_epoch) return;
+    o->gcm = gc_epoch;
+    if (g_nwl == g_awl) { g_awl = g_awl ? g_awl * 2 : 4096; g_wl = realloc(g_wl, (size_t)g_awl * sizeof(*g_wl)); }
+    g_wl[g_nwl++] = o;
+}
+
+static void gc_scan_block(const void *p, size_t bytes)
+{
+    for (const uint64_t *w = (const uint64_t *)p, *e = w + bytes / 8; w < e; w++) gc_see((const void *)(uintptr_t)*w);
+}
+
+static void gc_scan_value(jvalue v) { gc_see((const void *)v.l); }
+
+static void gc_expand(jobj *o)
+{
+    if (o->kind == TL_K_OBJ_ARRAY) {
+        for (uint32_t i = 0; i < o->oarr.len; i++) gc_see(o->oarr.v[i]);
+    } else {
+        for (uint32_t i = 0; i < o->nfields; i++) gc_scan_value(o->fields[i]);
+    }
+    gc_see(o->native);                          /* implementations may keep a peer there */
+    gc_see(o->monitor);
+}
+
+static void gc_walk_class(tl_jclass *jc)
+{
+    if (!jc) return;
+    /* count first, then the array (the publisher's order, mirrored): a grown count then implies the grown array */
+    int ns = __atomic_load_n(&jc->nstatics, __ATOMIC_ACQUIRE);
+    jvalue *st = __atomic_load_n(&jc->statics, __ATOMIC_ACQUIRE);
+    for (int i = 0; st && i < ns; i++) gc_scan_value(st[i]);
+    gc_see(jc->mirror);
+}
+
+void tl_jni_gc_see(jobj *o) { gc_see(o); }
+
+static uint32_t gc_freed, gc_live;
+
+void tl_jni_gc(void)
+{
+    if (!tl_dvm) return;
+    static _Atomic int in_gc;
+    if (atomic_exchange(&in_gc, 1)) return;     /* one collection at a time */
+    gc_epoch++;
+    g_nwl = 0;
+    gc_drain_retired();                         /* anything retired since last round can only still be read by the last round's scans */
+
+    /* Roots that need the class lock are taken first, before g_gc is held: threads holding g_lock only ever trylock
+     * g_gc (they queue into g_pending instead of blocking), so this ordering can never deadlock. */
+    tl_jni_each_declared(gc_walk_class);         /* class statics and mirrors */
+    if (tl_dvm->gc_roots) tl_dvm->gc_roots();    /* the interpreter's own (dex caches, proxy reflection objects) */
+    while (g_nwl) gc_expand(g_wl[--g_nwl]);
+
+    pthread_mutex_lock(&g_gc);
+    gc_drain_locked();
+    gc_set *set = atomic_load_explicit(&g_set, memory_order_acquire);
+
+    /* roots: what native code claims it still owns */
+    if (set)
+        for (uint32_t b = 0; b < set->cap; b++)
+            for (jobj *o = set->b[b]; o; o = o->gc_next)
+                if (o->refs > 1) gc_see(o);
+
+    /* roots: every registered thread -- pending exception, interpreter registers, its whole stack. g_gc_live is up for
+     * this stretch so a frame freeing its registers right now retires the block instead of freeing under our scan. */
+    atomic_store_explicit(&g_gc_live, 1, memory_order_seq_cst);
+    for (tl_thr *t = g_thrs; t; t = t->next) {
+        if (t->pending) gc_see(*t->pending);
+        uint32_t nw = atomic_load_explicit(&t->nw, memory_order_acquire);
+        for (uint32_t i = 0; i < nw; i++) gc_scan_block(t->wins[i], (size_t)t->winn[i] * 8);
+        gc_scan_block((const void *)t->lo, (size_t)(t->hi - t->lo));
+    }
+    atomic_store_explicit(&g_gc_live, 0, memory_order_seq_cst);
+
+    /* roots: this binary's own writable sections -- every file-scope/static C jobject */
+#if TARGET_OS_IPHONE || defined(__APPLE__)
+    {
+        extern struct mach_header_64 _mh_execute_header;
+        static const char *secs[] = { "__bss", "__common", "__data" };
+        for (int i = 0; i < 3; i++) {
+            unsigned long sz = 0;
+            const uint64_t *s = (const uint64_t *)getsectdatafromheader_64(&_mh_execute_header, "__DATA", secs[i], &sz);
+            if (s && sz) gc_scan_block(s, sz);
+        }
+    }
+#endif
+
+    /* mark: everything a live object can reach */
+    while (g_nwl) gc_expand(g_wl[--g_nwl]);
+
+    /* sweep: unreachable two rounds running is freed */
+    gc_freed = 0; gc_live = 0;
+    if (set)
+        for (uint32_t b = 0; b < set->cap; b++) {
+            jobj **pp = &set->b[b];
+            for (jobj *o = *pp; o;) {
+                jobj *nx = o->gc_next;
+                if (o->gcm == gc_epoch) { o->gcq = 0; gc_live++; pp = &o->gc_next; o = nx; continue; }
+                if (!o->gcq) { o->gcq = 1; pp = &o->gc_next; o = nx; continue; }
+                *pp = nx; set->n--;
+                gc_free(o);
+                gc_freed++;
+                o = nx;
+            }
+        }
+    if (gc_freed) tl_log_line("jni: gc freed %lu objects (%lu live)", (unsigned long)gc_freed, (unsigned long)gc_live);
+    pthread_mutex_unlock(&g_gc);
+    atomic_store(&in_gc, 0);
+}
+
+/* Called by the heartbeat with what the OS says is left. Collects under memory pressure, and every so often anyway:
+ * the sweep is the only thing standing between a leaky app and jetsam. */
+void tl_jni_gc_pressure(uint64_t avail_bytes)
+{
+    if (!tl_dvm) return;
+    static time_t last;
+    time_t now = time(NULL);
+    if (avail_bytes < (384ull << 20) || now - last >= 90 || g_allocs > 400000) {
+        tl_jni_gc();
+        last = now; g_allocs = 0;
+    }
 }
 
 static tl_jclass *find_class_locked(const char *name)
@@ -379,10 +716,16 @@ static tl_jfield *lookup_field(tl_jclass *cls, const char *name, const char *sig
     tl_jfield *f = calloc(1, sizeof(*f));
     f->cls = cls; f->name = strdup(name); f->sig = strdup(sig); f->is_static = is_static;
     pthread_mutex_lock(&g_lock);
-    f->index = (uint32_t)(is_static ? cls->nstatics++ : cls->nfields - 0);
+    f->index = (uint32_t)(is_static ? cls->nstatics : cls->nfields - 0);
     if (is_static) {
-        cls->statics = realloc(cls->statics, (size_t)cls->nstatics * sizeof(jvalue));
-        memset(&cls->statics[cls->nstatics - 1], 0, sizeof(jvalue));
+        /* grown by copy, old array retired (a scan or a slot reader may hold it), and the count is published last:
+         * a reader that sees the new count must see the new array */
+        jvalue *old = cls->statics, *ns = malloc((size_t)(f->index + 1) * sizeof(jvalue));
+        if (old) memcpy(ns, old, (size_t)f->index * sizeof(jvalue));
+        memset(&ns[f->index], 0, sizeof(jvalue));
+        __atomic_store_n(&cls->statics, ns, __ATOMIC_RELEASE);
+        __atomic_store_n(&cls->nstatics, f->index + 1, __ATOMIC_RELEASE);
+        gc_retire(old);
     } else {
         uint32_t ni = 0;
         for (int i = 0; i < cls->nfields; i++) if (!cls->fields[i]->is_static) ni++;
@@ -397,7 +740,10 @@ static tl_jfield *lookup_field(tl_jclass *cls, const char *name, const char *sig
 static jvalue *field_slot(jobj *o, tl_jfield *f)
 {
     if (f->detached) return &f->dval;
-    if (f->is_static) return &f->cls->statics[f->index];
+    if (f->is_static) {
+        jvalue *st = __atomic_load_n(&f->cls->statics, __ATOMIC_ACQUIRE);
+        return &st[f->index];                   /* a retired array still answers, an epoch of grace */
+    }
     /* an interpreter object's slots are its own: never grown from here */
     if (tl_dvm) {
         /* count before array, as the interpreter's writers publish them (dvm_slots_for) */
@@ -471,13 +817,16 @@ static jvalue g_zero;
 
 static jvalue invoke(jobj *self, tl_jmeth *m, bool nonvirtual, const jvalue *args)
 {
+    thr();                                              /* a native thread calling in registers for the collector */
     if (m->dvm && tl_dvm) {
         jvalue r = tl_dvm->invoke(m->dvm, self, nonvirtual, args);
         if (g_trace >= 3) {
             tl_log_line("jni: java call %s.%s%s on %p -> %#llx%s", m->cls->name, m->name, m->sig, (void *)self, (unsigned long long)r.j, t_pending ? " (threw)" : "");
             if (t_pending) jni_ExceptionDescribe(NULL);
         }
-        if (m->retk == 'L' && r.l && ((jobj *)r.l)->kind != TL_K_CLASS) tl_jni_ref(r.l);
+        /* A reference for the caller, while callers release: with the interpreter up the collector sees what Java
+         * still names, and handout references would pin every returned object forever. */
+        if (!tl_dvm && m->retk == 'L' && r.l && ((jobj *)r.l)->kind != TL_K_CLASS) tl_jni_ref(r.l);
         return r;
     }
     tl_jcall c = { .self = self, .cls = m->cls, .args = args };
@@ -496,7 +845,7 @@ static jvalue invoke(jobj *self, tl_jmeth *m, bool nonvirtual, const jvalue *arg
         /* A method that returns an object hands the caller a new local reference. The implementations
          * return objects they keep (the Activity, the Display), so without this a caller releasing its
          * reference would free an object that is still in use. */
-        if (m->retk == 'L' && c.ret.l && ((jobj *)c.ret.l)->kind != TL_K_CLASS) tl_jni_ref(c.ret.l);
+        if (!tl_dvm && m->retk == 'L' && c.ret.l && ((jobj *)c.ret.l)->kind != TL_K_CLASS) tl_jni_ref(c.ret.l);
         return c.ret;
     }
     if (!m->warned) {
@@ -641,7 +990,7 @@ static jo jni_ExceptionOccurred(void *env)
 {
     static __thread jobj *t_seen;
     if (t_pending && g_trace >= 1 && t_pending != t_seen) { t_seen = t_pending; jni_ExceptionDescribe(env); }
-    return tl_jni_ref(t_pending);
+    return tl_dvm ? t_pending : tl_jni_ref(t_pending);
 }
 static void jni_ExceptionDescribe(void *env)
 {
@@ -913,7 +1262,7 @@ static jo jni_ToReflectedField(void *env, jo cls, void *fid, uint8_t is_static)
     return fid ? reflected("java/lang/reflect/Field", fid) : NULL;
 }
 
-#define REF_Object(x) ((jo)tl_jni_ref((jo)(x)))
+#define REF_Object(x) ((jo)(tl_dvm ? (jo)(x) : tl_jni_ref((jo)(x))))
 #define REF_Boolean(x) (x)
 #define REF_Byte(x) (x)
 #define REF_Char(x) (x)
@@ -1017,16 +1366,16 @@ static jo jni_NewObjectArray(void *env, int32_t len, jo cls, jo init)
 {
     (void)env;
     jo a = tl_jni_new_obj_array(cls ? cls->klass.jc : NULL, (uint32_t)len);
-    for (int32_t i = 0; init && i < len; i++) a->oarr.v[i] = tl_jni_ref(init);
+    for (int32_t i = 0; init && i < len; i++) a->oarr.v[i] = tl_dvm ? init : tl_jni_ref(init);
     return a;
 }
-static jo jni_GetObjectArrayElement(void *env, jo a, int32_t i) { (void)env; return (a && i >= 0 && (uint32_t)i < a->oarr.len) ? tl_jni_ref(a->oarr.v[i]) : NULL; }
+static jo jni_GetObjectArrayElement(void *env, jo a, int32_t i) { (void)env; return (a && i >= 0 && (uint32_t)i < a->oarr.len) ? (tl_dvm ? a->oarr.v[i] : tl_jni_ref(a->oarr.v[i])) : NULL; }
 static void jni_SetObjectArrayElement(void *env, jo a, int32_t i, jo v)
 {
     (void)env;
     if (!a || i < 0 || (uint32_t)i >= a->oarr.len) return;
-    tl_jni_unref(a->oarr.v[i]);
-    a->oarr.v[i] = tl_jni_ref(v);
+    if (!tl_dvm) { tl_jni_unref(a->oarr.v[i]); a->oarr.v[i] = tl_jni_ref(v); }  /* refs balance while counting rules */
+    else a->oarr.v[i] = v;                                                   /* the array itself is the owner */
 }
 
 #define PRIM_ARRAYS(X) \

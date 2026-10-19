@@ -336,13 +336,14 @@ static void store_job_run(void *arg)
         void (*fn)(void *, void *, int64_t, void *) = store_native("onQueryProductsSuccess");
         if (fn) fn(env, j->listener, ptr, tl_jni_new_obj_array(C("com/mojang/minecraftpe/store/Product"), 0));
     }
+    tl_jni_unref(j->listener);
     free(j);
 }
 static void store_post(jobj *store, int what)
 {
     jobj *l = store ? tl_jni_get_field(store, "listener", "Ljava/lang/Object;").l : NULL;
     if (!l) return;
-    store_job *j = malloc(sizeof(*j)); j->listener = l; j->what = what;
+    store_job *j = malloc(sizeof(*j)); j->listener = tl_jni_ref(l); j->what = what;   /* heap job: the collector's root */
     tl_ga_post(store_job_run, j);
 }
 

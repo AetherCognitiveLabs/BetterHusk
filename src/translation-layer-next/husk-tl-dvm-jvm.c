@@ -45,7 +45,6 @@ static void *J_NativeLoad(void *env, jobj *filename, void *loader)
     if (f && tl_dvm_load_library(f)) return NULL;
     char msg[600]; snprintf(msg, sizeof(msg), "dlopen failed: library \"%s\" not found", f ? f : "?");
     jobj *s = tl_jni_new_string(msg);
-    s->refs = 1u << 30;
     return s;
 }
 static void J_Sync(void) { sync(); }

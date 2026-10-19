@@ -229,7 +229,6 @@ static jobj *value_object(dvm_dex *d, const uint8_t **pp, const char *want)
         const char *elem = want && want[0] == '[' ? want + 1 : NULL;
         if (elem && elem[0] && !elem[1] && strchr("BSCIJFDZ", elem[0])) {
             jobj *arr = tl_jni_new_prim_array(elem[0], n);
-            arr->refs = 1u << 30;
             for (uint32_t i = 0; i < n; i++) {
                 jvalue v = prim_value(pp, elem[0]);
                 uint8_t *dst = (uint8_t *)arr->arr.data + (size_t)i * arr->arr.esz;
@@ -248,7 +247,6 @@ static jobj *value_object(dvm_dex *d, const uint8_t **pp, const char *want)
         if (elem && elem[0] == 'L') snprintf(an, sizeof(an), "[%s", elem); else if (elem) snprintf(an, sizeof(an), "[%s", elem); else snprintf(an, sizeof(an), "[Ljava/lang/Object;");
         jobj *arr = tl_jni_new_obj_array(ec, n);
         arr->cls = tl_jni_class(an);
-        arr->refs = 1u << 30;
         for (uint32_t i = 0; i < n; i++) arr->oarr.v[i] = value_object(d, pp, elem);
         return arr;
     }
@@ -284,7 +282,6 @@ static jobj *make_annotation(dvm_dex *d, const uint8_t **pp)
     }
     jobj *members = tl_jni_new_obj_array(mc, n);
     members->cls = tl_jni_class("[Llibcore/reflect/AnnotationMember;");
-    members->refs = 1u << 30;
     uint32_t k = 0;
     for (uint32_t i = 0; i < n; i++) {
         const char *name = dvm_dex_str(d, uleb(&p));
@@ -309,7 +306,6 @@ static jobj *make_annotation(dvm_dex *d, const uint8_t **pp)
         tl_jni_clear();
         return NULL;
     }
-    if (r.l) ((jobj *)r.l)->refs = 1u << 30;
     return r.l;
 }
 
@@ -317,7 +313,6 @@ static jobj *annotation_array(uint32_t n)
 {
     jobj *arr = tl_jni_new_obj_array(tl_jni_class("java/lang/annotation/Annotation"), n);
     arr->cls = tl_jni_class("[Ljava/lang/annotation/Annotation;");
-    arr->refs = 1u << 30;
     return arr;
 }
 
@@ -379,7 +374,6 @@ static jobj *class_array(uint32_t n)
 {
     jobj *arr = tl_jni_new_obj_array(tl_jni_class("java/lang/Class"), n);
     arr->cls = tl_jni_class("[Ljava/lang/Class;");
-    arr->refs = 1u << 30;
     return arr;
 }
 
@@ -498,7 +492,6 @@ NAT(An_Exe_getParameterAnnotations)
     int np = m ? m->nparams : 0;
     jobj *outer = tl_jni_new_obj_array(tl_jni_class("[Ljava/lang/annotation/Annotation;"), (uint32_t)np);
     outer->cls = tl_jni_class("[[Ljava/lang/annotation/Annotation;");
-    outer->refs = 1u << 30;
     const uint8_t *list = m && m->cls && m->cls->dex ? member_set(m->cls, 2, m->idx) : NULL;
     uint32_t n = list ? rd32(list) : 0;
     for (int i = 0; i < np; i++) {

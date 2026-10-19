@@ -673,7 +673,6 @@ NAT(W_poll)
     if (!n) { pthread_mutex_unlock(&g_ev_lock); *ret = L(NULL); return true; }
     jobj *arr = tl_jni_new_obj_array(tl_jni_class("java/lang/String"), (uint32_t)n);
     arr->cls = tl_jni_class("[Ljava/lang/String;");
-    arr->refs = 1u << 30;
     for (int i = 0; i < n; i++) { arr->oarr.v[i] = dvm_new_string_utf8(g_ev[i]); free(g_ev[i]); }
     g_nev = 0;
     pthread_mutex_unlock(&g_ev_lock);
