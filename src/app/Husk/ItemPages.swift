@@ -391,6 +391,12 @@ struct PS4GamePage: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            Section {
+                HuskLink(value: LibraryRoute.ps4Report(game.titleID)) {
+                    Label("Technical Details", systemImage: "cpu")
+                }
+            }
+
             Section("About") {
                 LabeledContent("Runs With", value: "Husk's PS4 layer")
                 LabeledContent("Title ID", value: game.titleID)

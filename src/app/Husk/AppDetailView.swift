@@ -9,6 +9,7 @@ enum LibraryRoute: Hashable {
     case game(String)
     case gameSettings(String)
     case gameReport(String)
+    case ps4Report(String)        // a PS4 game's technical page, by title ID
     case androidSystem
     case ps4(String)              // a PS4 game, by title ID
 }

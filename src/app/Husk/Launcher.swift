@@ -1166,6 +1166,8 @@ private struct LibraryRouteView: View {
             AndroidSystemPage()
         case .ps4(let id):
             if let game = PS4Store.shared.game(id) { PS4GamePage(game: game) } else { GoneView() }
+        case .ps4Report(let id):
+            if let game = PS4Store.shared.game(id) { PS4TechnicalView(game: game) } else { GoneView() }
         }
     }
 }

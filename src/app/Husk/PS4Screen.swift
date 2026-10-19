@@ -48,6 +48,7 @@ final class PS4SurfaceView: UIView {
 
     private func launch(_ game: PS4Game, width: Int, height: Int) {
         launched = true
+        PS4Model.lastError = nil
         guard let module = PS4Store.moduleURL else { HuskLog.log("ps4", "libhuskps4.dylib is not in this build"); return }
         let fm = FileManager.default
         try? fm.createDirectory(at: game.dataDir, withIntermediateDirectories: true)

@@ -105,7 +105,7 @@ struct TLTechnicalView: View {
                     .frame(maxHeight: 320)
                     Button { sharing = true } label: { Label("Share Log", systemImage: "square.and.arrow.up") }
                 } else {
-                    Text(log == nil ? "Reading…" : "No log yet. It is written the first time the game runs.")
+                    Text((log == nil ? "Reading…" : "No log yet. It is written the first time the game runs.").l10n)
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             } header: {
@@ -164,4 +164,77 @@ struct TLTechnicalView: View {
     }
 
     private func bytes(_ n: Int64) -> String { ByteCountFormatter.string(fromByteCount: n, countStyle: .file) }
+}
+
+// MARK: - a PS4 game's details
+
+/// A PS4 game's technical page: which layer runs it, and the end of the log
+/// the last run wrote to the game's data folder (native-run.log). The PS4
+/// page used to promise this ("the game's Technical Details") without
+/// linking anywhere (#145 -- a game that will not start gives nothing to
+/// report without its log).
+struct PS4TechnicalView: View {
+    let game: PS4Game
+
+    @State private var log: String?
+    @State private var sharing = false
+
+    private var logURL: URL { game.dataDir.appendingPathComponent("native-run.log") }
+
+    var body: some View {
+        List {
+            Section("Runtime") {
+                row("Runs With", "Husk's PS4 layer")
+                row("Title ID", game.titleID, mono: true)
+                row("Version", game.version ?? "—")
+                if let error = PS4Model.lastError, !error.isEmpty {
+                    Text(error.l10n).font(.footnote).foregroundStyle(.orange)
+                }
+            }
+
+            Section {
+                if let log, !log.isEmpty {
+                    ScrollView(.horizontal) {
+                        Text(log)
+                            .font(.system(size: 10, design: .monospaced))
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: true, vertical: false)
+                            .padding(.vertical, 4)
+                    }
+                    .frame(maxHeight: 320)
+                    Button { sharing = true } label: { Label("Share Log", systemImage: "square.and.arrow.up") }
+                } else {
+                    Text((log == nil ? "Reading…" : "No log yet. It is written the first time the game runs.").l10n)
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+            } header: {
+                Text("Last Run")
+            } footer: {
+                Text("The end of the log from the last time the game started. Share it when reporting a problem.")
+            }
+        }
+        .listStyle(.insetGrouped)
+        .navigationTitle("Technical Details")
+        .navigationBarTitleDisplayMode(.inline)
+        .task {
+            let url = logURL
+            log = await Task.detached(priority: .utility) {
+                (try? String(contentsOf: url, encoding: .utf8)).map { full -> String in
+                    full.split(separator: "\n", omittingEmptySubsequences: false).suffix(200).joined(separator: "\n")
+                } ?? ""
+            }.value
+        }
+        .sheet(isPresented: $sharing) { ShareSheet(items: [logURL]) }
+    }
+
+    private func row(_ label: String, _ value: String, mono: Bool = false) -> some View {
+        LabeledContent {
+            Text(value.l10n)
+                .font(mono ? .system(.footnote, design: .monospaced) : .body)
+                .multilineTextAlignment(.trailing)
+                .textSelection(.enabled)
+        } label: {
+            Text(label.l10n).lineLimit(2)
+        }
+    }
 }

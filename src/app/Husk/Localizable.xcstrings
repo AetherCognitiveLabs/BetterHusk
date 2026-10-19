@@ -4762,6 +4762,16 @@
         }
       }
     },
+    "No log yet. It is written the first time the game runs.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂无日志。游戏首次运行时会生成日志。"
+          }
+        }
+      }
+    },
     "None": {
       "localizations": {
         "zh-Hans": {
@@ -5617,6 +5627,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "可以启动"
+          }
+        }
+      }
+    },
+    "Reading…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "读取中…"
           }
         }
       }
