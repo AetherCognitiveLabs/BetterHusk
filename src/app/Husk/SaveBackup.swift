@@ -77,7 +77,7 @@ enum SaveBackup {
         let zip = try ZipReader(zipURL)
         guard let mdata = try zip.data(manifestName),
               let manifest = try JSONSerialization.jsonObject(with: mdata) as? [String: Any] else {
-            throw Failure("That file is not a Husk save backup.")
+            throw Failure("That file is not a BetterHusk save backup.")
         }
         let pkg = manifest["package"] as? String ?? ""
         if let mine = app.packageName, !pkg.isEmpty, pkg != mine {
@@ -229,7 +229,7 @@ private final class ZipReader {
     deinit { try? file.close() }
 
     private func start(_ e: Entry) throws -> UInt64 {
-        guard e.method == 0 else { throw SaveBackup.Failure("That backup was recompressed by another app; Husk reads only the backups it makes.") }
+        guard e.method == 0 else { throw SaveBackup.Failure("That backup was recompressed by another app; BetterHusk reads only the backups it makes.") }
         try file.seek(toOffset: e.local)
         let h = [UInt8](try file.read(upToCount: 30) ?? Data())
         guard h.count == 30 else { throw SaveBackup.Failure("That backup is damaged.") }

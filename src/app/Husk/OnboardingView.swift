@@ -130,7 +130,7 @@ struct OnboardingView: View {
             if step != .ask {
                 VStack(spacing: 14) {
                     dots
-                    Button(step == .tour && tourPage == Self.tour.count - 1 ? "Start Using Husk" : "Continue") { next() }
+                    Button(step == .tour && tourPage == Self.tour.count - 1 ? "Start Using BetterHusk" : "Continue") { next() }
                         .buttonStyle(PrimaryButtonStyle())
                 }
                 .padding(.horizontal, 28)
@@ -197,7 +197,7 @@ struct OnboardingView: View {
         case .welcome: welcome
         case .language:
             picker(symbol: "globe", title: "Language",
-                   subtitle: "The language apps and games inside Husk see. Husk itself follows your iPhone.",
+                   subtitle: "The language apps and games inside BetterHusk see. BetterHusk itself follows your iPhone.",
                    rows: Self.languages, selection: $language)
         case .region:
             picker(symbol: "map.fill", title: "Region",
@@ -238,7 +238,7 @@ struct OnboardingView: View {
         VStack(spacing: 18) {
             Spacer()
             HuskMark(size: 110)
-            Text("Welcome to Husk")
+            Text("Welcome to BetterHusk")
                 .font(.system(size: 34, weight: .bold))
             Text("Android and PS4 games, on your iPhone.")
                 .font(.title3).foregroundStyle(.secondary)
@@ -319,7 +319,7 @@ struct OnboardingView: View {
                 .padding(16)
                 .huskCard()
 
-                choice(icon: "bolt.fill", title: "Start Android When Husk Opens",
+                choice(icon: "bolt.fill", title: "Start Android When BetterHusk Opens",
                        detail: "Off by default. The full Android emulator is experimental: starting it on launch can cause unwanted "
                              + "bugs, freezes and crashes, and slows every launch. Games and apps don't need it.",
                        isOn: $autoStart, caution: true)
@@ -362,8 +362,8 @@ struct OnboardingView: View {
         // Inside LiveContainer nothing here is "in place" until JIT is actually on -- the container's own
         // switch is what the setup page explains, so the button keeps reading "Set Up JIT".
         if JITBootstrap.isInsideLiveContainer { return nil }
-        if jit.method == .stikDebug { return "Husk will use StikDebug." }
-        if jit.method == .trollStore { return "Husk will use TrollStore." }
+        if jit.method == .stikDebug { return "BetterHusk will use StikDebug." }
+        if jit.method == .trollStore { return "BetterHusk will use TrollStore." }
         switch jit.pairingSource {
         case .onDevice: return "Paired on this device."
         case .imported: return "Pairing file imported."
@@ -377,7 +377,7 @@ struct OnboardingView: View {
                    JITBootstrap.isInsideLiveContainer
                    ? "Games need JIT, which iOS only grants to an attached debugger. BetterHusk runs inside LiveContainer, "
                      + "so JIT is LiveContainer's to give -- its own launch options, or an attached debugger."
-                   : "Games need JIT, which iOS only grants to an attached debugger. StikJIT is built into Husk and turns it on from "
+                   : "Games need JIT, which iOS only grants to an attached debugger. StikJIT is built into BetterHusk and turns it on from "
                      + "inside the app, with no computer. StikDebug and TrollStore work too.")
             if let state = jitState {
                 Label(state.l10n, systemImage: JITBootstrap.ready ? "checkmark.circle.fill" : "shippingbox")
@@ -387,7 +387,7 @@ struct OnboardingView: View {
             Button(jitState == nil ? (JITBootstrap.isInsideLiveContainer ? "Set Up JIT" : "Set Up StikJIT Now") : "Change JIT Setup") { settingUpJIT = true }
                 .font(.body.weight(.semibold))
                 .foregroundStyle(Theme.accent)
-            Text("You can skip this: Husk asks again when a game needs it, and it is in Settings › JIT & Sideload.")
+            Text("You can skip this: BetterHusk asks again when a game needs it, and it is in Settings › JIT & Sideload.")
                 .font(.footnote).foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 36)
@@ -398,7 +398,7 @@ struct OnboardingView: View {
     private var ask: some View {
         VStack(spacing: 18) {
             Spacer()
-            header("map.circle.fill", "Would you like a walkthrough?", "A quick look at how Husk works: where your games are, how to add more, and where the settings live.")
+            header("map.circle.fill", "Would you like a walkthrough?", "A quick look at how BetterHusk works: where your games are, how to add more, and where the settings live.")
             Spacer()
             VStack(spacing: 12) {
                 Button("Show Me Around") {
@@ -428,14 +428,14 @@ struct OnboardingView: View {
                      + "game for its options. The dot shows how it runs: green plays, orange opens, red is broken."),
         TourCard(symbol: "plus.circle.fill", title: "Adding Games",
                  text: "Tap + to add an Android APK or bundle (.xapk, .apkm, .apks), or a PS4 game: a fake package (.pkg), a folder of "
-                     + "them, or an extracted game folder. You can also share files to Husk from Files or Safari."),
+                     + "them, or an extracted game folder. You can also share files to BetterHusk from Files or Safari."),
         TourCard(symbol: "cart.fill", title: "Store",
-                 text: "Browse and download Android apps from Google Play, with a guest account or your own, and see how each runs in Husk."),
+                 text: "Browse and download Android apps from Google Play, with a guest account or your own, and see how each runs in BetterHusk."),
         TourCard(symbol: "bolt.fill", title: "Settings & JIT",
                  text: "Games need JIT. Turn it on from Home or Settings › JIT & Sideload. Settings also has performance, appearance, "
                      + "input, and the optional full Android emulator."),
         TourCard(symbol: "questionmark.circle.fill", title: "Help",
-                 text: "Stuck? Settings › Help answers the common problems, and a game that crashes Husk leaves a report to share."),
+                 text: "Stuck? Settings › Help answers the common problems, and a game that crashes BetterHusk leaves a report to share."),
     ]
 
     private func tourCard(_ card: TourCard) -> some View {

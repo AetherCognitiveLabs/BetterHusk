@@ -122,7 +122,7 @@ struct AppDetailView: View {
             Section {
                 LabeledContent("Version", value: live.version ?? "—")
                 LabeledContent("Size", value: live.sizeBytes.map(Self.bytes) ?? "—")
-                LabeledContent("Last Used", value: live.lastUsed.map(Self.when) ?? "Never from Husk")
+                LabeledContent("Last Used", value: live.lastUsed.map(Self.when) ?? "Never from BetterHusk")
             }
 
             Section {

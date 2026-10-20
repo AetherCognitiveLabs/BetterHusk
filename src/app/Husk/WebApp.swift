@@ -245,7 +245,7 @@ final class WebAppRuntime: NSObject {
         case ("StatusBar", _), ("SplashScreen", _), ("Keyboard", _):
             ok()
         default:
-            fail(String(localized: "\(plugin).\(method) is not implemented in Husk"))
+            fail(String(localized: "\(plugin).\(method) is not implemented in BetterHusk"))
         }
     }
 

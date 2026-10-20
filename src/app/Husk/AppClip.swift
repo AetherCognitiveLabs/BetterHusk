@@ -59,9 +59,9 @@ enum AppClip {
             "PayloadVersion": 1,
             "PayloadIdentifier": "app.husk.clip.\(safe(app.id))",
             "PayloadUUID": outer,
-            "PayloadDisplayName": "\(app.label) (Husk)",
-            "PayloadDescription": String(localized: "Puts \(app.label) on your Home Screen. It opens in Husk."),
-            "PayloadOrganization": "Husk",
+            "PayloadDisplayName": "\(app.label) (BetterHusk)",
+            "PayloadDescription": String(localized: "Puts \(app.label) on your Home Screen. It opens in BetterHusk."),
+            "PayloadOrganization": "BetterHusk",
             "PayloadRemovalDisallowed": false,
             "PayloadContent": [payload],
         ]

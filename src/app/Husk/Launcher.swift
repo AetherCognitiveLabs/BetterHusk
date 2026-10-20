@@ -222,7 +222,7 @@ struct HomeView: View {
 
     private var topBar: some View {
         HStack(spacing: 10) {
-            Text("Husk")
+            Text("BetterHusk")
                 .font(.system(size: 24, weight: .heavy, design: .rounded))
                 .foregroundStyle(.white)
                 .fixedSize()
@@ -376,8 +376,8 @@ struct HomeView: View {
                     .font(.system(size: 26, weight: .heavy))
                     .foregroundStyle(Console.text)
                 Text(router.platform == .ps4
-                     ? "Put an extracted PS4 game folder in Files, in Husk's PS4 Games folder, or add one with the + in the menu."
-                     : "Add an APK or a bundle from the menu, or share one to Husk.")
+                     ? "Put an extracted PS4 game folder in Files, in BetterHusk's PS4 Games folder, or add one with the + in the menu."
+                     : "Add an APK or a bundle from the menu, or share one to BetterHusk.")
                     .font(.subheadline)
                     .foregroundStyle(Console.textDim)
                     .fixedSize(horizontal: false, vertical: true)
@@ -632,7 +632,7 @@ private struct DownloadsNotice: View {
             return String(localized: "\(running.count) downloading") + pct
         }
         if downloads.jobs.contains(where: \.failed) { return "A download failed" }
-        if let release = updates.available { return String(localized: "Husk \(release.version) is out") }
+        if let release = updates.available { return String(localized: "BetterHusk \(release.version) is out") }
         if guest.update.isSomething { return "Android update ready" }
         return nil
     }
@@ -672,7 +672,7 @@ private struct WelcomeCard: View {
                 Text("Add your first game")
                     .font(.system(size: 26, weight: .heavy))
                     .foregroundStyle(Console.text)
-                Text("Pick an APK or a bundle (.xapk, .apkm, .apks), or share one to Husk from Files or Safari. Games run straight on your iPhone. Other apps run inside Android. PS4 games are extracted folders put in Husk's PS4 Games folder.")
+                Text("Pick an APK or a bundle (.xapk, .apkm, .apks), or share one to BetterHusk from Files or Safari. Games run straight on your iPhone. Other apps run inside Android. PS4 games are extracted folders put in BetterHusk's PS4 Games folder.")
                     .font(.subheadline)
                     .foregroundStyle(Console.textDim)
                     .fixedSize(horizontal: false, vertical: true)
@@ -827,7 +827,7 @@ struct LibraryScreen: View {
                     if router.platform != .android {
                         section("PlayStation 4", playstation,
                                 empty: router.platform == .ps4 && query.isEmpty
-                                    ? (PS4Store.available ? "Put an extracted game folder in Husk's PS4 Games folder in Files."
+                                    ? (PS4Store.available ? "Put an extracted game folder in BetterHusk's PS4 Games folder in Files."
                                                           : "PS4 games need iOS 17.4 or later.")
                                     : nil)
                     }
@@ -1026,7 +1026,7 @@ private struct RemoveItemDialog: ViewModifier {
     private var removeTitle: String { String(localized: "\(removeVerb) \(item.title)?") }
     private var removeMessage: String {
         if case .app = item { return String(localized: "It is uninstalled from Android, with its data.") }
-        return String(localized: "Its files and saved progress are deleted from Husk.")
+        return String(localized: "Its files and saved progress are deleted from BetterHusk.")
     }
 }
 

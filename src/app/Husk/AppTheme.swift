@@ -22,7 +22,7 @@ final class AppTheme: ObservableObject {
     static let husk = Color(red: 0.353, green: 0.322, blue: 0.945)
 
     static let presets: [Preset] = [
-        Preset(id: "husk", name: "Husk", color: husk),
+        Preset(id: "husk", name: "BetterHusk", color: husk),
         Preset(id: "blue", name: "Blue", color: .blue),
         Preset(id: "purple", name: "Purple", color: .purple),
         Preset(id: "pink", name: "Pink", color: .pink),

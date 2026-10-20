@@ -32,7 +32,7 @@ final class CrashReport: ObservableObject {
             switch self {
             case .signal: return "The game crashed"
             case .startFailed: return "The game could not start"
-            case .unknown: return "Husk closed while the game was running"
+            case .unknown: return "BetterHusk closed while the game was running"
             case .diagnosed(let d): return d.title
             }
         }
@@ -46,7 +46,7 @@ final class CrashReport: ObservableObject {
             case .startFailed:
                 return "The runtime could not start it. The report says which part was missing."
             case .unknown:
-                return "Nothing was recorded, which usually means iOS ended Husk for using too much memory, or Husk was closed from the app switcher."
+                return "Nothing was recorded, which usually means iOS ended BetterHusk for using too much memory, or BetterHusk was closed from the app switcher."
             case .diagnosed(let d):
                 return d.detail
             }
@@ -153,12 +153,12 @@ final class CrashReport: ObservableObject {
     static func writeReport(_ r: Report) -> URL? {
         let info = Bundle.main.infoDictionary ?? [:]
         var text = """
-        Husk crash report
+        BetterHusk crash report
         =================
         Game     : \(r.game)
         What     : \(r.cause.title)
         Started  : \(r.when.map { ISO8601DateFormatter().string(from: $0) } ?? "?")
-        Husk     : \(info["CFBundleShortVersionString"] as? String ?? "?") (\(info["CFBundleVersion"] as? String ?? "?")) \(info["HuskBuildCommit"] as? String ?? "")
+        BetterHusk     : \(info["CFBundleShortVersionString"] as? String ?? "?") (\(info["CFBundleVersion"] as? String ?? "?")) \(info["HuskBuildCommit"] as? String ?? "")
         Device   : \(HuskLog.deviceModel), \(UIDevice.current.systemName) \(UIDevice.current.systemVersion)
 
         """
@@ -172,7 +172,7 @@ final class CrashReport: ObservableObject {
         text += "\n---- native output of that run ----\n"
         text += (try? String(contentsOf: HuskLog.previousNativeLogURL, encoding: .utf8)) ?? "(none)\n"
         let safe = r.game.replacingOccurrences(of: "/", with: "-")
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("Husk crash report - \(safe).txt")
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("BetterHusk crash report - \(safe).txt")
         do { try text.write(to: url, atomically: true, encoding: .utf8) } catch { return nil }
         return url
     }

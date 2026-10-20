@@ -252,7 +252,7 @@ struct TLAppSettingsView: View {
                 }
                 .padding(.vertical, 2)
             } footer: {
-                Text("What the game is called in Husk. The game itself is not changed.")
+                Text("What the game is called in BetterHusk. The game itself is not changed.")
             }
 
             Section {
@@ -267,7 +267,7 @@ struct TLAppSettingsView: View {
             } header: {
                 Text("Display")
             } footer: {
-                Text("\(settings.resolution.detail) Orientation and resolution apply the next time the game starts, and a game already running in this session needs Husk closed and opened again.")
+                Text("\(settings.resolution.detail) Orientation and resolution apply the next time the game starts, and a game already running in this session needs BetterHusk closed and opened again.")
             }
 
             Section {
@@ -286,7 +286,7 @@ struct TLAppSettingsView: View {
             Section {
                 Toggle("Diagnostics", isOn: $settings.diagnostics)
             } footer: {
-                Text("For a game that runs in Husk's own Java runtime: every touch writes the window it went to and the view that answered, and the view tree is printed every few seconds — all into the run log, which Technical Details can share. Leave it off while playing normally; the writes cost a little speed.")
+                Text("For a game that runs in BetterHusk's own Java runtime: every touch writes the window it went to and the view that answered, and the view tree is printed every few seconds — all into the run log, which Technical Details can share. Leave it off while playing normally; the writes cost a little speed.")
             }
 
             Section {
@@ -298,7 +298,7 @@ struct TLAppSettingsView: View {
             } header: {
                 Text("Multitasking")
             } footer: {
-                Text("In a window, \(app.label) runs over Husk: move it by its title bar, resize it from the corner, and minimise it to the dock at the edge of the screen while you use the rest of Husk.")
+                Text("In a window, \(app.label) runs over BetterHusk: move it by its title bar, resize it from the corner, and minimise it to the dock at the edge of the screen while you use the rest of BetterHusk.")
             }
 
             Section {
@@ -316,7 +316,7 @@ struct TLAppSettingsView: View {
                 } header: {
                     Text("Mods")
                 } footer: {
-                    Text("Geode is the mod loader for Geometry Dash. With it on, Husk downloads Geode for this version of the game, and mods are found and installed in the game itself, from Geode's button on the main menu. Applies the next time the game starts.")
+                    Text("Geode is the mod loader for Geometry Dash. With it on, BetterHusk downloads Geode for this version of the game, and mods are found and installed in the game itself, from Geode's button on the main menu. Applies the next time the game starts.")
                 }
             }
 
@@ -344,7 +344,7 @@ struct TLAppSettingsView: View {
             } header: {
                 Text("Home Screen")
             } footer: {
-                Text("Puts \(app.label) on your Home Screen with its own icon. Tapping it opens Husk straight into the game. Husk downloads a profile: open Settings, tap Profile Downloaded, then Install.")
+                Text("Puts \(app.label) on your Home Screen with its own icon. Tapping it opens BetterHusk straight into the game. BetterHusk downloads a profile: open Settings, tap Profile Downloaded, then Install.")
             }
 
             Section {
@@ -356,7 +356,7 @@ struct TLAppSettingsView: View {
             } header: {
                 Text("Data")
             } footer: {
-                Text(inUse ? "The game is loaded in this session. Close Husk completely and open it again to reset its data."
+                Text(inUse ? "The game is loaded in this session. Close BetterHusk completely and open it again to reset its data."
                            : "Deletes what the game saved and downloaded here: saves, settings and caches. The game itself stays.")
             }
         }

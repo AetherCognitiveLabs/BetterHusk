@@ -13,7 +13,7 @@ extension TLReport {
     var runnerName: String {
         if runsOnNativeRuntime { return nativeEngineName }
         if let web = webKind { return String(localized: "\(web.name) (web app)") }
-        return canRun ? "Java (Husk's interpreter)" : "None"
+        return canRun ? "Java (BetterHusk's interpreter)" : "None"
     }
 }
 
@@ -89,7 +89,7 @@ struct TLTechnicalView: View {
                 } header: {
                     Text("Native Libraries (\(arm64.count))")
                 } footer: {
-                    Text("How each 64-bit library maps onto the iPhone: its relocations, the instructions Husk rewrites, and anything the loader works around.")
+                    Text("How each 64-bit library maps onto the iPhone: its relocations, the instructions BetterHusk rewrites, and anything the loader works around.")
                 }
             }
 
@@ -184,7 +184,7 @@ struct PS4TechnicalView: View {
     var body: some View {
         List {
             Section("Runtime") {
-                row("Runs With", "Husk's PS4 layer")
+                row("Runs With", "BetterHusk's PS4 layer")
                 row("Title ID", game.titleID, mono: true)
                 row("Version", game.version ?? "—")
                 if let error = PS4Model.lastError, !error.isEmpty {

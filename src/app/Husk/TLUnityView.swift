@@ -850,7 +850,7 @@ struct TLCocosAttemptView: View {
                     VStack(spacing: 8) {
                         Text("Another game is already loaded")
                             .font(.system(size: 16, weight: .semibold)).foregroundStyle(.white)
-                        Text("\(other) was started in this session, and a game cannot be unloaded once it has started. Close Husk completely and open it again to run \(app.label).")
+                        Text("\(other) was started in this session, and a game cannot be unloaded once it has started. Close BetterHusk completely and open it again to run \(app.label).")
                             .font(.system(size: 13)).foregroundStyle(.white.opacity(0.7))
                             .multilineTextAlignment(.center).frame(maxWidth: 460)
                     }

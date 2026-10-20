@@ -88,14 +88,14 @@ struct JITCard: View {
         }
         switch offered {
         case .trollStore:
-            return "TrollStore can turn JIT on for Husk: it opens Husk and enables it, with no computer. "
+            return "TrollStore can turn JIT on for BetterHusk: it opens BetterHusk and enables it, with no computer. "
                  + "In TrollStore's Settings, URL Scheme must be on."
         case .jailbreak:
-            return "On a jailbroken device JIT is a setting. In Dopamine, turn on Allow JIT in Apps, then open Husk again."
+            return "On a jailbroken device JIT is a setting. In Dopamine, turn on Allow JIT in Apps, then open BetterHusk again."
         case .stikDebug:
-            return "StikDebug is installed, so Husk will open it to turn JIT on."
+            return "StikDebug is installed, so BetterHusk will open it to turn JIT on."
         default:
-            return "StikJIT is built into Husk. You can turn JIT on right here — no computer and no other app. "
+            return "StikJIT is built into BetterHusk. You can turn JIT on right here — no computer and no other app. "
                  + "Games and Android both need it."
         }
     }

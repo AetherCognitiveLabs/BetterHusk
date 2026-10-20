@@ -111,7 +111,7 @@ enum JITBootstrap {
             lastFailure = "The debugger is attached but is not answering trap "
                         + "requests, and this device will not execute a MAP_JIT "
                         + "mapping either, so no executable memory could be "
-                        + "claimed. This is what happens when Husk runs inside "
+                        + "claimed. This is what happens when BetterHusk runs inside "
                         + "another container app rather than sideloaded on its own."
         }
         HuskLog.log("jit", ok ? "JIT region secured; it will be handed to QEMU later"
@@ -418,7 +418,7 @@ enum JITBootstrap {
         }
 
         HuskLog.log("jit", "opening stikjit:// for bundle \(bundleID); "
-                         + "Husk will be backgrounded and relaunched after attach")
+                         + "BetterHusk will be backgrounded and relaunched after attach")
         UIApplication.shared.open(launchURL)
         return true
     }

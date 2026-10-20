@@ -30,7 +30,7 @@ import UserNotifications
     static let shared = OnDevicePairing()
 
     /// Shown on the iPhone as "Pair with Husk"; the host identifier is derived from it.
-    static let hostName = "Husk"
+    static let hostName = "BetterHusk"
     static let timeout: TimeInterval = 300
 
     enum Phase: Equatable {
@@ -79,7 +79,7 @@ import UserNotifications
         guard Self.isSupported, !active, session == nil else { return }
         var error: UnsafeMutablePointer<CChar>?
         guard let session = husk_rppairing_new(Self.hostName, &error) else {
-            fail(Self.take(error) ?? "Husk could not open its pairing port.")
+            fail(Self.take(error) ?? "BetterHusk could not open its pairing port.")
             return
         }
         self.session = session
@@ -139,11 +139,11 @@ import UserNotifications
         phase = .pin(pin)
         log("code shown")
         if #available(iOS 26.0, *), let task = continued as? BGContinuedProcessingTask {
-            task.updateTitle(String(localized: "Pairing code \(pin)"), subtitle: String(localized: "Enter it on this \(Self.deviceKind) to pair with Husk"))
+            task.updateTitle(String(localized: "Pairing code \(pin)"), subtitle: String(localized: "Enter it on this \(Self.deviceKind) to pair with BetterHusk"))
             task.progress.completedUnitCount = 1
         }
         if UIApplication.shared.applicationState != .active {
-            notify(String(localized: "Husk pairing code: \(pin)"), body: String(localized: "Enter this code on your \(Self.deviceKind) to finish pairing."))
+            notify(String(localized: "BetterHusk pairing code: \(pin)"), body: String(localized: "Enter this code on your \(Self.deviceKind) to finish pairing."))
         }
     }
 
@@ -161,11 +161,11 @@ import UserNotifications
                 phase = .paired(device: device ?? String(localized: "this \(Self.deviceKind)"))
                 log("paired")
                 if UIApplication.shared.applicationState != .active {
-                    notify(String(localized: "Paired with Husk"), body: String(localized: "Return to Husk to finish setting up JIT."))
+                    notify(String(localized: "Paired with BetterHusk"), body: String(localized: "Return to BetterHusk to finish setting up JIT."))
                 }
                 endBackground(success: true)
             } catch {
-                fail(String(localized: "Pairing finished, but Husk could not save the pairing file."))
+                fail(String(localized: "Pairing finished, but BetterHusk could not save the pairing file."))
             }
         case 2:
             endBackground(success: false)
@@ -222,8 +222,8 @@ import UserNotifications
         guard active else { return }
         log("advertising failed error=\(error)")
         fail(error == DNSServiceErrorType(kDNSServiceErr_PolicyDenied)
-             ? "Husk needs Local Network access to pair. Allow it in Settings › Apps › Husk, then try again."
-             : "Husk could not announce itself on the local network. Check that Wi-Fi is on, then try again.")
+             ? "BetterHusk needs Local Network access to pair. Allow it in Settings › Apps › BetterHusk, then try again."
+             : "BetterHusk could not announce itself on the local network. Check that Wi-Fi is on, then try again.")
     }
 
     private func stopAdvertising() {
@@ -241,11 +241,11 @@ import UserNotifications
     }
 
     private func beginBackground() {
-        grace = UIApplication.shared.beginBackgroundTask(withName: "Husk pairing") {
+        grace = UIApplication.shared.beginBackgroundTask(withName: "BetterHusk pairing") {
             MainActor.assumeIsolated {
                 let pairing = OnDevicePairing.shared
                 if pairing.continued == nil && pairing.active {
-                    pairing.cancel(reason: "iOS stopped Husk in the background before pairing finished. "
+                    pairing.cancel(reason: "iOS stopped BetterHusk in the background before pairing finished. "
                                          + "Try again, and pair from Settings straight away.")
                 }
                 pairing.endGrace()
@@ -265,7 +265,7 @@ import UserNotifications
             guard ok else { log("register refused"); backgroundLimited = true; return }
             registered = identifier
         }
-        let request = BGContinuedProcessingTaskRequest(identifier: identifier, title: String(localized: "Pairing with Husk"),
+        let request = BGContinuedProcessingTaskRequest(identifier: identifier, title: String(localized: "Pairing with BetterHusk"),
                                                        subtitle: String(localized: "Settings › Privacy & Security › Developer Mode"))
         request.strategy = .fail
         do {
@@ -283,7 +283,7 @@ import UserNotifications
         continued = task
         task.progress.totalUnitCount = 2
         if case .pin(let pin) = phase {
-            task.updateTitle(String(localized: "Pairing code \(pin)"), subtitle: String(localized: "Enter it on this \(Self.deviceKind) to pair with Husk"))
+            task.updateTitle(String(localized: "Pairing code \(pin)"), subtitle: String(localized: "Enter it on this \(Self.deviceKind) to pair with BetterHusk"))
             task.progress.completedUnitCount = 1
         }
         task.expirationHandler = {

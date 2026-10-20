@@ -168,7 +168,7 @@ private struct AppWindow: View {
         } else if let other = blockedBy {
             VStack(spacing: 6) {
                 Text("Another game is already loaded").font(.subheadline.weight(.semibold))
-                Text("\(other) was started in this session. Close Husk completely and open it again to run \(app.label).")
+                Text("\(other) was started in this session. Close BetterHusk completely and open it again to run \(app.label).")
                     .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
             }
             .foregroundStyle(.white)

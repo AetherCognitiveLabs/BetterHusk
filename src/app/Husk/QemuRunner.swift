@@ -2019,7 +2019,7 @@ final class QemuRunner: ObservableObject {
                         Task { @MainActor in
                             QemuRunner.shared.setupMessage =
                                 "Android's data partition failed to build — "
-                              + "restarting Husk will reset it automatically"
+                              + "restarting BetterHusk will reset it automatically"
                         }
                     }
 

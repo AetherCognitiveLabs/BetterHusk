@@ -56,7 +56,7 @@ struct DownloadsTab: View {
                 } footer: {
                     VStack(alignment: .leading, spacing: 6) {
                         if downloads.liveActivitiesOff {
-                            Text("Live Activities are off for Husk, so downloads don't show on the Lock Screen or in the Dynamic Island. Turn them on in Settings › Husk › Live Activities.")
+                            Text("Live Activities are off for BetterHusk, so downloads don't show on the Lock Screen or in the Dynamic Island. Turn them on in Settings › BetterHusk › Live Activities.")
                                 .foregroundStyle(.orange)
                         }
                         if let free = Downloads.freeSpace() { Text("\(Downloads.bytes(free)) free on this device.") }
@@ -78,7 +78,7 @@ struct DownloadsTab: View {
         Section("Updates") {
             if let release = updates.available {
                 HStack {
-                    Label("Husk \(release.version)", systemImage: "arrow.down.app.fill")
+                    Label("BetterHusk \(release.version)", systemImage: "arrow.down.app.fill")
                     Spacer()
                     Button("View") { UIApplication.shared.open(release.page) }.buttonStyle(.bordered)
                 }
@@ -171,7 +171,7 @@ private struct AddDownloadSheet: View {
                     Text("python3 serve-folder.py <folder>")
                         .font(.system(.footnote, design: .monospaced))
                         .textSelection(.enabled)
-                    Text("serve-folder.py is in Husk's repository, under tools. The folder's contents land at the top of Shared Storage, so serve the folder that holds what a game expects there.")
+                    Text("serve-folder.py is in BetterHusk's repository, under tools. The folder's contents land at the top of Shared Storage, so serve the folder that holds what a game expects there.")
                 } header: {
                     Text("How it works")
                 }

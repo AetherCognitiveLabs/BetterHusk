@@ -97,12 +97,12 @@ extension TLReport {
         let flagged = libraries.filter { $0.abi == "arm64-v8a" && $0.status != "ok" }.count
         let total = libraries.filter { $0.abi == "arm64-v8a" }.count
         var text = nativeEngine == .flutter
-            ? String(localized: "A Flutter app. Its engine and its compiled Dart run natively through Husk's translation layer, which loads its \(total) arm64 libraries itself.")
+            ? String(localized: "A Flutter app. Its engine and its compiled Dart run natively through BetterHusk's translation layer, which loads its \(total) arm64 libraries itself.")
             : nativeEngine == .java && engine != "libGDX"
-            ? String(localized: "An Android app. Husk runs its code on its own Java runtime") + (total > 0 ? String(localized: " and loads its \(total) arm64 libraries itself.") : ".")
-            : String(localized: "A \(nativeEngineName) game. It runs through Husk's native runtime, which loads its \(total) arm64 libraries itself.")
-        if nativeEngine == .cocos || nativeEngine == .minecraft || nativeEngine == .ue4 || nativeEngine == .gta { text += " " + String(localized: "It is a landscape game: Husk turns the screen for it.") }
-        else if nativeEngine == .sdl || nativeEngine == .nativeactivity || nativeEngine == .godot || nativeEngine == .gamemaker { text += " " + String(localized: "Husk turns the screen the way the game asks for.") }
+            ? String(localized: "An Android app. BetterHusk runs its code on its own Java runtime") + (total > 0 ? String(localized: " and loads its \(total) arm64 libraries itself.") : ".")
+            : String(localized: "A \(nativeEngineName) game. It runs through BetterHusk's native runtime, which loads its \(total) arm64 libraries itself.")
+        if nativeEngine == .cocos || nativeEngine == .minecraft || nativeEngine == .ue4 || nativeEngine == .gta { text += " " + String(localized: "It is a landscape game: BetterHusk turns the screen for it.") }
+        else if nativeEngine == .sdl || nativeEngine == .nativeactivity || nativeEngine == .godot || nativeEngine == .gamemaker { text += " " + String(localized: "BetterHusk turns the screen the way the game asks for.") }
         if flagged > 0 {
             text += " " + String(localized: "\(flagged) of them use tricks the older loader could not handle; the native runtime handles those too, except for optional anti-tamper code, which it leaves out.")
         }
@@ -397,7 +397,7 @@ final class TranslationLayerStore: ObservableObject {
         } catch {
             try? fm.removeItem(at: dir)
             HuskLog.log("tl", "FAILED to add: \(error.localizedDescription)")
-            return String(localized: "Husk could not copy it: \(error.localizedDescription)")
+            return String(localized: "BetterHusk could not copy it: \(error.localizedDescription)")
         }
 
         let apks = orderedAPKs(((try? fm.contentsOfDirectory(atPath: dir.path)) ?? [])
@@ -581,7 +581,7 @@ struct TLChecksView: View {
         } header: {
             Text("Where it stands")
         } footer: {
-            Text("The plan, in order, is docs/04-translation-layer.md in Husk's source.")
+            Text("The plan, in order, is docs/04-translation-layer.md in BetterHusk's source.")
         }
     }
 }

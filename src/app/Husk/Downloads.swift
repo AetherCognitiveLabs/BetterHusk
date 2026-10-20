@@ -255,7 +255,7 @@ final class Downloads: ObservableObject {
         if DownloadKeepAlive.shared.running { HuskLog.log("downloads", "leaving the screen; kept running, downloads carry on"); return }
         awake = false
         if grace == .invalid {
-            grace = UIApplication.shared.beginBackgroundTask(withName: "Husk downloads") {
+            grace = UIApplication.shared.beginBackgroundTask(withName: "BetterHusk downloads") {
                 MainActor.assumeIsolated { Downloads.shared.endGrace() }
             }
         }
@@ -821,7 +821,7 @@ enum ContinuedDownload {
         if active.isEmpty {
             let failed = jobs.contains { $0.failed }
             t.progress.completedUnitCount = t.progress.totalUnitCount
-            t.updateTitle(failed ? String(localized: "Download stopped") : String(localized: "Download finished"), subtitle: failed ? String(localized: "Open Husk to retry") : (jobs.first?.title ?? ""))
+            t.updateTitle(failed ? String(localized: "Download stopped") : String(localized: "Download finished"), subtitle: failed ? String(localized: "Open BetterHusk to retry") : (jobs.first?.title ?? ""))
             t.setTaskCompleted(success: !failed)
             task = nil
             HuskLog.log("downloads", "background task completed")

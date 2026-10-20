@@ -77,7 +77,7 @@ final class MassTest: ObservableObject {
 
     func start() {
         guard let files = Self.apks(), !files.isEmpty else { status = "Put APKs in the DeveloperTesting folder first."; return }
-        guard !ranThisProcess, husk_native_loaded_apk() == nil else { status = "Close Husk and open it again to start: a game was already loaded in this run."; return }
+        guard !ranThisProcess, husk_native_loaded_apk() == nil else { status = "Close BetterHusk and open it again to start: a game was already loaded in this run."; return }
         ranThisProcess = true
         state = State(queue: files, index: 0, results: [], appIDs: [:], launched: false, startedAt: Date())
         save()
@@ -97,7 +97,7 @@ final class MassTest: ObservableObject {
     func retestFailures() {
         let files = failures
         guard !files.isEmpty else { status = "No failures to retest."; return }
-        guard !ranThisProcess, husk_native_loaded_apk() == nil else { status = "Close Husk and open it again to start: a game was already loaded in this run."; return }
+        guard !ranThisProcess, husk_native_loaded_apk() == nil else { status = "Close BetterHusk and open it again to start: a game was already loaded in this run."; return }
         ranThisProcess = true
         let ids = state?.appIDs ?? [:]
         state = State(queue: files, index: 0, results: [], appIDs: ids, launched: false, startedAt: Date())
@@ -121,11 +121,11 @@ final class MassTest: ObservableObject {
         if s.launched {
             // Played in the last run and never written down: Husk did not survive it.
             let file = s.queue[s.index]
-            var outcome = "Husk closed without a record (iOS memory limit, or swiped away)"
+            var outcome = "BetterHusk closed without a record (iOS memory limit, or swiped away)"
             var diagnosis = ""
             var lines = Self.crashBlock(of: CrashReport.previousLogURL) + ["--- end of that run's log ---"] + Self.tail(of: CrashReport.previousLogURL, 60)
             if let r = crash.pending {
-                outcome = String(localized: "Husk crashed: \(r.cause.title)")
+                outcome = String(localized: "BetterHusk crashed: \(r.cause.title)")
                 diagnosis = r.cause.detail
                 if !r.excerpt.isEmpty { lines = r.excerpt }
             }
@@ -157,7 +157,7 @@ final class MassTest: ObservableObject {
                 let urls = Self.files(of: file)
                 id = await Task.detached(priority: .userInitiated) { TranslationLayerStore.importCopy(urls) }.value
             }
-            guard let appID = id else { record(file: file, app: nil, outcome: "Could not be imported (not an APK Husk can read)", frames: 0, seconds: 0); return }
+            guard let appID = id else { record(file: file, app: nil, outcome: "Could not be imported (not an APK BetterHusk can read)", frames: 0, seconds: 0); return }
             s.appIDs[file] = appID
             state = s
             save()
@@ -271,7 +271,7 @@ final class MassTest: ObservableObject {
         let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd HH:mm"
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
         let commit = Bundle.main.object(forInfoDictionaryKey: "HuskBuildCommit") as? String ?? "?"
-        var out = "Husk mass test -- build \(build) (\(commit)), \(UIDevice.current.model) iOS \(UIDevice.current.systemVersion)\n"
+        var out = "BetterHusk mass test -- build \(build) (\(commit)), \(UIDevice.current.model) iOS \(UIDevice.current.systemVersion)\n"
         out += "Started \(f.string(from: s.startedAt)); \(s.results.count) of \(s.queue.count) tested\n\n"
         for r in s.results { out += "\(r.outcome.padding(toLength: 44, withPad: " ", startingAt: 0))  \(r.file)  [\(r.engine)]\n" }
         for r in s.results {
@@ -305,7 +305,7 @@ struct MassTestView: View {
                 if let files {
                     Text(files.isEmpty ? String(localized: "The DeveloperTesting folder is empty.") : String(localized: "\(files.count) apps in DeveloperTesting."))
                 } else {
-                    Text("Make a folder named DeveloperTesting in Husk's folder (Files > On My iPhone > Husk) and put the APKs to test in it: an APK each, or a folder per app with its base and split APKs.")
+                    Text("Make a folder named DeveloperTesting in BetterHusk's folder (Files > On My iPhone > BetterHusk) and put the APKs to test in it: an APK each, or a folder per app with its base and split APKs.")
                         .foregroundStyle(.secondary)
                 }
                 if let s = test.state {
@@ -313,7 +313,7 @@ struct MassTestView: View {
                 }
                 if !test.status.isEmpty { Text(test.status.l10n).font(.caption).foregroundStyle(.secondary) }
             } footer: {
-                Text("Each app is played once JIT is on, watched for 15 seconds, and written down; then Husk closes. Open Husk again for the next one. At the end the results file is offered to share.")
+                Text("Each app is played once JIT is on, watched for 15 seconds, and written down; then BetterHusk closes. Open BetterHusk again for the next one. At the end the results file is offered to share.")
             }
             Section {
                 if test.active {

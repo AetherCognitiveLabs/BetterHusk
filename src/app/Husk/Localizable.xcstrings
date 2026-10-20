@@ -111,12 +111,12 @@
         }
       }
     },
-    "%@ Orientation and resolution apply the next time the game starts, and a game already running in this session needs Husk closed and opened again.": {
+    "%@ Orientation and resolution apply the next time the game starts, and a game already running in this session needs BetterHusk closed and opened again.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "%@ 方向和分辨率将在下次启动游戏时生效；本次会话中已运行的游戏需要关闭并重新打开 Husk。"
+            "value": "%@ 方向和分辨率将在下次启动游戏时生效；本次会话中已运行的游戏需要关闭并重新打开 BetterHusk。"
           }
         }
       }
@@ -131,12 +131,12 @@
         }
       }
     },
-    "%@ closed the app on purpose (%@). Apps with anti-tamper or anti-cheat protection do this when they find they are not on a certified Android phone, which Husk cannot pretend to be for them.": {
+    "%@ closed the app on purpose (%@). Apps with anti-tamper or anti-cheat protection do this when they find they are not on a certified Android phone, which BetterHusk cannot pretend to be for them.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "%@ 主动关闭了应用（%@）。带有防篡改或反作弊保护的应用发现运行环境不是受认证的 Android 手机时会这样做，而 Husk 无法伪装成这种设备。"
+            "value": "%@ 主动关闭了应用（%@）。带有防篡改或反作弊保护的应用发现运行环境不是受认证的 Android 手机时会这样做，而 BetterHusk 无法伪装成这种设备。"
           }
         }
       }
@@ -161,12 +161,12 @@
         }
       }
     },
-    "%@ has been started in this run of Husk. Close Husk and open it again to restore saves.": {
+    "%@ has been started in this run of BetterHusk. Close BetterHusk and open it again to restore saves.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "%@ 已在本次 Husk 运行中启动。关闭并重新打开 Husk 才能恢复存档。"
+            "value": "%@ 已在本次 BetterHusk 运行中启动。关闭并重新打开 BetterHusk 才能恢复存档。"
           }
         }
       }
@@ -181,12 +181,12 @@
         }
       }
     },
-    "%@ is compressed inside its bundle, which Husk cannot unpack yet.": {
+    "%@ is compressed inside its bundle, which BetterHusk cannot unpack yet.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "%@ 在包内被压缩，Husk 暂时无法解包。"
+            "value": "%@ 在包内被压缩，BetterHusk 暂时无法解包。"
           }
         }
       }
@@ -221,12 +221,12 @@
         }
       }
     },
-    "%@ is still loaded, and a game cannot be unloaded once it has started. Close Husk with the button above, then open it again to play %@.": {
+    "%@ is still loaded, and a game cannot be unloaded once it has started. Close BetterHusk with the button above, then open it again to play %@.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "%@ 仍在运行，游戏一旦启动便无法卸载。请用上方按钮关闭 Husk，再重新打开即可游玩 %@。"
+            "value": "%@ 仍在运行，游戏一旦启动便无法卸载。请用上方按钮关闭 BetterHusk，再重新打开即可游玩 %@。"
           }
         }
       }
@@ -261,22 +261,22 @@
         }
       }
     },
-    "%@ was started in this session, and a game cannot be unloaded once it has started. Close Husk completely and open it again to run %@.": {
+    "%@ was started in this session, and a game cannot be unloaded once it has started. Close BetterHusk completely and open it again to run %@.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "%@ 已在本次会话中启动，游戏一旦启动便无法卸载。请完全关闭 Husk 再重新打开以运行 %@。"
+            "value": "%@ 已在本次会话中启动，游戏一旦启动便无法卸载。请完全关闭 BetterHusk 再重新打开以运行 %@。"
           }
         }
       }
     },
-    "%@ was started in this session. Close Husk completely and open it again to run %@.": {
+    "%@ was started in this session. Close BetterHusk completely and open it again to run %@.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "%@ 已在本次会话中启动。请完全关闭 Husk 再重新打开以运行 %@。"
+            "value": "%@ 已在本次会话中启动。请完全关闭 BetterHusk 再重新打开以运行 %@。"
           }
         }
       }
@@ -591,32 +591,32 @@
         }
       }
     },
-    "A %@ game. It runs through Husk's native runtime, which loads its %lld arm64 libraries itself.": {
+    "A %@ game. It runs through BetterHusk's native runtime, which loads its %lld arm64 libraries itself.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "一个 %@ 游戏。它通过 Husk 的原生运行时运行，运行时自行加载其 %lld 个 arm64 库。"
+            "value": "一个 %@ 游戏。它通过 BetterHusk 的原生运行时运行，运行时自行加载其 %lld 个 arm64 库。"
           }
         }
       }
     },
-    "A Flutter app. Its engine and its compiled Dart run natively through Husk's translation layer, which loads its %lld arm64 libraries itself.": {
+    "A Flutter app. Its engine and its compiled Dart run natively through BetterHusk's translation layer, which loads its %lld arm64 libraries itself.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "一个 Flutter 应用。其引擎和编译后的 Dart 代码通过 Husk 翻译层原生运行，翻译层自行加载其 %lld 个 arm64 库。"
+            "value": "一个 Flutter 应用。其引擎和编译后的 Dart 代码通过 BetterHusk 翻译层原生运行，翻译层自行加载其 %lld 个 arm64 库。"
           }
         }
       }
     },
-    "A backup is a .zip of everything %@ has saved in Husk, to keep in Files or move to another device.": {
+    "A backup is a .zip of everything %@ has saved in BetterHusk, to keep in Files or move to another device.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "备份是一个 .zip 文件，包含 %@ 在 Husk 中保存的全部内容，可存放到“文件”或迁移到其他设备。"
+            "value": "备份是一个 .zip 文件，包含 %@ 在 BetterHusk 中保存的全部内容，可存放到“文件”或迁移到其他设备。"
           }
         }
       }
@@ -683,12 +683,12 @@
         }
       }
     },
-    "A pairing file made on a computer lets Husk talk to this %@ the same way.": {
+    "A pairing file made on a computer lets BetterHusk talk to this %@ the same way.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "在电脑上制作的配对文件可让 Husk 以同样方式与此设备通信。"
+            "value": "在电脑上制作的配对文件可让 BetterHusk 以同样方式与此设备通信。"
           }
         }
       }
@@ -864,7 +864,7 @@
         }
       }
     },
-    "Add to Husk": {
+    "Add to BetterHusk": {
       "extractionState": "manual",
       "localizations": {
         "zh-Hans": {
@@ -1001,12 +1001,12 @@
         }
       }
     },
-    "An Android app. Husk runs its code on its own Java runtime": {
+    "An Android app. BetterHusk runs its code on its own Java runtime": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "一个 Android 应用。Husk 在自己的 Java 运行时上运行其代码"
+            "value": "一个 Android 应用。BetterHusk 在自己的 Java 运行时上运行其代码"
           }
         }
       }
@@ -1065,7 +1065,7 @@
         }
       }
     },
-    "Android and Translation Layer games need JIT. StikJIT, built into Husk, turns it on without a computer.": {
+    "Android and Translation Layer games need JIT. StikJIT, built into BetterHusk, turns it on without a computer.": {
       "extractionState": "manual",
       "localizations": {
         "zh-Hans": {
@@ -1076,12 +1076,12 @@
         }
       }
     },
-    "Android and this app share the memory Husk runs translated code in, and together they do not fit. Close Husk and open it again, then start only the app (or only Android).": {
+    "Android and this app share the memory BetterHusk runs translated code in, and together they do not fit. Close BetterHusk and open it again, then start only the app (or only Android).": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Android 与此应用共用 Husk 用于运行翻译代码的内存，两者同时放不下。请关闭并重新打开 Husk，然后只启动该应用（或只启动 Android）。"
+            "value": "Android 与此应用共用 BetterHusk 用于运行翻译代码的内存，两者同时放不下。请关闭并重新打开 BetterHusk，然后只启动该应用（或只启动 Android）。"
           }
         }
       }
@@ -1147,12 +1147,12 @@
         }
       }
     },
-    "Android no longer crashes after its download, the full Android emulator moved into Settings with a warning, closing Husk from the app switcher isn't reported as a crash, and much more.": {
+    "Android no longer crashes after its download, the full Android emulator moved into Settings with a warning, closing BetterHusk from the app switcher isn't reported as a crash, and much more.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Android 下载后不再崩溃；完整的 Android 模拟器移入“设置”并附带提示；从多任务界面关闭 Husk 不再被记为崩溃；以及更多改进。"
+            "value": "Android 下载后不再崩溃；完整的 Android 模拟器移入“设置”并附带提示；从多任务界面关闭 BetterHusk 不再被记为崩溃；以及更多改进。"
           }
         }
       }
@@ -1189,12 +1189,12 @@
         }
       }
     },
-    "Android runs fully emulated, so it is slower than games on the translation layer. Use it for apps Husk cannot run directly, like Termux or app stores.": {
+    "Android runs fully emulated, so it is slower than games on the translation layer. Use it for apps BetterHusk cannot run directly, like Termux or app stores.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Android 完全以模拟方式运行，比翻译层上的游戏慢。用于 Husk 无法直接运行的应用，如 Termux 或应用商店。"
+            "value": "Android 完全以模拟方式运行，比翻译层上的游戏慢。用于 BetterHusk 无法直接运行的应用，如 Termux 或应用商店。"
           }
         }
       }
@@ -1250,12 +1250,12 @@
         }
       }
     },
-    "Android's data partition failed to build — restarting Husk will reset it automatically": {
+    "Android's data partition failed to build — restarting BetterHusk will reset it automatically": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Android 数据分区构建失败——重启 Husk 将自动重置"
+            "value": "Android 数据分区构建失败——重启 BetterHusk 将自动重置"
           }
         }
       }
@@ -1514,7 +1514,7 @@
         }
       }
     },
-    "Back to Husk": {
+    "Back to BetterHusk": {
       "extractionState": "manual",
       "localizations": {
         "zh-Hans": {
@@ -1545,7 +1545,7 @@
         }
       }
     },
-    "Boots the guest as soon as Husk opens, when JIT is available.": {
+    "Boots the guest as soon as BetterHusk opens, when JIT is available.": {
       "extractionState": "manual",
       "localizations": {
         "zh-Hans": {
@@ -1789,7 +1789,7 @@
         }
       }
     },
-    "Close Husk": {
+    "Close BetterHusk": {
       "extractionState": "manual",
       "localizations": {
         "zh-Hans": {
@@ -1800,32 +1800,32 @@
         }
       }
     },
-    "Close Husk and open it again to start: a game was already loaded in this run.": {
+    "Close BetterHusk and open it again to start: a game was already loaded in this run.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "关闭并重新打开 Husk 才能启动：本次运行中已加载了一个游戏。"
+            "value": "关闭并重新打开 BetterHusk 才能启动：本次运行中已加载了一个游戏。"
           }
         }
       }
     },
-    "Close Husk completely and open it again. The setting applies to apps as they start.": {
+    "Close BetterHusk completely and open it again. The setting applies to apps as they start.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "请完全关闭 Husk 再重新打开。该设置在应用启动时生效。"
+            "value": "请完全关闭 BetterHusk 再重新打开。该设置在应用启动时生效。"
           }
         }
       }
     },
-    "Close Husk?": {
+    "Close BetterHusk?": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "关闭 Husk？"
+            "value": "关闭 BetterHusk？"
           }
         }
       }
@@ -1840,12 +1840,12 @@
         }
       }
     },
-    "Come back to Husk.": {
+    "Come back to BetterHusk.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "请回到 Husk。"
+            "value": "请回到 BetterHusk。"
           }
         }
       }
@@ -2447,7 +2447,7 @@
         }
       }
     },
-    "Each app is played once JIT is on, watched for 15 seconds, and written down; then Husk closes. Open Husk again for the next one. At the end the results file is offered to share.": {
+    "Each app is played once JIT is on, watched for 15 seconds, and written down; then BetterHusk closes. Open BetterHusk again for the next one. At the end the results file is offered to share.": {
       "extractionState": "manual",
       "localizations": {
         "zh-Hans": {
@@ -2458,7 +2458,7 @@
         }
       }
     },
-    "Each time Husk opens without JIT, it asks TrollStore to turn it on. TrollStore's URL Scheme setting must be on.": {
+    "Each time BetterHusk opens without JIT, it asks TrollStore to turn it on. TrollStore's URL Scheme setting must be on.": {
       "extractionState": "manual",
       "localizations": {
         "zh-Hans": {
@@ -2552,22 +2552,22 @@
         }
       }
     },
-    "Enter it on this %@ to pair with Husk": {
+    "Enter it on this %@ to pair with BetterHusk": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "在此 %@ 上输入即可与 Husk 配对"
+            "value": "在此 %@ 上输入即可与 BetterHusk 配对"
           }
         }
       }
     },
-    "Enter the code Husk shows. It also appears in a banner and a notification, so you don't have to switch back.": {
+    "Enter the code BetterHusk shows. It also appears in a banner and a notification, so you don't have to switch back.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "输入 Husk 显示的代码。它也会出现在横幅和通知中，无需来回切换。"
+            "value": "输入 BetterHusk 显示的代码。它也会出现在横幅和通知中，无需来回切换。"
           }
         }
       }
@@ -2788,7 +2788,7 @@
         }
       }
     },
-    "Full Android emulation is experimental. It is slow, takes minutes to start, and can freeze or crash Husk. ": {
+    "Full Android emulation is experimental. It is slow, takes minutes to start, and can freeze or crash BetterHusk. ": {
       "extractionState": "manual",
       "localizations": {
         "zh-Hans": {
@@ -2799,12 +2799,12 @@
         }
       }
     },
-    "Full Android emulation is experimental. It is slow, takes minutes to start, and can freeze or crash Husk. Games and apps run much better in the Translation Layer.": {
+    "Full Android emulation is experimental. It is slow, takes minutes to start, and can freeze or crash BetterHusk. Games and apps run much better in the Translation Layer.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "完整 Android 模拟为实验性功能：速度慢，启动需要数分钟，还可能卡死或导致 Husk 崩溃。游戏和应用在翻译层中运行体验要好得多。"
+            "value": "完整 Android 模拟为实验性功能：速度慢，启动需要数分钟，还可能卡死或导致 BetterHusk 崩溃。游戏和应用在翻译层中运行体验要好得多。"
           }
         }
       }
@@ -2894,12 +2894,12 @@
         }
       }
     },
-    "Game pages and the Store show how each app runs for everyone, from antiweb.lol. Your reports go there with your device, iOS version, Husk build and JIT method.": {
+    "Game pages and the Store show how each app runs for everyone, from antiweb.lol. Your reports go there with your device, iOS version, BetterHusk build and JIT method.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "游戏页面和商店会展示每个应用对所有用户的运行情况，数据来自 antiweb.lol。你的报告会连同设备、iOS 版本、Husk 构建和 JIT 方式一起发送到那里。"
+            "value": "游戏页面和商店会展示每个应用对所有用户的运行情况，数据来自 antiweb.lol。你的报告会连同设备、iOS 版本、BetterHusk 构建和 JIT 方式一起发送到那里。"
           }
         }
       }
@@ -3009,7 +3009,7 @@
         }
       }
     },
-    "Geode is the mod loader for Geometry Dash. With it on, Husk downloads Geode for this version of the ": {
+    "Geode is the mod loader for Geometry Dash. With it on, BetterHusk downloads Geode for this version of the ": {
       "extractionState": "manual",
       "localizations": {
         "zh-Hans": {
@@ -3020,12 +3020,12 @@
         }
       }
     },
-    "Geode is the mod loader for Geometry Dash. With it on, Husk downloads Geode for this version of the game, and mods are found and installed in the game itself, from Geode's button on the main menu. Applies the next time the game starts.": {
+    "Geode is the mod loader for Geometry Dash. With it on, BetterHusk downloads Geode for this version of the game, and mods are found and installed in the game itself, from Geode's button on the main menu. Applies the next time the game starts.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Geode 是 Geometry Dash 的模组加载器。开启后，Husk 会为当前版本的游戏下载 Geode，模组可在游戏内主菜单的 Geode 按钮中查找和安装。下次启动游戏时生效。"
+            "value": "Geode 是 Geometry Dash 的模组加载器。开启后，BetterHusk 会为当前版本的游戏下载 Geode，模组可在游戏内主菜单的 Geode 按钮中查找和安装。下次启动游戏时生效。"
           }
         }
       }
@@ -3260,7 +3260,7 @@
         }
       }
     },
-    "How each 64-bit library maps onto the iPhone: its relocations, the instructions Husk rewrites, and anything the loader works around.": {
+    "How each 64-bit library maps onto the iPhone: its relocations, the instructions BetterHusk rewrites, and anything the loader works around.": {
       "extractionState": "manual",
       "localizations": {
         "zh-Hans": {
@@ -3313,7 +3313,7 @@
         }
       }
     },
-    "Husk": {
+    "BetterHusk": {
       "extractionState": "manual",
       "localizations": {
         "zh-Hans": {
@@ -3324,87 +3324,87 @@
         }
       }
     },
-    "Husk %@": {
+    "BetterHusk %@": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Husk %@"
+            "value": "BetterHusk %@"
           }
         }
       }
     },
-    "Husk %@ Is Available": {
+    "BetterHusk %@ Is Available": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Husk %@ 已发布"
+            "value": "BetterHusk %@ 已发布"
           }
         }
       }
     },
-    "Husk %@ is out": {
+    "BetterHusk %@ is out": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Husk %@ 已发布"
+            "value": "BetterHusk %@ 已发布"
           }
         }
       }
     },
-    "Husk %@ is out!": {
+    "BetterHusk %@ is out!": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Husk %@ 已发布！"
+            "value": "BetterHusk %@ 已发布！"
           }
         }
       }
     },
-    "Husk closed while the game was running": {
+    "BetterHusk closed while the game was running": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Husk 在游戏运行时被关闭"
+            "value": "BetterHusk 在游戏运行时被关闭"
           }
         }
       }
     },
-    "Husk could not copy it: %@": {
+    "BetterHusk could not copy it: %@": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Husk 无法复制它：%@"
+            "value": "BetterHusk 无法复制它：%@"
           }
         }
       }
     },
-    "Husk couldn't reach this device. Connect LocalDevVPN, then try again.": {
+    "BetterHusk couldn't reach this device. Connect LocalDevVPN, then try again.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Husk 无法连接此设备。请连接 LocalDevVPN 后重试。"
+            "value": "BetterHusk 无法连接此设备。请连接 LocalDevVPN 后重试。"
           }
         }
       }
     },
-    "Husk crashed: %@": {
+    "BetterHusk crashed: %@": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Husk 崩溃：%@"
+            "value": "BetterHusk 崩溃：%@"
           }
         }
       }
     },
-    "Husk needs memory it can write and then execute, which on iOS ": {
+    "BetterHusk needs memory it can write and then execute, which on iOS ": {
       "extractionState": "manual",
       "localizations": {
         "zh-Hans": {
@@ -3415,47 +3415,47 @@
         }
       }
     },
-    "Husk needs memory it can write and then execute, which on iOS takes an attached debugger. There are two ways to get it: a debugger that services trap requests, or a MAP_JIT mapping, which the kernel allows any debugged process. Either one is enough — which is available depends on the device and the iOS version, so Husk tests both rather than assuming.": {
+    "BetterHusk needs memory it can write and then execute, which on iOS takes an attached debugger. There are two ways to get it: a debugger that services trap requests, or a MAP_JIT mapping, which the kernel allows any debugged process. Either one is enough — which is available depends on the device and the iOS version, so BetterHusk tests both rather than assuming.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Husk 需要既可写入又可执行的内存，在 iOS 上这需要附加一个调试器。有两种途径：响应陷阱请求的调试器，或内核允许任何被调试进程使用的 MAP_JIT 映射。二者满足其一即可——具体哪种可用取决于设备和 iOS 版本，因此 Husk 会两种都测试而不是想当然。"
+            "value": "BetterHusk 需要既可写入又可执行的内存，在 iOS 上这需要附加一个调试器。有两种途径：响应陷阱请求的调试器，或内核允许任何被调试进程使用的 MAP_JIT 映射。二者满足其一即可——具体哪种可用取决于设备和 iOS 版本，因此 BetterHusk 会两种都测试而不是想当然。"
           }
         }
       }
     },
-    "Husk now runs on iOS 15.5 and later (PS4 games need iOS 17.4).": {
+    "BetterHusk now runs on iOS 15.5 and later (PS4 games need iOS 17.4).": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Husk 现在支持 iOS 15.5 及更高版本（PS4 游戏需要 iOS 17.4）。"
+            "value": "BetterHusk 现在支持 iOS 15.5 及更高版本（PS4 游戏需要 iOS 17.4）。"
           }
         }
       }
     },
-    "Husk pairing code: %@": {
+    "BetterHusk pairing code: %@": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Husk 配对码：%@"
+            "value": "BetterHusk 配对码：%@"
           }
         }
       }
     },
-    "Husk pretends to be a computer on your Wi-Fi, and your %@ pairs with it the way it would with a Mac.": {
+    "BetterHusk pretends to be a computer on your Wi-Fi, and your %@ pairs with it the way it would with a Mac.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Husk 在你的 Wi-Fi 中伪装成一台电脑，你的 %@ 会像与 Mac 配对一样与它配对。"
+            "value": "BetterHusk 在你的 Wi-Fi 中伪装成一台电脑，你的 %@ 会像与 Mac 配对一样与它配对。"
           }
         }
       }
     },
-    "Husk restores a saved machine instead of booting it, which takes ": {
+    "BetterHusk restores a saved machine instead of booting it, which takes ": {
       "extractionState": "manual",
       "localizations": {
         "zh-Hans": {
@@ -3466,17 +3466,17 @@
         }
       }
     },
-    "Husk restores a saved machine instead of booting it, which takes seconds rather than minutes. The picture freezes while it writes. With this off, nothing saves by itself — including after an install.": {
+    "BetterHusk restores a saved machine instead of booting it, which takes seconds rather than minutes. The picture freezes while it writes. With this off, nothing saves by itself — including after an install.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Husk 直接恢复已保存的机器而非重新启动，只需几秒而非几分钟。写入期间画面会短暂冻结。关闭此项后不会自动保存——包括安装之后。"
+            "value": "BetterHusk 直接恢复已保存的机器而非重新启动，只需几秒而非几分钟。写入期间画面会短暂冻结。关闭此项后不会自动保存——包括安装之后。"
           }
         }
       }
     },
-    "Husk runs unmodified Android APKs in a real Android system on your iPhone. ": {
+    "BetterHusk runs unmodified Android APKs in a real Android system on your iPhone. ": {
       "extractionState": "manual",
       "localizations": {
         "zh-Hans": {
@@ -3487,27 +3487,27 @@
         }
       }
     },
-    "Husk runs unmodified Android APKs in a real Android system on your iPhone. The console shows Husk's live log, the guest's serial output and QEMU's own output — the three files any problem here is diagnosed from.": {
+    "BetterHusk runs unmodified Android APKs in a real Android system on your iPhone. The console shows BetterHusk's live log, the guest's serial output and QEMU's own output — the three files any problem here is diagnosed from.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Husk 在你的 iPhone 上以真实的 Android 系统运行未经修改的 Android APK。控制台会显示 Husk 的实时日志、客机串口输出和 QEMU 自身输出——排查任何问题都靠这三份日志。"
+            "value": "BetterHusk 在你的 iPhone 上以真实的 Android 系统运行未经修改的 Android APK。控制台会显示 BetterHusk 的实时日志、客机串口输出和 QEMU 自身输出——排查任何问题都靠这三份日志。"
           }
         }
       }
     },
-    "Husk turns the screen the way the game asks for.": {
+    "BetterHusk turns the screen the way the game asks for.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Husk 按游戏要求旋转屏幕。"
+            "value": "BetterHusk 按游戏要求旋转屏幕。"
           }
         }
       }
     },
-    "Husk was marked as debugged when it opened, so JIT is on.": {
+    "BetterHusk was marked as debugged when it opened, so JIT is on.": {
       "extractionState": "manual",
       "localizations": {
         "zh-Hans": {
@@ -3518,72 +3518,72 @@
         }
       }
     },
-    "Husk will use StikDebug.": {
+    "BetterHusk will use StikDebug.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Husk 将使用 StikDebug。"
+            "value": "BetterHusk 将使用 StikDebug。"
           }
         }
       }
     },
-    "Husk will use TrollStore.": {
+    "BetterHusk will use TrollStore.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Husk 将使用 TrollStore。"
+            "value": "BetterHusk 将使用 TrollStore。"
           }
         }
       }
     },
-    "Husk's Android runtime is about 760 MB. Android itself follows once it is installed.": {
+    "BetterHusk's Android runtime is about 760 MB. Android itself follows once it is installed.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Husk 的 Android 运行时约 760 MB。Android 系统会在安装后再下载。"
+            "value": "BetterHusk 的 Android 运行时约 760 MB。Android 系统会在安装后再下载。"
           }
         }
       }
     },
-    "Husk's JIT helper (%@) could not be found: %@ Reinstall Husk.": {
+    "BetterHusk's JIT helper (%@) could not be found: %@ Reinstall BetterHusk.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "找不到 Husk 的 JIT 助手（%@）：%@ 请重新安装 Husk。"
+            "value": "找不到 BetterHusk 的 JIT 助手（%@）：%@ 请重新安装 BetterHusk。"
           }
         }
       }
     },
-    "Husk's JIT helper stopped: %@": {
+    "BetterHusk's JIT helper stopped: %@": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Husk 的 JIT 助手已停止：%@"
+            "value": "BetterHusk 的 JIT 助手已停止：%@"
           }
         }
       }
     },
-    "Husk's PS4 layer": {
+    "BetterHusk's PS4 layer": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Husk 的 PS4 层"
+            "value": "BetterHusk 的 PS4 层"
           }
         }
       }
     },
-    "Husk's helper reaches this %@'s debugging service through a local VPN. Nothing leaves your %@.": {
+    "BetterHusk's helper reaches this %@'s debugging service through a local VPN. Nothing leaves your %@.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Husk 的助手通过本地 VPN 访问此 %@ 的调试服务。任何数据都不会离开你的 %@。"
+            "value": "BetterHusk 的助手通过本地 VPN 访问此 %@ 的调试服务。任何数据都不会离开你的 %@。"
           }
         }
       }
@@ -3660,12 +3660,12 @@
         }
       }
     },
-    "In a window, %@ runs over Husk: move it by its title bar, resize it from the corner, and minimise it to the dock at the edge of the screen while you use the rest of Husk.": {
+    "In a window, %@ runs over BetterHusk: move it by its title bar, resize it from the corner, and minimise it to the dock at the edge of the screen while you use the rest of BetterHusk.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "在窗口中，%@ 运行于 Husk 之上：拖动标题栏移动，拖动边角调整大小，最小化到屏幕边缘的停靠栏，同时使用 Husk 的其他功能。"
+            "value": "在窗口中，%@ 运行于 BetterHusk 之上：拖动标题栏移动，拖动边角调整大小，最小化到屏幕边缘的停靠栏，同时使用 BetterHusk 的其他功能。"
           }
         }
       }
@@ -3732,12 +3732,12 @@
         }
       }
     },
-    "Install Husk.ipa through TrollStore, on an iOS version TrollStore supports. It carries the entitlements TrollStore keeps, so the same file works there and in a sideloader.": {
+    "Install BetterHusk.ipa through TrollStore, on an iOS version TrollStore supports. It carries the entitlements TrollStore keeps, so the same file works there and in a sideloader.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "在 TrollStore 支持的 iOS 版本上通过 TrollStore 安装 Husk.ipa。它携带 TrollStore 会保留的权限，同一文件既可用于 TrollStore 也可用于侧载工具。"
+            "value": "在 TrollStore 支持的 iOS 版本上通过 TrollStore 安装 BetterHusk.ipa。它携带 TrollStore 会保留的权限，同一文件既可用于 TrollStore 也可用于侧载工具。"
           }
         }
       }
@@ -3913,12 +3913,12 @@
         }
       }
     },
-    "It is a landscape game: Husk turns the screen for it.": {
+    "It is a landscape game: BetterHusk turns the screen for it.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "这是横屏游戏：Husk 会为它旋转屏幕。"
+            "value": "这是横屏游戏：BetterHusk 会为它旋转屏幕。"
           }
         }
       }
@@ -4037,12 +4037,12 @@
         }
       }
     },
-    "Its files and saved progress are deleted from Husk.": {
+    "Its files and saved progress are deleted from BetterHusk.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "其文件与已保存的进度将从 Husk 中删除。"
+            "value": "其文件与已保存的进度将从 BetterHusk 中删除。"
           }
         }
       }
@@ -4318,7 +4318,7 @@
         }
       }
     },
-    "Live Activities are off for Husk, so downloads don't show on the Lock Screen or in the Dynamic Island. Turn them on in Settings › Husk › Live Activities.": {
+    "Live Activities are off for BetterHusk, so downloads don't show on the Lock Screen or in the Dynamic Island. Turn them on in Settings › BetterHusk › Live Activities.": {
       "extractionState": "manual",
       "localizations": {
         "zh-Hans": {
@@ -4390,7 +4390,7 @@
         }
       }
     },
-    "Make a folder named DeveloperTesting in Husk's folder (Files > On My iPhone > Husk) and put the APKs to test in it: an APK each, or a folder per app with its base and split APKs.": {
+    "Make a folder named DeveloperTesting in BetterHusk's folder (Files > On My iPhone > BetterHusk) and put the APKs to test in it: an APK each, or a folder per app with its base and split APKs.": {
       "extractionState": "manual",
       "localizations": {
         "zh-Hans": {
@@ -4539,12 +4539,12 @@
         }
       }
     },
-    "Names and icons come from Android's own launcher, which keeps the version it draws. Re-fetching throws away Husk's copies and asks again.": {
+    "Names and icons come from Android's own launcher, which keeps the version it draws. Re-fetching throws away BetterHusk's copies and asks again.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "名称和图标来自 Android 自带的启动器，它保存了自己绘制的版本。重新获取会丢弃 Husk 的副本并重新请求。"
+            "value": "名称和图标来自 Android 自带的启动器，它保存了自己绘制的版本。重新获取会丢弃 BetterHusk 的副本并重新请求。"
           }
         }
       }
@@ -4897,22 +4897,22 @@
         }
       }
     },
-    "Nothing matches “%@”. Open Settings › About › Open Console to see what Husk is doing.": {
+    "Nothing matches “%@”. Open Settings › About › Open Console to see what BetterHusk is doing.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "没有匹配“%@”的内容。打开“设置 › 关于 › 打开控制台”可查看 Husk 正在做什么。"
+            "value": "没有匹配“%@”的内容。打开“设置 › 关于 › 打开控制台”可查看 BetterHusk 正在做什么。"
           }
         }
       }
     },
-    "Nothing was recorded, which usually means iOS ended Husk for using too much memory, or Husk was closed from the app switcher.": {
+    "Nothing was recorded, which usually means iOS ended BetterHusk for using too much memory, or BetterHusk was closed from the app switcher.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "没有记录到任何信息，这通常意味着 iOS 因内存占用过高结束了 Husk，或 Husk 被从多任务界面关闭。"
+            "value": "没有记录到任何信息，这通常意味着 iOS 因内存占用过高结束了 BetterHusk，或 BetterHusk 被从多任务界面关闭。"
           }
         }
       }
@@ -4959,7 +4959,7 @@
         }
       }
     },
-    "Off by default. Husk detaches StikDebug as soon as the ": {
+    "Off by default. BetterHusk detaches StikDebug as soon as the ": {
       "extractionState": "manual",
       "localizations": {
         "zh-Hans": {
@@ -4970,12 +4970,12 @@
         }
       }
     },
-    "Off by default. Husk detaches StikDebug as soon as the JIT region is held, because a debugger that iOS has suspended stops the whole app the next time it is needed. Turn this on only to collect StikDebug's own logs.": {
+    "Off by default. BetterHusk detaches StikDebug as soon as the JIT region is held, because a debugger that iOS has suspended stops the whole app the next time it is needed. Turn this on only to collect StikDebug's own logs.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "默认关闭。Husk 在取得 JIT 区域后会立即脱离 StikDebug，因为被 iOS 挂起的调试器会在下次需要时阻塞整个应用。仅当需要收集 StikDebug 自身日志时才开启。"
+            "value": "默认关闭。BetterHusk 在取得 JIT 区域后会立即脱离 StikDebug，因为被 iOS 挂起的调试器会在下次需要时阻塞整个应用。仅当需要收集 StikDebug 自身日志时才开启。"
           }
         }
       }
@@ -5000,22 +5000,22 @@
         }
       }
     },
-    "On a device jailbroken with Dopamine, JIT is a setting: the jailbreak marks every app as debugged when it opens, and a debugged app may run code it wrote. Husk needs nothing else.": {
+    "On a device jailbroken with Dopamine, JIT is a setting: the jailbreak marks every app as debugged when it opens, and a debugged app may run code it wrote. BetterHusk needs nothing else.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "在已用 Dopamine 越狱的设备上，JIT 是一项设置：越狱会在应用打开时将其标记为“正在被调试”，而被调试的应用可以运行自己写入的代码。Husk 无需其他条件。"
+            "value": "在已用 Dopamine 越狱的设备上，JIT 是一项设置：越狱会在应用打开时将其标记为“正在被调试”，而被调试的应用可以运行自己写入的代码。BetterHusk 无需其他条件。"
           }
         }
       }
     },
-    "On a jailbroken device JIT is a setting. In Dopamine, turn on Allow JIT in Apps, then open Husk again.": {
+    "On a jailbroken device JIT is a setting. In Dopamine, turn on Allow JIT in Apps, then open BetterHusk again.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "在已越狱的设备上，JIT 是一项设置。在 Dopamine 中打开“允许应用内 JIT”，然后重新打开 Husk。"
+            "value": "在已越狱的设备上，JIT 是一项设置。在 Dopamine 中打开“允许应用内 JIT”，然后重新打开 BetterHusk。"
           }
         }
       }
@@ -5105,12 +5105,12 @@
         }
       }
     },
-    "Open Husk to retry": {
+    "Open BetterHusk to retry": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "打开 Husk 重试"
+            "value": "打开 BetterHusk 重试"
           }
         }
       }
@@ -5303,12 +5303,12 @@
         }
       }
     },
-    "Paired with Husk": {
+    "Paired with BetterHusk": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "已与 Husk 配对"
+            "value": "已与 BetterHusk 配对"
           }
         }
       }
@@ -5396,7 +5396,7 @@
         }
       }
     },
-    "Pick an APK or a bundle (.xapk, .apkm, .apks), or share one to Husk from Files or Safari. Games run ": {
+    "Pick an APK or a bundle (.xapk, .apkm, .apks), or share one to BetterHusk from Files or Safari. Games run ": {
       "extractionState": "manual",
       "localizations": {
         "zh-Hans": {
@@ -5407,12 +5407,12 @@
         }
       }
     },
-    "Pick an APK or a bundle (.xapk, .apkm, .apks), or share one to Husk from Files or Safari. Games run straight on your iPhone. Other apps run inside Android. PS4 games are extracted folders put in Husk's PS4 Games folder.": {
+    "Pick an APK or a bundle (.xapk, .apkm, .apks), or share one to BetterHusk from Files or Safari. Games run straight on your iPhone. Other apps run inside Android. PS4 games are extracted folders put in BetterHusk's PS4 Games folder.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "选择一个 APK 或安装包（.xapk、.apkm、.apks），或从“文件”/Safari 分享给 Husk。游戏直接在你的 iPhone 上运行，其他应用在 Android 内运行。PS4 游戏为解压后的文件夹，放入 Husk 的“PS4 Games”目录。"
+            "value": "选择一个 APK 或安装包（.xapk、.apkm、.apks），或从“文件”/Safari 分享给 BetterHusk。游戏直接在你的 iPhone 上运行，其他应用在 Android 内运行。PS4 游戏为解压后的文件夹，放入 BetterHusk 的“PS4 Games”目录。"
           }
         }
       }
@@ -5560,22 +5560,22 @@
         }
       }
     },
-    "Puts %@ on your Home Screen with its own icon. Tapping it opens Husk straight into the game. Husk downloads a profile: open Settings, tap Profile Downloaded, then Install.": {
+    "Puts %@ on your Home Screen with its own icon. Tapping it opens BetterHusk straight into the game. BetterHusk downloads a profile: open Settings, tap Profile Downloaded, then Install.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "将 %@ 以独立图标放到主屏幕。点击它即可打开 Husk 并直接进入游戏。Husk 会下载一个描述文件：打开“设置”，点击“已下载描述文件”，然后安装。"
+            "value": "将 %@ 以独立图标放到主屏幕。点击它即可打开 BetterHusk 并直接进入游戏。BetterHusk 会下载一个描述文件：打开“设置”，点击“已下载描述文件”，然后安装。"
           }
         }
       }
     },
-    "Puts %@ on your Home Screen. It opens in Husk.": {
+    "Puts %@ on your Home Screen. It opens in BetterHusk.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "将 %@ 放到主屏幕上，点击它会在 Husk 中打开。"
+            "value": "将 %@ 放到主屏幕上，点击它会在 BetterHusk 中打开。"
           }
         }
       }
@@ -5683,12 +5683,12 @@
         }
       }
     },
-    "Refuses to run outside a real Android phone (anti-cheat, anti-tamper or DRM). Husk does not get around that.": {
+    "Refuses to run outside a real Android phone (anti-cheat, anti-tamper or DRM). BetterHusk does not get around that.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "拒绝在真实 Android 手机之外的环境运行（反作弊、防篡改或 DRM）。Husk 无法绕过。"
+            "value": "拒绝在真实 Android 手机之外的环境运行（反作弊、防篡改或 DRM）。BetterHusk 无法绕过。"
           }
         }
       }
@@ -5938,12 +5938,12 @@
         }
       }
     },
-    "Return to Husk to finish setting up JIT.": {
+    "Return to BetterHusk to finish setting up JIT.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "返回 Husk 以完成 JIT 设置。"
+            "value": "返回 BetterHusk 以完成 JIT 设置。"
           }
         }
       }
@@ -6340,12 +6340,12 @@
         }
       }
     },
-    "Sent with it: %@, iOS %@, Husk build %@, JIT from %@. It shows on antiweb.lol for everyone.": {
+    "Sent with it: %@, iOS %@, BetterHusk build %@, JIT from %@. It shows on antiweb.lol for everyone.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "随附信息：%@、iOS %@、Husk 构建 %@、JIT 方式 %@。它会在 antiweb.lol 上向所有人显示。"
+            "value": "随附信息：%@、iOS %@、BetterHusk 构建 %@、JIT 方式 %@。它会在 antiweb.lol 上向所有人显示。"
           }
         }
       }
@@ -6574,12 +6574,12 @@
         }
       }
     },
-    "Start Android When Husk Opens": {
+    "Start Android When BetterHusk Opens": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "打开 Husk 时启动 Android"
+            "value": "打开 BetterHusk 时启动 Android"
           }
         }
       }
@@ -6669,12 +6669,12 @@
         }
       }
     },
-    "Starting Husk's JIT helper…": {
+    "Starting BetterHusk's JIT helper…": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "正在启动 Husk 的 JIT 助手…"
+            "value": "正在启动 BetterHusk 的 JIT 助手…"
           }
         }
       }
@@ -6719,42 +6719,42 @@
         }
       }
     },
-    "StikDebug is a separate app that attaches to Husk. Husk sends it the JIT script itself, so nothing needs configuring for Husk inside StikDebug.": {
+    "StikDebug is a separate app that attaches to BetterHusk. BetterHusk sends it the JIT script itself, so nothing needs configuring for BetterHusk inside StikDebug.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "StikDebug 是一个独立应用，会附加到 Husk。Husk 会自行发送 JIT 脚本，因此无需在 StikDebug 内为 Husk 做任何配置。"
+            "value": "StikDebug 是一个独立应用，会附加到 BetterHusk。BetterHusk 会自行发送 JIT 脚本，因此无需在 StikDebug 内为 BetterHusk 做任何配置。"
           }
         }
       }
     },
-    "StikDebug is installed, so Husk will open it to turn JIT on.": {
+    "StikDebug is installed, so BetterHusk will open it to turn JIT on.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "已安装 StikDebug，Husk 将打开它来启用 JIT。"
+            "value": "已安装 StikDebug，BetterHusk 将打开它来启用 JIT。"
           }
         }
       }
     },
-    "StikDebug is installed, so Husk will open it.": {
+    "StikDebug is installed, so BetterHusk will open it.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "已安装 StikDebug，Husk 将打开它。"
+            "value": "已安装 StikDebug，BetterHusk 将打开它。"
           }
         }
       }
     },
-    "StikDebug, TrollStore and a jailbreak were not found, so Husk will use its built-in helper.": {
+    "StikDebug, TrollStore and a jailbreak were not found, so BetterHusk will use its built-in helper.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "未检测到 StikDebug、TrollStore 或越狱，Husk 将使用内置助手。"
+            "value": "未检测到 StikDebug、TrollStore 或越狱，BetterHusk 将使用内置助手。"
           }
         }
       }
@@ -6769,12 +6769,12 @@
         }
       }
     },
-    "StikJIT is built into Husk. You can turn JIT on right here — no computer and no other app. Games and Android both need it.": {
+    "StikJIT is built into BetterHusk. You can turn JIT on right here — no computer and no other app. Games and Android both need it.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "StikJIT 已内置于 Husk。你可以直接在这里开启 JIT——无需电脑或其他应用。游戏和 Android 都需要它。"
+            "value": "StikJIT 已内置于 BetterHusk。你可以直接在这里开启 JIT——无需电脑或其他应用。游戏和 Android 都需要它。"
           }
         }
       }
@@ -6883,12 +6883,12 @@
         }
       }
     },
-    "Tap **Check setup**. Husk checks LocalDevVPN and prepares the Developer Disk Image.": {
+    "Tap **Check setup**. BetterHusk checks LocalDevVPN and prepares the Developer Disk Image.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "点击**检查设置**。Husk 会检查 LocalDevVPN 并准备开发者磁盘镜像。"
+            "value": "点击**检查设置**。BetterHusk 会检查 LocalDevVPN 并准备开发者磁盘镜像。"
           }
         }
       }
@@ -6903,22 +6903,22 @@
         }
       }
     },
-    "Tap **Connect LocalDevVPN**. It switches the VPN on and comes straight back to Husk.": {
+    "Tap **Connect LocalDevVPN**. It switches the VPN on and comes straight back to BetterHusk.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "点击**连接 LocalDevVPN**。它会开启 VPN 并立即返回 Husk。"
+            "value": "点击**连接 LocalDevVPN**。它会开启 VPN 并立即返回 BetterHusk。"
           }
         }
       }
     },
-    "Tap **Enable JIT**. Husk's helper attaches and Android can start.": {
+    "Tap **Enable JIT**. BetterHusk's helper attaches and Android can start.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "点击**启用 JIT**。Husk 的助手附加后 Android 即可启动。"
+            "value": "点击**启用 JIT**。BetterHusk 的助手附加后 Android 即可启动。"
           }
         }
       }
@@ -6966,13 +6966,13 @@
         }
       }
     },
-    "Tested by the Husk team on an iPhone.": {
+    "Tested by the BetterHusk team on an iPhone.": {
       "extractionState": "manual",
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "由 Husk 团队在 iPhone 上实测。"
+            "value": "由 BetterHusk 团队在 iPhone 上实测。"
           }
         }
       }
@@ -6997,12 +6997,12 @@
         }
       }
     },
-    "That file is not a bundle Husk can read.": {
+    "That file is not a bundle BetterHusk can read.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "该文件不是 Husk 可识别的安装包。"
+            "value": "该文件不是 BetterHusk 可识别的安装包。"
           }
         }
       }
@@ -7027,12 +7027,12 @@
         }
       }
     },
-    "The app called %@, a system function Husk does not provide yet.": {
+    "The app called %@, a system function BetterHusk does not provide yet.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "应用调用了 %@ —— Husk 尚未提供的系统函数。"
+            "value": "应用调用了 %@ —— BetterHusk 尚未提供的系统函数。"
           }
         }
       }
@@ -7047,12 +7047,12 @@
         }
       }
     },
-    "The app needs a part of Android that Husk's runtime does not provide yet: %@.": {
+    "The app needs a part of Android that BetterHusk's runtime does not provide yet: %@.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "应用需要 Android 中 Husk 运行时尚未提供的部分：%@。"
+            "value": "应用需要 Android 中 BetterHusk 运行时尚未提供的部分：%@。"
           }
         }
       }
@@ -7067,12 +7067,12 @@
         }
       }
     },
-    "The app's own native code (%@) stopped with %@. It most likely needs something from Android that Husk does not provide yet, or does something iOS does not allow.": {
+    "The app's own native code (%@) stopped with %@. It most likely needs something from Android that BetterHusk does not provide yet, or does something iOS does not allow.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "应用自身的原生代码（%@）因 %@ 而停止。它很可能需要 Android 中 Husk 尚未提供的能力，或做了 iOS 不允许的操作。"
+            "value": "应用自身的原生代码（%@）因 %@ 而停止。它很可能需要 Android 中 BetterHusk 尚未提供的能力，或做了 iOS 不允许的操作。"
           }
         }
       }
@@ -7128,7 +7128,7 @@
         }
       }
     },
-    "The game and everything it saved here are deleted from Husk.": {
+    "The game and everything it saved here are deleted from BetterHusk.": {
       "extractionState": "manual",
       "localizations": {
         "zh-Hans": {
@@ -7221,12 +7221,12 @@
         }
       }
     },
-    "The language apps and games inside Husk see. Husk itself follows your iPhone.": {
+    "The language apps and games inside BetterHusk see. BetterHusk itself follows your iPhone.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Husk 内应用和游戏所见到的语言。Husk 自身跟随 iPhone 设置。"
+            "value": "BetterHusk 内应用和游戏所见到的语言。BetterHusk 自身跟随 iPhone 设置。"
           }
         }
       }
@@ -7252,7 +7252,7 @@
         }
       }
     },
-    "The pairing file stays in Husk's Documents folder and is only sent to Husk's own helper.": {
+    "The pairing file stays in BetterHusk's Documents folder and is only sent to BetterHusk's own helper.": {
       "extractionState": "manual",
       "localizations": {
         "zh-Hans": {
@@ -7284,7 +7284,7 @@
         }
       }
     },
-    "The plan, in order, is docs/04-translation-layer.md in Husk's source.": {
+    "The plan, in order, is docs/04-translation-layer.md in BetterHusk's source.": {
       "extractionState": "manual",
       "localizations": {
         "zh-Hans": {
@@ -7357,7 +7357,7 @@
         }
       }
     },
-    "This APK has no 64-bit code Husk can run, so it will probably not start.": {
+    "This APK has no 64-bit code BetterHusk can run, so it will probably not start.": {
       "extractionState": "manual",
       "localizations": {
         "zh-Hans": {
@@ -7368,62 +7368,62 @@
         }
       }
     },
-    "This app carries anti-tamper protection (%@). Such protection checks that it runs on a certified Android phone and closes the app otherwise, so it may not start in Husk.": {
+    "This app carries anti-tamper protection (%@). Such protection checks that it runs on a certified Android phone and closes the app otherwise, so it may not start in BetterHusk.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "此应用带有防篡改保护（%@）。此类保护会检查应用是否运行在经过认证的 Android 手机上，否则将关闭应用，因此它可能无法在 Husk 中启动。"
+            "value": "此应用带有防篡改保护（%@）。此类保护会检查应用是否运行在经过认证的 Android 手机上，否则将关闭应用，因此它可能无法在 BetterHusk 中启动。"
           }
         }
       }
     },
-    "This app does its main work in Linux programs it starts as processes of their own (here %@). Its own screens run in Husk, but iOS does not let an app start other processes, so those programs, and the games or tools they run, can not start yet.": {
+    "This app does its main work in Linux programs it starts as processes of their own (here %@). Its own screens run in BetterHusk, but iOS does not let an app start other processes, so those programs, and the games or tools they run, can not start yet.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "此应用以独立进程方式启动 Linux 程序来完成主要工作（此处为 %@）。它自身的界面可在 Husk 中运行，但 iOS 不允许应用启动其他进程，因此这些程序及其运行的游戏或工具暂时无法启动。"
+            "value": "此应用以独立进程方式启动 Linux 程序来完成主要工作（此处为 %@）。它自身的界面可在 BetterHusk 中运行，但 iOS 不允许应用启动其他进程，因此这些程序及其运行的游戏或工具暂时无法启动。"
           }
         }
       }
     },
-    "This app is published in several pieces (split APKs) and only its base was imported, so its libraries or resources are missing. Import the whole bundle (.apks, .xapk or .apkm), or get it from Husk's store.": {
+    "This app is published in several pieces (split APKs) and only its base was imported, so its libraries or resources are missing. Import the whole bundle (.apks, .xapk or .apkm), or get it from BetterHusk's store.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "此应用以多个分包（split APK）发布，但只导入了基础包，导致库或资源缺失。请导入完整安装包（.apks、.xapk 或 .apkm），或从 Husk 商店获取。"
+            "value": "此应用以多个分包（split APK）发布，但只导入了基础包，导致库或资源缺失。请导入完整安装包（.apks、.xapk 或 .apkm），或从 BetterHusk 商店获取。"
           }
         }
       }
     },
-    "This app only works signed in to a Google account. It asked Android to pick one, and Husk has no Google accounts to offer, so the app closed.": {
+    "This app only works signed in to a Google account. It asked Android to pick one, and BetterHusk has no Google accounts to offer, so the app closed.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "此应用必须登录 Google 账户才能使用。它请求 Android 选择账户，而 Husk 没有可提供的 Google 账户，因此应用关闭了。"
+            "value": "此应用必须登录 Google 账户才能使用。它请求 Android 选择账户，而 BetterHusk 没有可提供的 Google 账户，因此应用关闭了。"
           }
         }
       }
     },
-    "This app relies on Google Play services (Google sign-in, Google's account and device checks) for more than Husk can answer for. Apps that only use Google's libraries run; this one stops without the real services.": {
+    "This app relies on Google Play services (Google sign-in, Google's account and device checks) for more than BetterHusk can answer for. Apps that only use Google's libraries run; this one stops without the real services.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "此应用对 Google Play 服务（Google 登录、账户与设备校验）的依赖超出了 Husk 能应答的范围。只用到 Google 库的应用可以运行；这一应用缺少真实服务时就会停止。"
+            "value": "此应用对 Google Play 服务（Google 登录、账户与设备校验）的依赖超出了 BetterHusk 能应答的范围。只用到 Google 库的应用可以运行；这一应用缺少真实服务时就会停止。"
           }
         }
       }
     },
-    "This device closed the connection, which usually means it no longer accepts Husk's pairing. Pair again, and check that LocalDevVPN is connected.": {
+    "This device closed the connection, which usually means it no longer accepts BetterHusk's pairing. Pair again, and check that LocalDevVPN is connected.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "此设备关闭了连接，通常意味着它不再接受 Husk 的配对。请重新配对，并确认 LocalDevVPN 已连接。"
+            "value": "此设备关闭了连接，通常意味着它不再接受 BetterHusk 的配对。请重新配对，并确认 LocalDevVPN 已连接。"
           }
         }
       }
@@ -7438,22 +7438,22 @@
         }
       }
     },
-    "This file is not an app Husk can read": {
+    "This file is not an app BetterHusk can read": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "此文件不是 Husk 可识别的应用"
+            "value": "此文件不是 BetterHusk 可识别的应用"
           }
         }
       }
     },
-    "This game keeps most of its data in an expansion file (OBB) that the Play Store downloads separately from the app. Husk installed the app itself but not that file, so the game cannot load.": {
+    "This game keeps most of its data in an expansion file (OBB) that the Play Store downloads separately from the app. BetterHusk installed the app itself but not that file, so the game cannot load.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "此游戏的大部分数据放在扩展文件（OBB）中，Play 商店会与应用分开下载它。Husk 只安装了应用本身而未装该文件，因此游戏无法加载。"
+            "value": "此游戏的大部分数据放在扩展文件（OBB）中，Play 商店会与应用分开下载它。BetterHusk 只安装了应用本身而未装该文件，因此游戏无法加载。"
           }
         }
       }
@@ -7469,12 +7469,12 @@
         }
       }
     },
-    "This iPhone only lets an app run translated code while a debugger enables JIT for it. Open Husk through StikDebug, or tap Turn On JIT in Husk, then start the app again.": {
+    "This iPhone only lets an app run translated code while a debugger enables JIT for it. Open BetterHusk through StikDebug, or tap Turn On JIT in BetterHusk, then start the app again.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "此 iPhone 只允许应用在调试器为其启用 JIT 时运行翻译代码。请通过 StikDebug 打开 Husk，或在 Husk 中点击“开启 JIT”，然后重新启动应用。"
+            "value": "此 iPhone 只允许应用在调试器为其启用 JIT 时运行翻译代码。请通过 StikDebug 打开 BetterHusk，或在 BetterHusk 中点击“开启 JIT”，然后重新启动应用。"
           }
         }
       }
@@ -7500,7 +7500,7 @@
         }
       }
     },
-    "This is Geode's Android launcher. On Husk, Geode runs inside Geometry Dash instead: turn it on here ": {
+    "This is Geode's Android launcher. On BetterHusk, Geode runs inside Geometry Dash instead: turn it on here ": {
       "extractionState": "manual",
       "localizations": {
         "zh-Hans": {
@@ -7511,12 +7511,12 @@
         }
       }
     },
-    "This is Geode's Android launcher. On Husk, Geode runs inside Geometry Dash instead: turn it on here (or in Geometry Dash's settings, under Mods), then start Geometry Dash and use Geode's button on its main menu to get mods. This APK supplies a library Geode needs, so keep it.": {
+    "This is Geode's Android launcher. On BetterHusk, Geode runs inside Geometry Dash instead: turn it on here (or in Geometry Dash's settings, under Mods), then start Geometry Dash and use Geode's button on its main menu to get mods. This APK supplies a library Geode needs, so keep it.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "这是 Geode 的 Android 启动器。在 Husk 上，Geode 改为在 Geometry Dash 内运行：在此处（或 Geometry Dash 设置的“Mods”中）开启它，然后启动 Geometry Dash，使用主菜单上的 Geode 按钮获取模组。此 APK 提供 Geode 所需的库，请保留它。"
+            "value": "这是 Geode 的 Android 启动器。在 BetterHusk 上，Geode 改为在 Geometry Dash 内运行：在此处（或 Geometry Dash 设置的“Mods”中）开启它，然后启动 Geometry Dash，使用主菜单上的 Geode 按钮获取模组。此 APK 提供 Geode 所需的库，请保留它。"
           }
         }
       }
@@ -7676,32 +7676,32 @@
         }
       }
     },
-    "TrollStore can turn JIT on for Husk: it opens Husk and enables it, with no computer. In TrollStore's Settings, URL Scheme must be on.": {
+    "TrollStore can turn JIT on for BetterHusk: it opens BetterHusk and enables it, with no computer. In TrollStore's Settings, URL Scheme must be on.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "TrollStore 可以为 Husk 开启 JIT：它打开 Husk 并启用，无需电脑。需在 TrollStore 的“设置”中打开 URL Scheme。"
+            "value": "TrollStore 可以为 BetterHusk 开启 JIT：它打开 BetterHusk 并启用，无需电脑。需在 TrollStore 的“设置”中打开 URL Scheme。"
           }
         }
       }
     },
-    "TrollStore installs turn JIT on at launch, and Husk says on screen when something can't start without it.": {
+    "TrollStore installs turn JIT on at launch, and BetterHusk says on screen when something can't start without it.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "通过 TrollStore 安装的 Husk 会在启动时开启 JIT，并且当某功能离开 JIT 无法启动时，Husk 会在屏幕上说明。"
+            "value": "通过 TrollStore 安装的 BetterHusk 会在启动时开启 JIT，并且当某功能离开 JIT 无法启动时，BetterHusk 会在屏幕上说明。"
           }
         }
       }
     },
-    "TrollStore is installed, so Husk will ask it to enable JIT.": {
+    "TrollStore is installed, so BetterHusk will ask it to enable JIT.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "已安装 TrollStore，Husk 将请求它启用 JIT。"
+            "value": "已安装 TrollStore，BetterHusk 将请求它启用 JIT。"
           }
         }
       }
@@ -7933,7 +7933,7 @@
         }
       }
     },
-    "Use Husk while an app runs": {
+    "Use BetterHusk while an app runs": {
       "extractionState": "manual",
       "localizations": {
         "zh-Hans": {
@@ -7944,7 +7944,7 @@
         }
       }
     },
-    "Use Husk while it starts": {
+    "Use BetterHusk while it starts": {
       "extractionState": "manual",
       "localizations": {
         "zh-Hans": {
@@ -7988,12 +7988,12 @@
         }
       }
     },
-    "Uses something Husk does not have yet": {
+    "Uses something BetterHusk does not have yet": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "用到了 Husk 尚不具备的能力"
+            "value": "用到了 BetterHusk 尚不具备的能力"
           }
         }
       }
@@ -8101,7 +8101,7 @@
         }
       }
     },
-    "Welcome to Husk": {
+    "Welcome to BetterHusk": {
       "extractionState": "manual",
       "localizations": {
         "zh-Hans": {
@@ -8122,7 +8122,7 @@
         }
       }
     },
-    "What the game is called in Husk. The game itself is not changed.": {
+    "What the game is called in BetterHusk. The game itself is not changed.": {
       "extractionState": "manual",
       "localizations": {
         "zh-Hans": {
@@ -8133,17 +8133,17 @@
         }
       }
     },
-    "What's New in Husk %@": {
+    "What's New in BetterHusk %@": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Husk %@ 新功能"
+            "value": "BetterHusk %@ 新功能"
           }
         }
       }
     },
-    "When a new Android image or snapshot is published, Husk asks once whether to download it. ": {
+    "When a new Android image or snapshot is published, BetterHusk asks once whether to download it. ": {
       "extractionState": "manual",
       "localizations": {
         "zh-Hans": {
@@ -8154,32 +8154,32 @@
         }
       }
     },
-    "When a new Android image or snapshot is published, Husk asks once whether to download it. Never asked before Android has been downloaded.": {
+    "When a new Android image or snapshot is published, BetterHusk asks once whether to download it. Never asked before Android has been downloaded.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "当新的 Android 镜像或快照发布时，Husk 会询问一次是否下载。在 Android 下载前不会询问。"
+            "value": "当新的 Android 镜像或快照发布时，BetterHusk 会询问一次是否下载。在 Android 下载前不会询问。"
           }
         }
       }
     },
-    "Whenever Android or a game starts, Husk asks TrollStore to enable JIT. TrollStore opens Husk, attaches to it for a moment and lets go, which leaves it allowed to run code it wrote.": {
+    "Whenever Android or a game starts, BetterHusk asks TrollStore to enable JIT. TrollStore opens BetterHusk, attaches to it for a moment and lets go, which leaves it allowed to run code it wrote.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "每当 Android 或游戏启动，Husk 会请求 TrollStore 启用 JIT。TrollStore 会打开 Husk、短暂附加后放开，使其获准运行自己写入的代码。"
+            "value": "每当 Android 或游戏启动，BetterHusk 会请求 TrollStore 启用 JIT。TrollStore 会打开 BetterHusk、短暂附加后放开，使其获准运行自己写入的代码。"
           }
         }
       }
     },
-    "Whenever Android starts, Husk opens StikDebug, which attaches and comes back.": {
+    "Whenever Android starts, BetterHusk opens StikDebug, which attaches and comes back.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "每当 Android 启动，Husk 会打开 StikDebug，由其附加后返回。"
+            "value": "每当 Android 启动，BetterHusk 会打开 StikDebug，由其附加后返回。"
           }
         }
       }
@@ -8246,7 +8246,7 @@
         }
       }
     },
-    "You can skip this: Husk asks again when a game needs it, and it is in Settings › JIT & Sideload.": {
+    "You can skip this: BetterHusk asks again when a game needs it, and it is in Settings › JIT & Sideload.": {
       "extractionState": "manual",
       "localizations": {
         "zh-Hans": {
@@ -8267,7 +8267,7 @@
         }
       }
     },
-    "Your Husk log helps the developer see what went wrong. Only moderators can read it.": {
+    "Your BetterHusk log helps the developer see what went wrong. Only moderators can read it.": {
       "extractionState": "manual",
       "localizations": {
         "zh-Hans": {
@@ -8561,7 +8561,7 @@
         }
       }
     },
-    "serve-folder.py is in Husk's repository, under tools. The folder's contents land at the top of Shared Storage, so serve the folder that holds what a game expects there.": {
+    "serve-folder.py is in BetterHusk's repository, under tools. The folder's contents land at the top of Shared Storage, so serve the folder that holds what a game expects there.": {
       "extractionState": "manual",
       "localizations": {
         "zh-Hans": {
@@ -8652,12 +8652,12 @@
         }
       }
     },
-    "userdata image has a backing file, which Husk never ships": {
+    "userdata image has a backing file, which BetterHusk never ships": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "userdata 镜像带有 Husk 从不发布的 backing file"
+            "value": "userdata 镜像带有 BetterHusk 从不发布的 backing file"
           }
         }
       }
@@ -8762,22 +8762,22 @@
         }
       }
     },
-    "What is JIT, and why does Husk need it?": {
+    "What is JIT, and why does BetterHusk need it?": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "什么是 JIT，为什么 Husk 需要它？"
+            "value": "什么是 JIT，为什么 BetterHusk 需要它？"
           }
         }
       }
     },
-    "Android apps and games are compiled while they run, which needs memory that can be written and then run. iOS only allows that while a debugger is attached to the app. Turning on JIT attaches one for a moment. Without it, Husk can show your library but cannot start Android or a game.": {
+    "Android apps and games are compiled while they run, which needs memory that can be written and then run. iOS only allows that while a debugger is attached to the app. Turning on JIT attaches one for a moment. Without it, BetterHusk can show your library but cannot start Android or a game.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Android 应用和游戏在运行时编译，这需要既可写又可执行的内存。iOS 只允许在应用挂了调试器时这样做。开启 JIT 会临时附加一个调试器。没有它，Husk 只能显示你的游戏库，无法启动 Android 或游戏。"
+            "value": "Android 应用和游戏在运行时编译，这需要既可写又可执行的内存。iOS 只允许在应用挂了调试器时这样做。开启 JIT 会临时附加一个调试器。没有它，BetterHusk 只能显示你的游戏库，无法启动 Android 或游戏。"
           }
         }
       }
@@ -8792,12 +8792,12 @@
         }
       }
     },
-    "• **iOS 27 or later:** Settings › JIT › Pair on this iPhone. No computer needed.\n• **iOS 26:** StikJIT (built in) with a pairing file made on a computer, plus LocalDevVPN.\n• **Older iOS, or Husk inside LiveContainer:** the StikDebug app.\n• **Installed with TrollStore:** TrollStore, with its URL Scheme setting on.\n• **Jailbroken with Dopamine:** turn on JIT for apps in the jailbreak's settings.": {
+    "• **iOS 27 or later:** Settings › JIT › Pair on this iPhone. No computer needed.\n• **iOS 26:** StikJIT (built in) with a pairing file made on a computer, plus LocalDevVPN.\n• **Older iOS, or BetterHusk inside LiveContainer:** the StikDebug app.\n• **Installed with TrollStore:** TrollStore, with its URL Scheme setting on.\n• **Jailbroken with Dopamine:** turn on JIT for apps in the jailbreak's settings.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "• **iOS 27 或更新：** 设置 › JIT › 在此 iPhone 上配对。无需电脑。\n• **iOS 26：** 内置 StikJIT，配合电脑制作的配对文件和 LocalDevVPN。\n• **更旧的 iOS，或 LiveContainer 内的 Husk：** 使用 StikDebug 应用。\n• **TrollStore 安装：** 使用 TrollStore，并打开其 URL Scheme 设置。\n• **Dopamine 越狱：** 在越狱设置中为应用开启 JIT。"
+            "value": "• **iOS 27 或更新：** 设置 › JIT › 在此 iPhone 上配对。无需电脑。\n• **iOS 26：** 内置 StikJIT，配合电脑制作的配对文件和 LocalDevVPN。\n• **更旧的 iOS，或 LiveContainer 内的 BetterHusk：** 使用 StikDebug 应用。\n• **TrollStore 安装：** 使用 TrollStore，并打开其 URL Scheme 设置。\n• **Dopamine 越狱：** 在越狱设置中为应用开启 JIT。"
           }
         }
       }
@@ -8812,32 +8812,32 @@
         }
       }
     },
-    "1. Make sure **LocalDevVPN** is installed and connected. The VPN icon should be in the status bar.\n2. Wi-Fi must be on, even though nothing leaves your iPhone.\n3. **Developer Mode** must be on (Settings › Privacy & Security › Developer Mode).\n4. The first time, Husk downloads Apple's Developer Disk Image, which can take a minute. Let it finish.\n5. Still failing? Toggle LocalDevVPN off and on, then pair again.": {
+    "1. Make sure **LocalDevVPN** is installed and connected. The VPN icon should be in the status bar.\n2. Wi-Fi must be on, even though nothing leaves your iPhone.\n3. **Developer Mode** must be on (Settings › Privacy & Security › Developer Mode).\n4. The first time, BetterHusk downloads Apple's Developer Disk Image, which can take a minute. Let it finish.\n5. Still failing? Toggle LocalDevVPN off and on, then pair again.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "1. 确认 **LocalDevVPN** 已安装并连接，状态栏应显示 VPN 图标。\n2. Wi-Fi 必须打开，尽管不会有任何数据离开你的 iPhone。\n3. **开发者模式**必须开启（设置 › 隐私与安全性 › 开发者模式）。\n4. 首次使用时 Husk 会下载 Apple 的 Developer Disk Image，可能需要一分钟，请耐心等待。\n5. 仍然失败？关闭再打开 LocalDevVPN，然后重新配对。"
+            "value": "1. 确认 **LocalDevVPN** 已安装并连接，状态栏应显示 VPN 图标。\n2. Wi-Fi 必须打开，尽管不会有任何数据离开你的 iPhone。\n3. **开发者模式**必须开启（设置 › 隐私与安全性 › 开发者模式）。\n4. 首次使用时 BetterHusk 会下载 Apple 的 Developer Disk Image，可能需要一分钟，请耐心等待。\n5. 仍然失败？关闭再打开 LocalDevVPN，然后重新配对。"
           }
         }
       }
     },
-    "“Pair with Husk” does not appear in Developer Mode": {
+    "“Pair with BetterHusk” does not appear in Developer Mode": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "开发者模式中没有出现“与 Husk 配对”"
+            "value": "开发者模式中没有出现“与 BetterHusk 配对”"
           }
         }
       }
     },
-    "Tap **Start pairing** in Husk first and allow **Local Network** access when asked. If you said no earlier, turn it on in Settings › Privacy & Security › Local Network › Husk. Wi-Fi has to be on. Developer Mode must already be enabled, which restarts the iPhone the first time.": {
+    "Tap **Start pairing** in BetterHusk first and allow **Local Network** access when asked. If you said no earlier, turn it on in Settings › Privacy & Security › Local Network › BetterHusk. Wi-Fi has to be on. Developer Mode must already be enabled, which restarts the iPhone the first time.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "先在 Husk 中点击**开始配对**，并在弹出请求时允许**本地网络**访问。如果之前拒绝了，可在 设置 › 隐私与安全性 › 本地网络 › Husk 中打开。Wi-Fi 必须开启。开发者模式需已启用（首次启用会重启 iPhone）。"
+            "value": "先在 BetterHusk 中点击**开始配对**，并在弹出请求时允许**本地网络**访问。如果之前拒绝了，可在 设置 › 隐私与安全性 › 本地网络 › BetterHusk 中打开。Wi-Fi 必须开启。开发者模式需已启用（首次启用会重启 iPhone）。"
           }
         }
       }
@@ -8872,12 +8872,12 @@
         }
       }
     },
-    "Open StikDebug on its own and check that it has your pairing file and that LocalDevVPN is connected. Update StikDebug to the latest release. Husk sends StikDebug its script itself, so nothing needs setting up for Husk inside StikDebug.": {
+    "Open StikDebug on its own and check that it has your pairing file and that LocalDevVPN is connected. Update StikDebug to the latest release. BetterHusk sends StikDebug its script itself, so nothing needs setting up for BetterHusk inside StikDebug.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "单独打开 StikDebug，确认其中有你的配对文件且 LocalDevVPN 已连接，并把 StikDebug 更新到最新版本。Husk 会自己把脚本发给 StikDebug，无需在 StikDebug 内为 Husk 做任何设置。"
+            "value": "单独打开 StikDebug，确认其中有你的配对文件且 LocalDevVPN 已连接，并把 StikDebug 更新到最新版本。BetterHusk 会自己把脚本发给 StikDebug，无需在 StikDebug 内为 BetterHusk 做任何设置。"
           }
         }
       }
@@ -8892,22 +8892,22 @@
         }
       }
     },
-    "JIT lasts as long as Husk is running. When iOS closes Husk in the background, or you swipe it away, the next launch needs JIT again. With Pair on this iPhone or a pairing file it is one tap.": {
+    "JIT lasts as long as BetterHusk is running. When iOS closes BetterHusk in the background, or you swipe it away, the next launch needs JIT again. With Pair on this iPhone or a pairing file it is one tap.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "JIT 只在 Husk 运行期间有效。当 iOS 在后台关闭 Husk 或你手动划掉它后，下次启动需要重新开启 JIT。使用“在此 iPhone 上配对”或配对文件，只需点一下。"
+            "value": "JIT 只在 BetterHusk 运行期间有效。当 iOS 在后台关闭 BetterHusk 或你手动划掉它后，下次启动需要重新开启 JIT。使用“在此 iPhone 上配对”或配对文件，只需点一下。"
           }
         }
       }
     },
-    "Can I use Husk without JIT?": {
+    "Can I use BetterHusk without JIT?": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "不用 JIT 能用 Husk 吗？"
+            "value": "不用 JIT 能用 BetterHusk 吗？"
           }
         }
       }
@@ -8922,52 +8922,52 @@
         }
       }
     },
-    "Husk Itself": {
+    "BetterHusk Itself": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Husk 本身"
+            "value": "BetterHusk 本身"
           }
         }
       }
     },
-    "Husk will not open at all": {
+    "BetterHusk will not open at all": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Husk 完全打不开"
+            "value": "BetterHusk 完全打不开"
           }
         }
       }
     },
-    "• **Opens and closes instantly:** the signing certificate has probably expired. Free Apple accounts last 7 days. Re-sign or reinstall Husk with your sideloader; your apps and saves stay.\n• **“Untrusted Developer”:** go to Settings › General › VPN & Device Management and trust your certificate.\n• **Asks for Developer Mode:** turn it on in Settings › Privacy & Security.": {
+    "• **Opens and closes instantly:** the signing certificate has probably expired. Free Apple accounts last 7 days. Re-sign or reinstall BetterHusk with your sideloader; your apps and saves stay.\n• **“Untrusted Developer”:** go to Settings › General › VPN & Device Management and trust your certificate.\n• **Asks for Developer Mode:** turn it on in Settings › Privacy & Security.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "• **秒开秒退：** 签名证书多半已过期。免费 Apple 账号的证书有效期为 7 天。用你的侧载工具重新签名或重装 Husk，应用和存档都会保留。\n• **“不受信任的开发者”：** 前往 设置 › 通用 › VPN 与设备管理 信任你的证书。\n• **要求开发者模式：** 在 设置 › 隐私与安全性 中打开。"
+            "value": "• **秒开秒退：** 签名证书多半已过期。免费 Apple 账号的证书有效期为 7 天。用你的侧载工具重新签名或重装 BetterHusk，应用和存档都会保留。\n• **“不受信任的开发者”：** 前往 设置 › 通用 › VPN 与设备管理 信任你的证书。\n• **要求开发者模式：** 在 设置 › 隐私与安全性 中打开。"
           }
         }
       }
     },
-    "Husk closed while I was playing": {
+    "BetterHusk closed while I was playing": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "玩游戏时 Husk 突然关闭了"
+            "value": "玩游戏时 BetterHusk 突然关闭了"
           }
         }
       }
     },
-    "When Husk opens again it shows what happened, with a report you can share. Usually the game ran out of memory or hit something Husk does not support yet. Close other apps, and share the report if it keeps happening.": {
+    "When BetterHusk opens again it shows what happened, with a report you can share. Usually the game ran out of memory or hit something BetterHusk does not support yet. Close other apps, and share the report if it keeps happening.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "重新打开 Husk 时会显示发生了什么，并附带可分享的报告。通常是游戏内存不足或遇到了 Husk 尚不支持的功能。关闭其他应用；如果反复出现，请分享报告。"
+            "value": "重新打开 BetterHusk 时会显示发生了什么，并附带可分享的报告。通常是游戏内存不足或遇到了 BetterHusk 尚不支持的功能。关闭其他应用；如果反复出现，请分享报告。"
           }
         }
       }
@@ -8982,32 +8982,32 @@
         }
       }
     },
-    "Open the app's page in your Library and tap **Share Report**. For Husk's own log, go to Settings › About › **Open Console**. Turning on **Developer Info** there adds more detail.": {
+    "Open the app's page in your Library and tap **Share Report**. For BetterHusk's own log, go to Settings › About › **Open Console**. Turning on **Developer Info** there adds more detail.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "在游戏库中打开该应用的页面，点击**分享报告**。Husk 自身的日志在 设置 › 关于 › **打开控制台**。在那里打开**开发者信息**可以看到更多细节。"
+            "value": "在游戏库中打开该应用的页面，点击**分享报告**。BetterHusk 自身的日志在 设置 › 关于 › **打开控制台**。在那里打开**开发者信息**可以看到更多细节。"
           }
         }
       }
     },
-    "How do I update Husk?": {
+    "How do I update BetterHusk?": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "如何更新 Husk？"
+            "value": "如何更新 BetterHusk？"
           }
         }
       }
     },
-    "Husk tells you when a new version is out. Install the new IPA over the old one with the same sideloader. Your library, apps and saves are kept.": {
+    "BetterHusk tells you when a new version is out. Install the new IPA over the old one with the same sideloader. Your library, apps and saves are kept.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "有新版本时 Husk 会提示。用同一个侧载工具把新 IPA 覆盖安装到旧版本上即可，游戏库、应用和存档都会保留。"
+            "value": "有新版本时 BetterHusk 会提示。用同一个侧载工具把新 IPA 覆盖安装到旧版本上即可，游戏库、应用和存档都会保留。"
           }
         }
       }
@@ -9032,12 +9032,12 @@
         }
       }
     },
-    "Tap + and pick a fake package (.pkg), a folder of packages, or an extracted game folder (eboot.bin and sce_sys). Husk installs it into PS4 Games in Files, and an update package goes beside the game it updates. Retail packages are locked to a PS4 and do not install. PS4 games need iOS 17.4 or later.": {
+    "Tap + and pick a fake package (.pkg), a folder of packages, or an extracted game folder (eboot.bin and sce_sys). BetterHusk installs it into PS4 Games in Files, and an update package goes beside the game it updates. Retail packages are locked to a PS4 and do not install. PS4 games need iOS 17.4 or later.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "点击 +，选择一个 fake package（.pkg）、一个安装包文件夹，或解压后的游戏文件夹（含 eboot.bin 和 sce_sys）。Husk 会把它装进“文件”里的 PS4 Games，更新包放在对应游戏旁边。零售包绑定在 PS4 上，无法安装。PS4 游戏需要 iOS 17.4 或更新版本。"
+            "value": "点击 +，选择一个 fake package（.pkg）、一个安装包文件夹，或解压后的游戏文件夹（含 eboot.bin 和 sce_sys）。BetterHusk 会把它装进“文件”里的 PS4 Games，更新包放在对应游戏旁边。零售包绑定在 PS4 上，无法安装。PS4 游戏需要 iOS 17.4 或更新版本。"
           }
         }
       }
@@ -9052,12 +9052,12 @@
         }
       }
     },
-    "Open its page in the Library. Husk says why it stopped:\n• **Protected app:** it checks that it is on a real Android phone, or uses anti-cheat or DRM. Husk does not get around these.\n• **Wrong kind of CPU code:** the APK only has 32-bit code. Find an arm64 (arm64-v8a) version.\n• **Incomplete app or missing game data:** the APK needs its split files or an OBB. Import the full .apks, .xapk or .apkm.\n• **Needs Google:** the app requires a Google account or Play services Husk cannot provide.\n• **Uses something Husk does not have yet:** share the report so it can be added.": {
+    "Open its page in the Library. BetterHusk says why it stopped:\n• **Protected app:** it checks that it is on a real Android phone, or uses anti-cheat or DRM. BetterHusk does not get around these.\n• **Wrong kind of CPU code:** the APK only has 32-bit code. Find an arm64 (arm64-v8a) version.\n• **Incomplete app or missing game data:** the APK needs its split files or an OBB. Import the full .apks, .xapk or .apkm.\n• **Needs Google:** the app requires a Google account or Play services BetterHusk cannot provide.\n• **Uses something BetterHusk does not have yet:** share the report so it can be added.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "在游戏库中打开它的页面，Husk 会说明停止原因：\n• **受保护的应用：** 它会检测是否在真实 Android 手机上运行，或带有反作弊/DRM。Husk 无法绕过这些。\n• **CPU 代码类型不对：** APK 只有 32 位代码，请找 arm64（arm64-v8a）版本。\n• **应用不完整或缺少游戏数据：** APK 需要分包文件或 OBB，请导入完整的 .apks、.xapk 或 .apkm。\n• **需要 Google：** 应用要求 Google 账号或 Husk 无法提供的 Play 服务。\n• **用到了 Husk 尚不具备的功能：** 分享报告以便后续支持。"
+            "value": "在游戏库中打开它的页面，BetterHusk 会说明停止原因：\n• **受保护的应用：** 它会检测是否在真实 Android 手机上运行，或带有反作弊/DRM。BetterHusk 无法绕过这些。\n• **CPU 代码类型不对：** APK 只有 32 位代码，请找 arm64（arm64-v8a）版本。\n• **应用不完整或缺少游戏数据：** APK 需要分包文件或 OBB，请导入完整的 .apks、.xapk 或 .apkm。\n• **需要 Google：** 应用要求 Google 账号或 BetterHusk 无法提供的 Play 服务。\n• **用到了 BetterHusk 尚不具备的功能：** 分享报告以便后续支持。"
           }
         }
       }
@@ -9112,12 +9112,12 @@
         }
       }
     },
-    ".apk, and split bundles as .apks, .xapk or .apkm. Share them to Husk, open them from Files, or tap + in the Library.": {
+    ".apk, and split bundles as .apks, .xapk or .apkm. Share them to BetterHusk, open them from Files, or tap + in the Library.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": ".apk，以及 .apks、.xapk、.apkm 形式的分包合集。可以分享给 Husk、从“文件”中打开，或在游戏库中点 +。"
+            "value": ".apk，以及 .apks、.xapk、.apkm 形式的分包合集。可以分享给 BetterHusk、从“文件”中打开，或在游戏库中点 +。"
           }
         }
       }
@@ -9132,12 +9132,12 @@
         }
       }
     },
-    "Close other apps and let the phone cool. Games run natively, but some do work on the CPU that a real Android phone does on hardware. Low Power Mode slows Husk down too.": {
+    "Close other apps and let the phone cool. Games run natively, but some do work on the CPU that a real Android phone does on hardware. Low Power Mode slows BetterHusk down too.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "关闭其他应用并让手机降温。游戏是原生运行的，但有些在 CPU 上做的事情在真机上由硬件完成。低电量模式也会让 Husk 变慢。"
+            "value": "关闭其他应用并让手机降温。游戏是原生运行的，但有些在 CPU 上做的事情在真机上由硬件完成。低电量模式也会让 BetterHusk 变慢。"
           }
         }
       }
@@ -9162,12 +9162,12 @@
         }
       }
     },
-    "Can I use Husk while a game runs?": {
+    "Can I use BetterHusk while a game runs?": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "游戏运行时还能用 Husk 吗？"
+            "value": "游戏运行时还能用 BetterHusk 吗？"
           }
         }
       }
@@ -9192,12 +9192,12 @@
         }
       }
     },
-    "Husk has no Google Play services, so “Sign in with Google” buttons can fail. Use email or another sign-in if the app offers one.": {
+    "BetterHusk has no Google Play services, so “Sign in with Google” buttons can fail. Use email or another sign-in if the app offers one.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Husk 没有 Google Play 服务，所以“使用 Google 登录”按钮可能失败。如果应用提供邮箱或其他登录方式，请改用那些。"
+            "value": "BetterHusk 没有 Google Play 服务，所以“使用 Google 登录”按钮可能失败。如果应用提供邮箱或其他登录方式，请改用那些。"
           }
         }
       }
@@ -9222,32 +9222,32 @@
         }
       }
     },
-    "Each app keeps its data inside Husk. On an app's page, **Back Up Saves** exports them and **Restore Saves** brings them back, including onto another iPhone.": {
+    "Each app keeps its data inside BetterHusk. On an app's page, **Back Up Saves** exports them and **Restore Saves** brings them back, including onto another iPhone.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "每个应用的数据都保存在 Husk 内。在应用页面中，**备份存档**可导出数据，**恢复存档**可还原——包括还原到另一台 iPhone 上。"
+            "value": "每个应用的数据都保存在 BetterHusk 内。在应用页面中，**备份存档**可导出数据，**恢复存档**可还原——包括还原到另一台 iPhone 上。"
           }
         }
       }
     },
-    "Husk is using a lot of storage": {
+    "BetterHusk is using a lot of storage": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Husk 占用了很多存储空间"
+            "value": "BetterHusk 占用了很多存储空间"
           }
         }
       }
     },
-    "Imported apps and their data live in Husk's folder. Remove games you no longer play from their page. The full Android system download is about 2 GB more and is only needed for Android itself.": {
+    "Imported apps and their data live in BetterHusk's folder. Remove games you no longer play from their page. The full Android system download is about 2 GB more and is only needed for Android itself.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "导入的应用及其数据都在 Husk 的文件夹中。在应用页面中删除不再玩的游戏即可。完整 Android 系统还需约 2 GB，仅 Android 本身需要。"
+            "value": "导入的应用及其数据都在 BetterHusk 的文件夹中。在应用页面中删除不再玩的游戏即可。完整 Android 系统还需约 2 GB，仅 Android 本身需要。"
           }
         }
       }
@@ -9282,12 +9282,12 @@
         }
       }
     },
-    "The first start downloads the Android image and boots it from cold, which takes a few minutes. After that Husk restores a saved machine, which is much faster.": {
+    "The first start downloads the Android image and boots it from cold, which takes a few minutes. After that BetterHusk restores a saved machine, which is much faster.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "首次启动要下载 Android 镜像并冷启动，需要几分钟。之后 Husk 会直接恢复已保存的机器，快得多。"
+            "value": "首次启动要下载 Android 镜像并冷启动，需要几分钟。之后 BetterHusk 会直接恢复已保存的机器，快得多。"
           }
         }
       }
@@ -9302,42 +9302,42 @@
         }
       }
     },
-    "Husk's JIT helper is missing from this installation. Reinstall Husk, and keep its app extensions if your sideloader asks, or use StikDebug.": {
+    "BetterHusk's JIT helper is missing from this installation. Reinstall BetterHusk, and keep its app extensions if your sideloader asks, or use StikDebug.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "此安装缺少 Husk 的 JIT 助手。请重装 Husk，若侧载工具询问请保留其应用扩展，或改用 StikDebug。"
+            "value": "此安装缺少 BetterHusk 的 JIT 助手。请重装 BetterHusk，若侧载工具询问请保留其应用扩展，或改用 StikDebug。"
           }
         }
       }
     },
-    "The request for Husk's JIT helper could not be encoded.": {
+    "The request for BetterHusk's JIT helper could not be encoded.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "无法编码发给 Husk JIT 助手的请求。"
+            "value": "无法编码发给 BetterHusk JIT 助手的请求。"
           }
         }
       }
     },
-    "iOS did not provide the extension API Husk's JIT helper needs.": {
+    "iOS did not provide the extension API BetterHusk's JIT helper needs.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "iOS 没有提供 Husk JIT 助手所需的扩展 API。"
+            "value": "iOS 没有提供 BetterHusk JIT 助手所需的扩展 API。"
           }
         }
       }
     },
-    "A new Husk": {
+    "A new BetterHusk": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "全新 Husk"
+            "value": "全新 BetterHusk"
           }
         }
       }
@@ -9382,12 +9382,12 @@
         }
       }
     },
-    "Browse and download Android apps from Google Play, with a guest account or your own, and see how each runs in Husk.": {
+    "Browse and download Android apps from Google Play, with a guest account or your own, and see how each runs in BetterHusk.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "用访客账号或你自己的账号从 Google Play 浏览并下载 Android 应用，还能查看每款应用在 Husk 中的运行情况。"
+            "value": "用访客账号或你自己的账号从 Google Play 浏览并下载 Android 应用，还能查看每款应用在 BetterHusk 中的运行情况。"
           }
         }
       }
@@ -9412,12 +9412,12 @@
         }
       }
     },
-    "Close Husk to Play": {
+    "Close BetterHusk to Play": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "关闭 Husk 后游玩"
+            "value": "关闭 BetterHusk 后游玩"
           }
         }
       }
@@ -9612,12 +9612,12 @@
         }
       }
     },
-    "Made by Husk": {
+    "Made by BetterHusk": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "由 Husk 创建"
+            "value": "由 BetterHusk 创建"
           }
         }
       }
@@ -9652,22 +9652,22 @@
         }
       }
     },
-    "Pairing finished, but Husk could not save the pairing file.": {
+    "Pairing finished, but BetterHusk could not save the pairing file.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "配对已完成，但 Husk 无法保存配对文件。"
+            "value": "配对已完成，但 BetterHusk 无法保存配对文件。"
           }
         }
       }
     },
-    "Pairing with Husk": {
+    "Pairing with BetterHusk": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "正在与 Husk 配对"
+            "value": "正在与 BetterHusk 配对"
           }
         }
       }
@@ -9762,22 +9762,22 @@
         }
       }
     },
-    "Stuck? Settings › Help answers the common problems, and a game that crashes Husk leaves a report to share.": {
+    "Stuck? Settings › Help answers the common problems, and a game that crashes BetterHusk leaves a report to share.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "卡住了？设置 › 帮助 里有常见问题的答案；让 Husk 崩溃的游戏会留下一份可分享的报告。"
+            "value": "卡住了？设置 › 帮助 里有常见问题的答案；让 BetterHusk 崩溃的游戏会留下一份可分享的报告。"
           }
         }
       }
     },
-    "Tap + to add an Android APK or bundle (.xapk, .apkm, .apks), or a PS4 game: a fake package (.pkg), a folder of them, or an extracted game folder. You can also share files to Husk from Files or Safari.": {
+    "Tap + to add an Android APK or bundle (.xapk, .apkm, .apks), or a PS4 game: a fake package (.pkg), a folder of them, or an extracted game folder. You can also share files to BetterHusk from Files or Safari.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "点击 + 添加 Android APK 或合集（.xapk、.apkm、.apks），或 PS4 游戏：fake package（.pkg）、安装包文件夹或解压后的游戏文件夹。也可以从“文件”或 Safari 分享文件给 Husk。"
+            "value": "点击 + 添加 Android APK 或合集（.xapk、.apkm、.apks），或 PS4 游戏：fake package（.pkg）、安装包文件夹或解压后的游戏文件夹。也可以从“文件”或 Safari 分享文件给 BetterHusk。"
           }
         }
       }
@@ -9882,32 +9882,32 @@
         }
       }
     },
-    "%@.%@ is not implemented in Husk": {
+    "%@.%@ is not implemented in BetterHusk": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "%@.%@ 在 Husk 中尚未实现"
+            "value": "%@.%@ 在 BetterHusk 中尚未实现"
           }
         }
       }
     },
-    "What apps and games inside Husk speak": {
+    "What apps and games inside BetterHusk speak": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Husk 内运行的应用和游戏使用的语言"
+            "value": "BetterHusk 内运行的应用和游戏使用的语言"
           }
         }
       }
     },
-    "The language apps and games inside Husk see. Husk itself follows your iPhone. Takes effect the next time an app opens.": {
+    "The language apps and games inside BetterHusk see. BetterHusk itself follows your iPhone. Takes effect the next time an app opens.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Husk 内运行的应用和游戏看到的语言。Husk 本身跟随你的 iPhone 系统语言。下次打开应用时生效。"
+            "value": "BetterHusk 内运行的应用和游戏看到的语言。BetterHusk 本身跟随你的 iPhone 系统语言。下次打开应用时生效。"
           }
         }
       }
@@ -10218,6 +10218,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "游戏需要 JIT，而 iOS 只将其授予附加了调试器的进程。BetterHusk 在 LiveContainer 中运行，因此 JIT 由 LiveContainer 提供——它自己的启动选项，或一个附加的调试器。"
+          }
+        }
+      }
+    },
+    "BetterHusk is running inside LiveContainer, so its JIT is LiveContainer's: turn JIT on for BetterHusk in LiveContainer's app settings, or attach StikDebug to the LiveContainer app, then start the app again.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "BetterHusk 正在 LiveContainer 中运行，其 JIT 由 LiveContainer 提供：请在 LiveContainer 的应用设置中为 BetterHusk 开启 JIT，或将 StikDebug 附加到 LiveContainer 应用，然后重新启动该应用。"
           }
         }
       }

@@ -51,7 +51,7 @@ struct AppDiagnosis: Identifiable, Equatable {
         guard let r = app.report else { return nil }
         if !r.ok || r.verdict == "unreadable" {
             return AppDiagnosis(kind: .badAPK, title: "Bad APK",
-                                detail: String(localized: "This file is not an app Husk can read") + (r.error.map { ": \($0)." } ?? ".")
+                                detail: String(localized: "This file is not an app BetterHusk can read") + (r.error.map { ": \($0)." } ?? ".")
                                     + " It may be damaged, only partly downloaded, or not an Android app at all.",
                                 evidence: r.error ?? r.summary)
         }
@@ -63,12 +63,12 @@ struct AppDiagnosis: Identifiable, Equatable {
         if app.apks.count == 1, let base = app.apks.first, husk_apk_split_required(base) != 0 {
             return AppDiagnosis(kind: .missingSplits, title: "Incomplete app",
                                 detail: "This app is published in several pieces (split APKs) and only its base was imported, so its libraries or "
-                                    + "resources are missing. Import the whole bundle (.apks, .xapk or .apkm), or get it from Husk's store.",
+                                    + "resources are missing. Import the whole bundle (.apks, .xapk or .apkm), or get it from BetterHusk's store.",
                                 evidence: "manifest: split APKs required")
         }
         if let lib = r.libraries.first(where: { l in protectorLibraries.contains(where: { l.name.hasPrefix($0) }) }) {
             return AppDiagnosis(kind: .protected, title: "Protected app",
-                                detail: String(localized: "This app carries anti-tamper protection (\(lib.name)). Such protection checks that it runs on a certified Android phone and closes the app otherwise, so it may not start in Husk."),
+                                detail: String(localized: "This app carries anti-tamper protection (\(lib.name)). Such protection checks that it runs on a certified Android phone and closes the app otherwise, so it may not start in BetterHusk."),
                                 evidence: lib.name)
         }
         return nil
@@ -84,16 +84,20 @@ struct AppDiagnosis: Identifiable, Equatable {
         // libraries, so everything after (java.lang.System failing to initialise, missing natives) follows from this
         if let l = lines.first(where: { $0.contains("no StikDebug JIT region") }) {
             return AppDiagnosis(kind: .noJIT, title: "JIT is not enabled",
-                                detail: "This iPhone only lets an app run translated code while a debugger enables JIT for it. Open Husk "
-                                    + "through StikDebug, or tap Turn On JIT in Husk, then start the app again.",
+                                detail: JITBootstrap.isInsideLiveContainer
+                                    ? "BetterHusk is running inside LiveContainer, so its JIT is LiveContainer's: turn JIT on for "
+                                        + "BetterHusk in LiveContainer's app settings, or attach StikDebug to the LiveContainer app, "
+                                        + "then start the app again."
+                                    : "This iPhone only lets an app run translated code while a debugger enables JIT for it. Open BetterHusk "
+                                        + "through StikDebug, or tap Turn On JIT in BetterHusk, then start the app again.",
                                 evidence: l)
         }
 
         // The JIT region is shared: Android (QEMU) holds its top half while it runs, an app's libraries fill it from the bottom
         if let l = lines.first(where: { $0.contains("but QEMU holds its top") || $0.contains("of TCG") && $0.contains("no room for") }) {
             return AppDiagnosis(kind: .noJIT, title: "Not enough JIT memory",
-                                detail: "Android and this app share the memory Husk runs translated code in, and together they do not fit. "
-                                    + "Close Husk and open it again, then start only the app (or only Android).",
+                                detail: "Android and this app share the memory BetterHusk runs translated code in, and together they do not fit. "
+                                    + "Close BetterHusk and open it again, then start only the app (or only Android).",
                                 evidence: l)
         }
 
@@ -107,7 +111,7 @@ struct AppDiagnosis: Identifiable, Equatable {
             let signal = head.range(of: "signal \\d+", options: .regularExpression).map { String(head[$0]) } ?? "a fatal signal"
             if let lib, !lib.hasPrefix("libhusk"), !lib.contains("Husk") {
                 return AppDiagnosis(kind: .nativeCrash, title: String(localized: "Crashed in \(lib)"),
-                                    detail: String(localized: "The app's own native code (\(lib)) stopped with \(signal). It most likely needs something from Android that Husk does not provide yet, or does something iOS does not allow."),
+                                    detail: String(localized: "The app's own native code (\(lib)) stopped with \(signal). It most likely needs something from Android that BetterHusk does not provide yet, or does something iOS does not allow."),
                                     evidence: head)
             }
             return AppDiagnosis(kind: .nativeCrash, title: "The app crashed",
@@ -119,7 +123,7 @@ struct AppDiagnosis: Identifiable, Equatable {
            let code = l.range(of: "exit\\((\\d+)\\)", options: .regularExpression).map({ String(l[$0]) }), code != "exit(0)" {
             let lib = l.components(separatedBy: "called from ").last?.split(separator: " ").first.map(String.init) ?? "its code"
             return AppDiagnosis(kind: .closedItself, title: "The app refused to run here",
-                                detail: String(localized: "\(lib) closed the app on purpose (\(code)). Apps with anti-tamper or anti-cheat protection do this when they find they are not on a certified Android phone, which Husk cannot pretend to be for them."),
+                                detail: String(localized: "\(lib) closed the app on purpose (\(code)). Apps with anti-tamper or anti-cheat protection do this when they find they are not on a certified Android phone, which BetterHusk cannot pretend to be for them."),
                                 evidence: l)
         }
 
@@ -132,8 +136,8 @@ struct AppDiagnosis: Identifiable, Equatable {
             let firstPart = message.components(separatedBy: " | caused by").first ?? String(message)
             if ["NoSuchMethodError", "NoClassDefFoundError", "UnsatisfiedLinkError", "AbstractMethodError", "NoSuchFieldError",
                 "IncompatibleClassChangeError"].contains(short) {
-                return AppDiagnosis(kind: .missingFeature, title: "Uses something Husk does not have yet",
-                                    detail: String(localized: "The app needs a part of Android that Husk's runtime does not provide yet: \(apiName(firstPart))."),
+                return AppDiagnosis(kind: .missingFeature, title: "Uses something BetterHusk does not have yet",
+                                    detail: String(localized: "The app needs a part of Android that BetterHusk's runtime does not provide yet: \(apiName(firstPart))."),
                                     evidence: l)
             }
             if what.localizedCaseInsensitiveContains("google play services") || what.contains("GooglePlayServices") {
@@ -157,7 +161,7 @@ struct AppDiagnosis: Identifiable, Equatable {
            ["box64", "box86", "wine", "proot", "/usr/bin/", "imagefs", "rootfs", "termux", "ld-linux"].contains(where: { l.localizedCaseInsensitiveContains($0) }) {
             let prog = l.components(separatedBy: "the app started a process: ").last?.components(separatedBy: " -- ").first ?? "a program"
             return AppDiagnosis(kind: .missingFeature, title: "Runs Linux programs as separate processes",
-                                detail: String(localized: "This app does its main work in Linux programs it starts as processes of their own (here \(prog.prefix(120))). Its own screens run in Husk, but iOS does not let an app start other processes, so those programs, and the games or tools they run, can not start yet."),
+                                detail: String(localized: "This app does its main work in Linux programs it starts as processes of their own (here \(prog.prefix(120))). Its own screens run in BetterHusk, but iOS does not let an app start other processes, so those programs, and the games or tools they run, can not start yet."),
                                 evidence: l)
         }
 
@@ -165,7 +169,7 @@ struct AppDiagnosis: Identifiable, Equatable {
         if let l = lines.last(where: { $0.contains("ChooseTypeAndAccountActivity") || $0.contains("AccountManager.newChooseAccountIntent") }),
            lines.contains(where: { $0.contains("the app finished") }) {
             return AppDiagnosis(kind: .needsGoogle, title: "Needs a Google account",
-                                detail: "This app only works signed in to a Google account. It asked Android to pick one, and Husk has no Google "
+                                detail: "This app only works signed in to a Google account. It asked Android to pick one, and BetterHusk has no Google "
                                     + "accounts to offer, so the app closed.",
                                 evidence: l)
         }
@@ -174,7 +178,7 @@ struct AppDiagnosis: Identifiable, Equatable {
         if let l = lines.first(where: { $0.contains("expansion file (OBB) is missing") }) {
             return AppDiagnosis(kind: .missingSplits, title: "Missing game data",
                                 detail: "This game keeps most of its data in an expansion file (OBB) that the Play Store downloads separately "
-                                    + "from the app. Husk installed the app itself but not that file, so the game cannot load.",
+                                    + "from the app. BetterHusk installed the app itself but not that file, so the game cannot load.",
                                 evidence: l)
         }
 
@@ -189,15 +193,15 @@ struct AppDiagnosis: Identifiable, Equatable {
         // A function of Android's C library or system libraries that was never written for Husk
         if let l = lines.first(where: { $0.contains("CALLED an unresolved import: ") }), lines.contains(where: { $0.contains("the app finished") || $0.contains("CRASH") }) {
             let fn = l.components(separatedBy: "unresolved import: ").last?.split(separator: " ").first.map(String.init) ?? "?"
-            return AppDiagnosis(kind: .missingFunction, title: "Uses something Husk does not have yet",
-                                detail: String(localized: "The app called \(fn), a system function Husk does not provide yet."), evidence: l)
+            return AppDiagnosis(kind: .missingFunction, title: "Uses something BetterHusk does not have yet",
+                                detail: String(localized: "The app called \(fn), a system function BetterHusk does not provide yet."), evidence: l)
         }
         return nil
     }
 
     private static func googleDiagnosis(_ line: String) -> AppDiagnosis {
         AppDiagnosis(kind: .needsGoogle, title: "Needs Google Play services",
-                     detail: "This app relies on Google Play services (Google sign-in, Google's account and device checks) for more than Husk "
+                     detail: "This app relies on Google Play services (Google sign-in, Google's account and device checks) for more than BetterHusk "
                         + "can answer for. Apps that only use Google's libraries run; this one stops without the real services.",
                      evidence: line)
     }
@@ -274,13 +278,13 @@ extension AppDiagnosis {
     @MainActor static func writeReport(app: TLApp, diagnosis d: AppDiagnosis) -> URL? {
         let info = Bundle.main.infoDictionary ?? [:]
         var text = """
-        Husk app report
+        BetterHusk app report
         ===============
         App      : \(app.label) (\(app.packageName ?? "?"))
         What     : \(d.title)
         Why      : \(d.detail)
         Evidence : \(d.evidence ?? "-")
-        Husk     : \(info["CFBundleShortVersionString"] as? String ?? "?") (\(info["CFBundleVersion"] as? String ?? "?"))
+        BetterHusk     : \(info["CFBundleShortVersionString"] as? String ?? "?") (\(info["CFBundleVersion"] as? String ?? "?"))
         Device   : \(HuskLog.deviceModel), \(UIDevice.current.systemName) \(UIDevice.current.systemVersion)
         APKs     : \(app.apks.map { ($0 as NSString).lastPathComponent }.joined(separator: ", "))
         Engine   : \(app.report?.runnerName ?? "?")
@@ -289,7 +293,7 @@ extension AppDiagnosis {
 
         """
         if let c = husk_tl_attempt_log() { text += String(cString: c); free(c) }
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("Husk report - \(app.label.replacingOccurrences(of: "/", with: "-")).txt")
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("BetterHusk report - \(app.label.replacingOccurrences(of: "/", with: "-")).txt")
         do { try text.write(to: url, atomically: true, encoding: .utf8) } catch { return nil }
         return url
     }

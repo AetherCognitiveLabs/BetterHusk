@@ -19,7 +19,7 @@ struct SettingsTab: View {
                 } header: {
                     Text("JIT")
                 } footer: {
-                    Text("Android and Translation Layer games need JIT. StikJIT, built into Husk, turns it on without a computer.")
+                    Text("Android and Translation Layer games need JIT. StikJIT, built into BetterHusk, turns it on without a computer.")
                 }
 
                 Section("General") {
@@ -27,7 +27,7 @@ struct SettingsTab: View {
                     row(LibrarySettings(), "square.grid.2x2.fill", .blue, "Library", "Your apps and their icons")
                     row(PerformanceSettings(), "speedometer", .orange, "Performance", "Renderer, sound")
                     row(AppearanceSettings(), "paintbrush.fill", .pink, "Appearance", "Light or dark, accent colour, app icon")
-                    row(LanguageSettings(), "globe", .purple, "Language", "What apps and games inside Husk speak")
+                    row(LanguageSettings(), "globe", .purple, "Language", "What apps and games inside BetterHusk speak")
                     row(FontSettings(), "textformat", .indigo, "Fonts", "Chinese, Japanese and Korean text")
                     row(FAQTab(), "questionmark.circle.fill", .teal, "Help", "Answers to common problems")
                 }
@@ -37,7 +37,7 @@ struct SettingsTab: View {
                         Label {
                             VStack(alignment: .leading, spacing: 1) {
                                 Text("Open Apps in Windows")
-                                Text("Use Husk while an app runs").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                Text("Use BetterHusk while an app runs").font(.caption).foregroundStyle(.secondary).lineLimit(1)
                             }
                         } icon: {
                             RoundedRectangle(cornerRadius: 7, style: .continuous)
@@ -80,7 +80,7 @@ struct SettingsTab: View {
                 } header: {
                     Text("Compatibility")
                 } footer: {
-                    Text("Game pages and the Store show how each app runs for everyone, from antiweb.lol. Your reports go there with your device, iOS version, Husk build and JIT method.")
+                    Text("Game pages and the Store show how each app runs for everyone, from antiweb.lol. Your reports go there with your device, iOS version, BetterHusk build and JIT method.")
                 }
 
                 Section {
@@ -103,7 +103,7 @@ struct SettingsTab: View {
         HStack(spacing: 14) {
             HuskMark(size: 56)
             VStack(alignment: .leading, spacing: 2) {
-                Text("Husk").font(.title3.weight(.semibold))
+                Text("BetterHusk").font(.title3.weight(.semibold))
                 Text("Version \(Bundle.main.version) · \(Bundle.main.commit)")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
@@ -181,7 +181,7 @@ struct LibrarySettings: View {
                 }
                 .disabled(working || !host.isReady)
             } footer: {
-                Text("Names and icons come from Android's own launcher, which keeps the version it draws. Re-fetching throws away Husk's copies and asks again.")
+                Text("Names and icons come from Android's own launcher, which keeps the version it draws. Re-fetching throws away BetterHusk's copies and asks again.")
             }
         }
         .huskForm()
@@ -281,7 +281,7 @@ struct LanguageSettings: View {
                     ForEach(OnboardingView.regions) { Text($0.name).tag($0.id) }
                 }
             } footer: {
-                Text("The language apps and games inside Husk see. Husk itself follows your iPhone. Takes effect the next time an app opens.")
+                Text("The language apps and games inside BetterHusk see. BetterHusk itself follows your iPhone. Takes effect the next time an app opens.")
             }
         }
         .huskForm()
@@ -590,9 +590,9 @@ struct JITSettings: View {
             } footer: {
                 Text(jit.method == .automatic
                      ? jit.automaticDescription + " Built-in StikJIT needs iOS 26, LocalDevVPN, and a "
-                       + "pairing file, which Husk can make itself on iOS 27."
+                       + "pairing file, which BetterHusk can make itself on iOS 27."
                      : HuskBuiltInJIT.unavailableReason ?? "Built-in StikJIT needs LocalDevVPN and a pairing "
-                       + "file, which Husk can make itself on iOS 27.")
+                       + "file, which BetterHusk can make itself on iOS 27.")
             }
 
             Section {
@@ -609,7 +609,7 @@ struct JITSettings: View {
                                : JITBootstrap.prewarmed ? "answering" : "not answering",
                           mono: false)
                 if let route = husk_ios_jit_self_route() {
-                    DetailRow(label: "Made by Husk",
+                    DetailRow(label: "Made by BetterHusk",
                               value: String(cString: route) == "MAP_JIT" ? "MAP_JIT (dynamic-codesigning)" : "plain memory (debugged or jailbroken)",
                               mono: false)
                 }
@@ -652,14 +652,14 @@ struct JITSettings: View {
             } header: {
                 Text("JIT")
             } footer: {
-                Text("Husk needs memory it can write and then execute, which on iOS takes an attached debugger. There are two ways to get it: a debugger that services trap requests, or a MAP_JIT mapping, which the kernel allows any debugged process. Either one is enough — which is available depends on the device and the iOS version, so Husk tests both rather than assuming.")
+                Text("BetterHusk needs memory it can write and then execute, which on iOS takes an attached debugger. There are two ways to get it: a debugger that services trap requests, or a MAP_JIT mapping, which the kernel allows any debugged process. Either one is enough — which is available depends on the device and the iOS version, so BetterHusk tests both rather than assuming.")
             }
 
             if JITBootstrap.isInstalledWithTrollStore {
                 Section {
                     Toggle("Turn On JIT with TrollStore at Launch", isOn: $trollStoreJIT)
                 } footer: {
-                    Text("Each time Husk opens without JIT, it asks TrollStore to turn it on. TrollStore's URL Scheme setting must be on.")
+                    Text("Each time BetterHusk opens without JIT, it asks TrollStore to turn it on. TrollStore's URL Scheme setting must be on.")
                 }
             }
 
@@ -668,7 +668,7 @@ struct JITSettings: View {
                     .disabled(!HuskBuiltInJIT.isAvailable)
             } footer: {
                 Text(HuskBuiltInJIT.isAvailable
-                     ? "Each time Husk opens without JIT, it asks the built-in StikJIT to turn it on, so games are ready "
+                     ? "Each time BetterHusk opens without JIT, it asks the built-in StikJIT to turn it on, so games are ready "
                        + "without a tap. Needs StikJIT set up once (paired) first."
                      : (HuskBuiltInJIT.unavailableReason
                         ?? "Needs the built-in StikJIT, which is available on iOS 26 and later."))
@@ -680,14 +680,14 @@ struct JITSettings: View {
                         UserDefaults.standard.set(v, forKey: "husk.autoStart")
                     }
             } footer: {
-                Text("Boots the guest as soon as Husk opens, when JIT is available.")
+                Text("Boots the guest as soon as BetterHusk opens, when JIT is available.")
             }
 
             Section {
                 Toggle("Keep debugger attached", isOn: $keepAttached)
                     .onChange(of: keepAttached) { v in JITBootstrap.keepDebuggerAttached = v }
             } footer: {
-                Text("Off by default. Husk detaches StikDebug as soon as the JIT region is held, because a debugger that iOS has suspended stops the whole app the next time it is needed. Turn this on only to collect StikDebug's own logs.")
+                Text("Off by default. BetterHusk detaches StikDebug as soon as the JIT region is held, because a debugger that iOS has suspended stops the whole app the next time it is needed. Turn this on only to collect StikDebug's own logs.")
             }
 
             Section {
@@ -733,7 +733,7 @@ struct SavedMachineSettings: View {
                 }
                 .disabled(runner.isSavingState)
             } footer: {
-                Text("Husk restores a saved machine instead of booting it, which takes seconds rather than minutes. The picture freezes while it writes. With this off, nothing saves by itself — including after an install.")
+                Text("BetterHusk restores a saved machine instead of booting it, which takes seconds rather than minutes. The picture freezes while it writes. With this off, nothing saves by itself — including after an install.")
             }
 
             Section {
@@ -778,7 +778,7 @@ struct SavedMachineSettings: View {
             Section {
                 Toggle("Ask about Android updates", isOn: $askUpdates)
             } footer: {
-                Text("When a new Android image or snapshot is published, Husk asks once whether to download it. Never asked before Android has been downloaded.")
+                Text("When a new Android image or snapshot is published, BetterHusk asks once whether to download it. Never asked before Android has been downloaded.")
             }
         }
         .huskForm()
@@ -929,7 +929,7 @@ struct AboutSettings: View {
             Section {
                 VStack(spacing: 8) {
                     HuskMark(size: 84)
-                    Text("Husk").font(.title2.weight(.semibold))
+                    Text("BetterHusk").font(.title2.weight(.semibold))
                     Text("Version \(Bundle.main.version)")
                         .font(.subheadline).foregroundStyle(.secondary)
                 }
@@ -967,7 +967,7 @@ struct AboutSettings: View {
                     Label("Open Console", systemImage: "terminal")
                 }
             } footer: {
-                Text("Husk runs unmodified Android APKs in a real Android system on your iPhone. The console shows Husk's live log, the guest's serial output and QEMU's own output — the three files any problem here is diagnosed from.")
+                Text("BetterHusk runs unmodified Android APKs in a real Android system on your iPhone. The console shows BetterHusk's live log, the guest's serial output and QEMU's own output — the three files any problem here is diagnosed from.")
             }
         }
         .navigationTitle("About")

@@ -145,7 +145,7 @@ final class GeodeSupport: ObservableObject {
     private static func json(_ url: URL) async throws -> [String: Any] {
         var req = URLRequest(url: url)
         req.timeoutInterval = 30
-        req.setValue("Husk", forHTTPHeaderField: "User-Agent")
+        req.setValue("BetterHusk", forHTTPHeaderField: "User-Agent")
         let (data, response) = try await URLSession.shared.data(for: req)
         guard (response as? HTTPURLResponse)?.statusCode == 200,
               let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -183,7 +183,7 @@ final class GeodeSupport: ObservableObject {
     private static func download(_ url: URL, to dest: URL) async throws {
         var req = URLRequest(url: url)
         req.timeoutInterval = 120
-        req.setValue("Husk", forHTTPHeaderField: "User-Agent")
+        req.setValue("BetterHusk", forHTTPHeaderField: "User-Agent")
         let (tmp, response) = try await URLSession.shared.download(for: req)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else {
             throw GeodeError(String(localized: "Download failed (HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0))."))

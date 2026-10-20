@@ -98,11 +98,11 @@ struct JITSetupFlow: View {
                     recommended: recommendedStep == .stikDebug) { path.append(.stikDebug) }
                 way("Use TrollStore", symbol: "sparkles",
                     detail: JITBootstrap.isTrollStoreInstalled ? "TrollStore is installed."
-                        : "For a Husk installed through TrollStore.",
+                        : "For a BetterHusk installed through TrollStore.",
                     done: jit.method == .trollStore,
                     recommended: recommendedStep == .trollStore) { path.append(.trollStore) }
                 way("Use a jailbreak", symbol: "lock.open",
-                    detail: JITBootstrap.debuggedAtLaunch ? "JIT was already on when Husk opened."
+                    detail: JITBootstrap.debuggedAtLaunch ? "JIT was already on when BetterHusk opened."
                         : JITBootstrap.isJailbroken ? "A jailbreak was found. Turn on Allow JIT in Apps."
                         : "Dopamine can give every app JIT with one setting.",
                     done: jit.method == .jailbreak || JITBootstrap.debuggedAtLaunch,
@@ -179,16 +179,16 @@ struct JITSetupFlow: View {
 
     private var pairOnDevice: some View {
         page(symbol: "iphone.radiowaves.left.and.right", title: String(localized: "Pair on this \(device)"),
-             subtitle: String(localized: "Husk pretends to be a computer on your Wi-Fi, and your \(device) pairs with it the way it would with a Mac.")) {
+             subtitle: String(localized: "BetterHusk pretends to be a computer on your Wi-Fi, and your \(device) pairs with it the way it would with a Mac.")) {
             VStack(alignment: .leading, spacing: 14) {
                 point(1, "Turn on Wi-Fi, tap **Start pairing** below and allow Local Network access.",
                       done: pairing.phase != .idle)
                 point(2, String(localized: "Open **Settings › Privacy & Security › Developer Mode**, scroll down and tap **Pair with \(OnDevicePairing.hostName)**."),
                       done: pairing.isShowingPin || pairedOnDevice)
-                point(3, "Enter the code Husk shows. It also appears in a banner and a notification, "
+                point(3, "Enter the code BetterHusk shows. It also appears in a banner and a notification, "
                        + "so you don't have to switch back.",
                       done: pairedOnDevice)
-                point(4, "Come back to Husk.", done: pairedOnDevice)
+                point(4, "Come back to BetterHusk.", done: pairedOnDevice)
             }
             .padding(16).huskCard()
             pairingStatus
@@ -255,7 +255,7 @@ struct JITSetupFlow: View {
 
     private var importFile: some View {
         page(symbol: "doc.badge.plus", title: "Use a pairing file",
-             subtitle: String(localized: "A pairing file made on a computer lets Husk talk to this \(device) the same way.")) {
+             subtitle: String(localized: "A pairing file made on a computer lets BetterHusk talk to this \(device) the same way.")) {
             VStack(alignment: .leading, spacing: 14) {
                 point(1, String(localized: "On a computer, make this \(device)'s pairing file with the [StikDebug pairing-file guide](https://github.com/StikDebug/StikDebug-Guide/blob/main/pairing_file.md)."),
                       done: jit.pairingSource == .imported)
@@ -264,7 +264,7 @@ struct JITSetupFlow: View {
                 point(3, "Tap **Choose pairing file** and pick it.", done: jit.pairingSource == .imported)
             }
             .padding(16).huskCard()
-            Label("The pairing file stays in Husk's Documents folder and is only sent to Husk's own helper.",
+            Label("The pairing file stays in BetterHusk's Documents folder and is only sent to BetterHusk's own helper.",
                   systemImage: "lock.fill")
                 .font(.system(size: 13)).foregroundStyle(Theme.textDim)
             if let error = jit.error { outcome(error, ok: false) }
@@ -284,11 +284,11 @@ struct JITSetupFlow: View {
 
     private var connect: some View {
         page(symbol: "network.badge.shield.half.filled", title: "Connect LocalDevVPN",
-             subtitle: String(localized: "Husk's helper reaches this \(device)'s debugging service through a local VPN. Nothing leaves your \(device).")) {
+             subtitle: String(localized: "BetterHusk's helper reaches this \(device)'s debugging service through a local VPN. Nothing leaves your \(device).")) {
             VStack(alignment: .leading, spacing: 14) {
                 point(1, String(localized: "Install [LocalDevVPN](\(LocalDevVPN.appStore.absoluteString)) from the App Store."),
                       done: LocalDevVPN.isInstalled)
-                point(2, "Tap **Connect LocalDevVPN**. It switches the VPN on and comes straight back to Husk.")
+                point(2, "Tap **Connect LocalDevVPN**. It switches the VPN on and comes straight back to BetterHusk.")
                 point(3, "Leave it connected whenever you turn JIT on.")
             }
             .padding(16).huskCard()
@@ -308,9 +308,9 @@ struct JITSetupFlow: View {
         page(symbol: "bolt.badge.checkmark", title: "Turn on JIT",
              subtitle: String(localized: "The first check downloads and mounts Apple's Developer Disk Image, which can take a minute.")) {
             VStack(alignment: .leading, spacing: 14) {
-                point(1, "Tap **Check setup**. Husk checks LocalDevVPN and prepares the Developer Disk Image.",
+                point(1, "Tap **Check setup**. BetterHusk checks LocalDevVPN and prepares the Developer Disk Image.",
                       done: jit.prepared || attached)
-                point(2, "Tap **Enable JIT**. Husk's helper attaches and Android can start.", done: attached)
+                point(2, "Tap **Enable JIT**. BetterHusk's helper attaches and Android can start.", done: attached)
             }
             .padding(16).huskCard()
 
@@ -366,14 +366,14 @@ struct JITSetupFlow: View {
 
     private var stikDebug: some View {
         page(symbol: "ant", title: "Use StikDebug",
-             subtitle: "StikDebug is a separate app that attaches to Husk. Husk sends it the JIT script "
-                     + "itself, so nothing needs configuring for Husk inside StikDebug.") {
+             subtitle: "StikDebug is a separate app that attaches to BetterHusk. BetterHusk sends it the JIT script "
+                     + "itself, so nothing needs configuring for BetterHusk inside StikDebug.") {
             VStack(alignment: .leading, spacing: 14) {
                 point(1, "Install [StikDebug](https://github.com/StikDebug/StikDebug/releases/latest).",
                       done: JITBootstrap.isStikDebugInstalled)
                 point(2, String(localized: "Import this \(device)'s pairing file into StikDebug."))
                 point(3, String(localized: "Install and connect [LocalDevVPN](\(LocalDevVPN.appStore.absoluteString))."))
-                point(4, "Whenever Android starts, Husk opens StikDebug, which attaches and comes back.")
+                point(4, "Whenever Android starts, BetterHusk opens StikDebug, which attaches and comes back.")
             }
             .padding(16).huskCard()
         } actions: {
@@ -393,11 +393,11 @@ struct JITSetupFlow: View {
              subtitle: "TrollStore can enable JIT for apps it installed, with no pairing file, "
                      + "VPN or computer.") {
             VStack(alignment: .leading, spacing: 14) {
-                point(1, "Install Husk.ipa through TrollStore, on an iOS version TrollStore supports. It carries the "
+                point(1, "Install BetterHusk.ipa through TrollStore, on an iOS version TrollStore supports. It carries the "
                        + "entitlements TrollStore keeps, so the same file works there and in a sideloader.",
                       done: JITBootstrap.isInstalledWithTrollStore)
                 point(2, "In TrollStore's Settings, turn on URL Scheme. TrollStore ignores enable-jit requests without it.")
-                point(3, "Whenever Android or a game starts, Husk asks TrollStore to enable JIT. TrollStore opens Husk, "
+                point(3, "Whenever Android or a game starts, BetterHusk asks TrollStore to enable JIT. TrollStore opens BetterHusk, "
                        + "attaches to it for a moment and lets go, which leaves it allowed to run code it wrote.")
             }
             .padding(16).huskCard()
@@ -421,16 +421,16 @@ struct JITSetupFlow: View {
     private var jailbreak: some View {
         page(symbol: "lock.open", title: "Use a jailbreak",
              subtitle: "On a device jailbroken with Dopamine, JIT is a setting: the jailbreak marks every app as "
-                     + "debugged when it opens, and a debugged app may run code it wrote. Husk needs nothing else.") {
+                     + "debugged when it opens, and a debugged app may run code it wrote. BetterHusk needs nothing else.") {
             VStack(alignment: .leading, spacing: 14) {
                 point(1, "Open Dopamine and go to its Settings.", done: JITBootstrap.isJailbroken)
                 point(2, "Turn on Allow JIT in Apps.")
-                point(3, "Close Husk completely and open it again. The setting applies to apps as they start.",
+                point(3, "Close BetterHusk completely and open it again. The setting applies to apps as they start.",
                       done: JITBootstrap.debuggedAtLaunch)
             }
             .padding(16).huskCard()
             if JITBootstrap.debuggedAtLaunch {
-                Label("Husk was marked as debugged when it opened, so JIT is on.", systemImage: "checkmark.circle.fill")
+                Label("BetterHusk was marked as debugged when it opened, so JIT is on.", systemImage: "checkmark.circle.fill")
                     .font(.system(size: 13)).foregroundStyle(.green)
             } else if !JITBootstrap.isJailbroken {
                 Label("No jailbreak was found on this \(device).", systemImage: "info.circle")

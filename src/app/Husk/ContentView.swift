@@ -138,7 +138,7 @@ struct ContentView: View {
             Button("Start") { startFromLibrary() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Full Android emulation is experimental. It is slow, takes minutes to start, and can freeze or crash Husk. Games and apps run much better in the Translation Layer.")
+            Text("Full Android emulation is experimental. It is slow, takes minutes to start, and can freeze or crash BetterHusk. Games and apps run much better in the Translation Layer.")
         }
         // A game that ended Husk last time: say so, with its report.
         .sheet(item: Binding(get: { showOnboarding ? nil : crash.pending }, set: { crash.pending = $0 }),
@@ -150,7 +150,7 @@ struct ContentView: View {
             WhatsNewSheet { WhatsNew.markSeen(); showWhatsNew = false }
         }
         // A newer Husk is on GitHub.
-        .alert("Husk \(updates.available?.version ?? "") Is Available", isPresented: Binding(
+        .alert("BetterHusk \(updates.available?.version ?? "") Is Available", isPresented: Binding(
                 get: { updates.available != nil && !showOnboarding && !showWhatsNew && crash.pending == nil },
                 set: { if !$0 { updates.dismiss() } })) {
             Button("View Release") {
@@ -355,7 +355,7 @@ struct ContentView: View {
                                  + "answering and MAP_JIT does not execute here")
                 // Said on screen too: a Start button that silently does nothing reads as a hang (#122).
                 host.say("Android can't start without JIT",
-                         JITBootstrap.lastFailure ?? "Husk could not get executable memory. Turn JIT on again (Settings > JIT) and retry.",
+                         JITBootstrap.lastFailure ?? "BetterHusk could not get executable memory. Turn JIT on again (Settings > JIT) and retry.",
                          good: false)
                 booting = false
                 return
@@ -489,7 +489,7 @@ struct GuestScreenView: View {
 
                         Menu {
                             Button { onBack() } label: {
-                                Label("Back to Husk", systemImage: "chevron.left")
+                                Label("Back to BetterHusk", systemImage: "chevron.left")
                             }
                             // Android's own Home key, over the bridge. Three-button
                             // navigation is not drawn in this guest, so without it

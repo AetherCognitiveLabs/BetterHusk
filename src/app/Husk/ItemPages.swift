@@ -129,11 +129,11 @@ struct GamePage: View {
                 PageHero(item: .game(app), subtitle: subtitle) { primary }
             } footer: {
                 if isGeodeLauncher {
-                    Text("This is Geode's Android launcher. On Husk, Geode runs inside Geometry Dash instead: turn it on here (or in Geometry Dash's settings, under Mods), then start Geometry Dash and use Geode's button on its main menu to get mods. This APK supplies a library Geode needs, so keep it.")
+                    Text("This is Geode's Android launcher. On BetterHusk, Geode runs inside Geometry Dash instead: turn it on here (or in Geometry Dash's settings, under Mods), then start Geometry Dash and use Geode's button on its main menu to get mods. This APK supplies a library Geode needs, so keep it.")
                 } else if let other = blockedBy {
-                    Text("\(other) is still loaded, and a game cannot be unloaded once it has started. Close Husk with the button above, then open it again to play \(app.label).")
+                    Text("\(other) is still loaded, and a game cannot be unloaded once it has started. Close BetterHusk with the button above, then open it again to play \(app.label).")
                 } else if !runs {
-                    Text("This APK has no 64-bit code Husk can run, so it will probably not start.")
+                    Text("This APK has no 64-bit code BetterHusk can run, so it will probably not start.")
                 }
             }
             .heroRow()
@@ -183,8 +183,8 @@ struct GamePage: View {
                     Text("Saves")
                 } footer: {
                     if let savesMessage { Text(savesMessage.l10n) }
-                    else if loadedNow { Text("\(app.label) has been started in this run of Husk. Close Husk and open it again to restore saves.") }
-                    else { Text("A backup is a .zip of everything \(app.label) has saved in Husk, to keep in Files or move to another device.") }
+                    else if loadedNow { Text("\(app.label) has been started in this run of BetterHusk. Close BetterHusk and open it again to restore saves.") }
+                    else { Text("A backup is a .zip of everything \(app.label) has saved in BetterHusk, to keep in Files or move to another device.") }
                 }
             }
 
@@ -219,8 +219,8 @@ struct GamePage: View {
         } message: {
             Text("What \(app.label) has saved now is replaced by the backup. Back up first if you want to keep it.")
         }
-        .confirmationDialog("Close Husk?", isPresented: $confirmQuit, titleVisibility: .visible) {
-            Button("Close Husk") {
+        .confirmationDialog("Close BetterHusk?", isPresented: $confirmQuit, titleVisibility: .visible) {
+            Button("Close BetterHusk") {
                 // The game that is loaded is closed with Husk, which is the normal way out for it, not a crash; and this
                 // one starts by itself when Husk is opened again.
                 Router.shared.switchTo(app.id)
@@ -229,7 +229,7 @@ struct GamePage: View {
                 exit(0)
             }
         } message: {
-            Text("\(blockedBy ?? "The other game") is still loaded and only one game can run per session. Husk closes; open it again and \(app.label) starts by itself.")
+            Text("\(blockedBy ?? "The other game") is still loaded and only one game can run per session. BetterHusk closes; open it again and \(app.label) starts by itself.")
         }
         .confirmationDialog("Remove \(app.label)?", isPresented: $confirmRemove, titleVisibility: .visible) {
             Button("Remove", role: .destructive) {
@@ -237,7 +237,7 @@ struct GamePage: View {
                 store.remove(app)
             }
         } message: {
-            Text("The game and everything it saved here are deleted from Husk.")
+            Text("The game and everything it saved here are deleted from BetterHusk.")
         }
         .id(jit.attachGeneration)
         .onAppear {
@@ -341,7 +341,7 @@ struct GamePage: View {
                 BigButton(title: "Add Geometry Dash First", systemImage: "plus", prominent: false) { }.disabled(true)
             }
         } else if blockedBy != nil {
-            BigButton(title: "Close Husk to Play", systemImage: "xmark.circle", prominent: false) { confirmQuit = true }
+            BigButton(title: "Close BetterHusk to Play", systemImage: "xmark.circle", prominent: false) { confirmQuit = true }
         } else if !Launcher.jitOn {
             if jit.busy {
                 HStack(spacing: 10) { ProgressView(); Text(jit.status?.l10n ?? String(localized: "Turning on JIT…")).foregroundStyle(.secondary) }
@@ -386,7 +386,7 @@ struct PS4GamePage: View {
             if !PS4Store.available {
                 Section {
                     Text(PS4Store.moduleURL == nil
-                         ? "This build of Husk does not include the PS4 layer."
+                         ? "This build of BetterHusk does not include the PS4 layer."
                          : "PS4 games need iOS 17.4 or later.")
                         .foregroundStyle(.secondary)
                 }
@@ -398,7 +398,7 @@ struct PS4GamePage: View {
             }
 
             Section("About") {
-                LabeledContent("Runs With", value: "Husk's PS4 layer")
+                LabeledContent("Runs With", value: "BetterHusk's PS4 layer")
                 LabeledContent("Title ID", value: game.titleID)
                 if let v = game.version { LabeledContent("Version", value: v) }
                 LabeledContent("Last Played", value: game.lastPlayed.map { $0.formatted(date: .abbreviated, time: .shortened) } ?? "Never")
@@ -409,15 +409,15 @@ struct PS4GamePage: View {
         .navigationTitle(game.title)
         .navigationBarTitleDisplayMode(.inline)
         .fullScreenCover(isPresented: $playing) { PS4PlayView(game: game) }
-        .confirmationDialog("Close Husk?", isPresented: $confirmQuit, titleVisibility: .visible) {
-            Button("Close Husk") {
+        .confirmationDialog("Close BetterHusk?", isPresented: $confirmQuit, titleVisibility: .visible) {
+            Button("Close BetterHusk") {
                 Router.shared.switchTo(game.libraryID)
                 CrashReport.gameEnded()
                 HuskLog.flushNow()
                 exit(0)
             }
         } message: {
-            Text("\(blockedBy ?? "The other game") is still loaded and only one game can run per session. Husk closes; open it again and \(game.title) starts by itself.")
+            Text("\(blockedBy ?? "The other game") is still loaded and only one game can run per session. BetterHusk closes; open it again and \(game.title) starts by itself.")
         }
         .id(jit.attachGeneration)
         .onAppear {
@@ -432,7 +432,7 @@ struct PS4GamePage: View {
         if !PS4Store.available {
             BigButton(title: "Can't Play Here", systemImage: "xmark.octagon", prominent: false) { }.disabled(true)
         } else if blockedBy != nil {
-            BigButton(title: "Close Husk to Play", systemImage: "xmark.circle", prominent: false) { confirmQuit = true }
+            BigButton(title: "Close BetterHusk to Play", systemImage: "xmark.circle", prominent: false) { confirmQuit = true }
         } else if !Launcher.jitOn {
             if jit.busy {
                 HStack(spacing: 10) { ProgressView(); Text(jit.status?.l10n ?? String(localized: "Turning on JIT…")).foregroundStyle(.secondary) }
@@ -610,7 +610,7 @@ struct AndroidSystemPage: View {
             }
 
             Section {
-                Text("Android runs fully emulated, so it is slower than games on the translation layer. Use it for apps Husk cannot run directly, like Termux or app stores.")
+                Text("Android runs fully emulated, so it is slower than games on the translation layer. Use it for apps BetterHusk cannot run directly, like Termux or app stores.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -645,7 +645,7 @@ struct AndroidSystemPage: View {
     private var note: String? {
         guard !running else { return nil }
         switch guest.state {
-        case .missing: return "Husk's Android runtime is about 760 MB. Android itself follows once it is installed."
+        case .missing: return "BetterHusk's Android runtime is about 760 MB. Android itself follows once it is installed."
         case .failed(let message): return message
         default: return nil
         }

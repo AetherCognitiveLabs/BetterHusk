@@ -108,7 +108,7 @@ private func statePercent(_ s: HuskDownloadAttributes.ContentState) -> String {
 @available(iOS 16.1, *)
 private func stateDetail(_ s: HuskDownloadAttributes.ContentState) -> String {
     let f = ByteCountFormatter()
-    if s.failed { return "Stopped. Open Husk to retry." }
+    if s.failed { return "Stopped. Open BetterHusk to retry." }
     if s.finished { return "\(f.string(fromByteCount: s.total)) downloaded" }
     var text = "\(f.string(fromByteCount: s.received)) of \(f.string(fromByteCount: s.total))"
     if s.speed > 1 { text += " · \(f.string(fromByteCount: Int64(s.speed)))/s" }

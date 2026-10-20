@@ -105,10 +105,10 @@ final class JITCoordinator: ObservableObject {
         var message: String {
             switch self {
             case .vpn:
-                return "Husk couldn't reach this device. Connect LocalDevVPN, then try again."
+                return "BetterHusk couldn't reach this device. Connect LocalDevVPN, then try again."
             case .pairing:
                 return "This device closed the connection, which usually means it no longer accepts "
-                     + "Husk's pairing. Pair again, and check that LocalDevVPN is connected."
+                     + "BetterHusk's pairing. Pair again, and check that LocalDevVPN is connected."
             }
         }
     }
@@ -150,10 +150,10 @@ final class JITCoordinator: ObservableObject {
                  + "BetterHusk in LiveContainer's app settings, or attach StikDebug to the process both share."
         }
         switch resolvedMethod {
-        case .stikDebug: return "StikDebug is installed, so Husk will open it."
-        case .trollStore: return "TrollStore is installed, so Husk will ask it to enable JIT."
+        case .stikDebug: return "StikDebug is installed, so BetterHusk will open it."
+        case .trollStore: return "TrollStore is installed, so BetterHusk will ask it to enable JIT."
         case .jailbreak: return "This device is jailbroken, so JIT comes from the jailbreak's Allow JIT in Apps setting."
-        default: return "StikDebug, TrollStore and a jailbreak were not found, so Husk will use its built-in helper."
+        default: return "StikDebug, TrollStore and a jailbreak were not found, so BetterHusk will use its built-in helper."
         }
     }
 
@@ -171,7 +171,7 @@ final class JITCoordinator: ObservableObject {
         let now = JITBootstrap.ready
         guard now != readyKnown else { return }
         readyKnown = now
-        if now { attachGeneration += 1; log("JIT came on without Husk asking (attach from outside)") }
+        if now { attachGeneration += 1; log("JIT came on without BetterHusk asking (attach from outside)") }
     }
 
     private func log(_ line: String) { HuskLog.log("jit", line) }
@@ -226,12 +226,12 @@ final class JITCoordinator: ObservableObject {
             if JITBootstrap.requestTrollStoreAttach() {
                 awaitTrollStore()
             } else {
-                error = "TrollStore could not be opened. Install Husk through TrollStore, or choose another method."
+                error = "TrollStore could not be opened. Install BetterHusk through TrollStore, or choose another method."
                 showSetup = true
             }
         case .jailbreak:
             // Nothing to ask: a jailbreak marks an app as debugged as it opens, if it has been told to. Say what to turn on.
-            error = "Turn on Allow JIT in Apps in Dopamine's settings, then open Husk again."
+            error = "Turn on Allow JIT in Apps in Dopamine's settings, then open BetterHusk again."
             showSetup = true
         case .builtIn:
             guard HuskBuiltInJIT.isAvailable, hasPairing else {
@@ -265,10 +265,10 @@ final class JITCoordinator: ObservableObject {
                 // jailbreak's own JIT marking, so point there instead of dead-ending (#148).
                 if JITBootstrap.isJailbroken {
                     error = "TrollStore Lite cannot enable JIT. Turn on Allow JIT in Apps in "
-                          + "Dopamine's settings, then open Husk again."
+                          + "Dopamine's settings, then open BetterHusk again."
                     log("TrollStore Lite did not enable JIT; jailbroken device -- pointing at Dopamine's Allow JIT")
                 } else {
-                    error = "TrollStore did not enable JIT. In TrollStore's Settings turn on URL Scheme, and make sure Husk was "
+                    error = "TrollStore did not enable JIT. In TrollStore's Settings turn on URL Scheme, and make sure BetterHusk was "
                           + "installed through TrollStore (or is signed with get-task-allow)."
                     log("TrollStore did not enable JIT within a minute")
                 }
@@ -332,14 +332,14 @@ final class JITCoordinator: ObservableObject {
     func enableBuiltIn() {
         guard let pairing = builtInPairing() else { return }
         guard let script = JITBootstrap.scriptBase64 else {
-            error = "Husk's JIT script is missing from this installation. Reinstall Husk."
+            error = "BetterHusk's JIT script is missing from this installation. Reinstall BetterHusk."
             return
         }
 
         busy = true
         error = nil
         connectionProblem = nil
-        status = "Starting Husk's JIT helper…"
+        status = "Starting BetterHusk's JIT helper…"
         log("enabling JIT with the built-in helper")
         // The helper services traps while it attaches -- the same "a servicer is coming" StikDebug's handoff declares.
         husk_ios_jit_expect_servicer()

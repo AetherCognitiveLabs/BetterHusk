@@ -73,7 +73,7 @@ final class CompatibilityStore: ObservableObject {
             case .works: return "Runs and plays or works normally."
             case .opens: return "Starts and shows its screens, but has not been fully tested or has problems."
             case .broken: return "Crashes or closes while starting."
-            case .protected: return "Refuses to run outside a real Android phone (anti-cheat, anti-tamper or DRM). Husk does not get around that."
+            case .protected: return "Refuses to run outside a real Android phone (anti-cheat, anti-tamper or DRM). BetterHusk does not get around that."
             }
         }
     }
@@ -255,7 +255,7 @@ struct CompatibilitySection: View {
         } header: {
             Text("Compatibility")
         } footer: {
-            if entry?.official != nil { Text("Tested by the Husk team on an iPhone.") }
+            if entry?.official != nil { Text("Tested by the BetterHusk team on an iPhone.") }
         }
     }
 }
@@ -304,12 +304,12 @@ struct CompatReportSheet: View {
                 } header: {
                     Text("Your Name")
                 } footer: {
-                    Text("Sent with it: \(CompatibilityStore.device), iOS \(UIDevice.current.systemVersion), Husk build \(CompatibilityStore.build), JIT from \(CompatibilityStore.jitMethod). It shows on antiweb.lol for everyone.")
+                    Text("Sent with it: \(CompatibilityStore.device), iOS \(UIDevice.current.systemVersion), BetterHusk build \(CompatibilityStore.build), JIT from \(CompatibilityStore.jitMethod). It shows on antiweb.lol for everyone.")
                 }
                 Section {
                     Toggle("Attach my log", isOn: $attachLog)
                 } footer: {
-                    Text("Your Husk log helps the developer see what went wrong. Only moderators can read it.")
+                    Text("Your BetterHusk log helps the developer see what went wrong. Only moderators can read it.")
                 }
                 if let error {
                     Section { Text(error.l10n).foregroundStyle(.red) }
