@@ -315,6 +315,25 @@ enum JITBootstrap {
     /// helper extension cannot be started by LiveContainer at all (HuskBuiltInJIT.unavailableReason).
     static var isInsideLiveContainer: Bool { ProcessInfo.processInfo.environment["LC_HOME_PATH"] != nil }
 
+    /// The bundle id the outside world knows this process by. Inside LiveContainer that is the CONTAINER's id --
+    /// BetterHusk.app exists only under LC's Documents, so a bundle-id lookup (StikDebug's enable-jit resolves the
+    /// running process by bundle id) finds nothing under ours. LiveContainer's own LCSharedUtils is loaded into the
+    /// shared process, and its teamIdentifier is what the sideloader stamped onto the bundle id.
+    static var attachBundleID: String {
+        if isInsideLiveContainer,
+           let utils = NSClassFromString("LCSharedUtils") as? NSObjectProtocol.Type {
+            let teamSel = NSSelectorFromString("teamIdentifier")
+            if utils.responds(to: teamSel),
+               let team = utils.perform(teamSel)?.takeUnretainedValue() as? String, !team.isEmpty {
+                // App Store LiveContainer is com.kdt.livecontainer; sideloaded copies are that plus the team id.
+                let id = team == "livecontainer" ? "com.kdt.livecontainer" : "com.kdt.livecontainer.\(team)"
+                HuskLog.log("jit", "inside LiveContainer; its bundle id is \(id) -- attaches address it, not us")
+                return id
+            }
+        }
+        return Bundle.main.bundleIdentifier ?? ""
+    }
+
     /// Whether Husk was already marked as debugged when it was opened, before it asked anything of anyone. That is what a
     /// jailbreak that allows JIT in apps does to every app it launches (Dopamine's "Allow JIT in Apps" setting), and it needs
     /// no hand-off at all. Read once, early (HuskApp.init), so a later attach is not mistaken for it.
@@ -362,7 +381,8 @@ enum JITBootstrap {
         // against the new attach instead of reporting the old flag-only failure forever.
         husk_ios_jit_expect_servicer()
 
-        guard let bundleID = Bundle.main.bundleIdentifier else {
+        let bundleID = attachBundleID
+        guard !bundleID.isEmpty else {
             HuskLog.log("jit", "FAIL: no bundle identifier")
             return false
         }
