@@ -797,9 +797,10 @@ final class GuestImage: ObservableObject {
                 for t in tasks {
                     guard let found = t as? URLSessionDownloadTask, found.state != .canceling else { continue }
                     if found.taskDescription?.hasPrefix("part-") == true {
-                        // Belongs to a snapshot fetcher that died with the last run: its bytes cannot rejoin the
-                        // hash cleanly, so it is cancelled and fetched again.
-                        found.cancel()
+                        // Only an orphaned part gets cancelled: one belonging to a fetcher that died with the last
+                        // run cannot rejoin the hash cleanly. A LIVE fetcher's part is still its own business --
+                        // cancelling it here would strand the fetcher waiting on a task that never finishes.
+                        if self.fetcher == nil { found.cancel() }
                         continue
                     }
                     self.task = found
