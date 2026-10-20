@@ -9951,30 +9951,156 @@ static void SR_generateSeed(tl_jcall *c) { SR_getSeed(c); }
 static void SR_getInstanceStrong(tl_jcall *c) { SR_getInstance(c); }
 
 /* Cipher: identity transform for now (passthrough), keeps protocol code alive */
+/* Cipher: real symmetric crypto through CommonCrypto's CCCryptor. Supports
+ * AES/DES/DESede in ECB/CBC/CTR with PKCS7 or no padding — the shapes apps
+ * actually request. RSA/GCM fall back to the passthrough so code keeps moving. */
+#include <CommonCrypto/CommonCryptor.h>
+typedef struct {
+    CCCryptorRef cr;
+    uint8_t key[64]; size_t keyn;
+    uint8_t iv[16]; size_t ivn;
+    int alg;             /* kCCAlgorithm* */
+    uint32_t mode;       /* kCCMode* */
+    uint32_t pad;        /* ccNoPadding / ccPKCS7Padding */
+    int op;              /* 0 unset, kCCEncrypt, kCCDecrypt */
+    bool passthrough;
+} ciph;
+static ciph *ciph_of(jobj *o)
+{
+    if (!o->native) o->native = calloc(1, sizeof(ciph));
+    return o->native;
+}
 static void Cipher_getInstance(tl_jcall *c)
 {
     jobj *ci = make("javax/crypto/Cipher");
-    if (c->args[0].l) set_str(ci, "transformation", S(c->args[0].l));
+    ciph *p = ciph_of(ci);
+    const char *t = c->args[0].l ? S(c->args[0].l) : "AES";
+    set_str(ci, "transformation", t);
+    char alg[32] = "AES", mode[16] = "ECB", pad[24] = "PKCS5Padding";
+    sscanf(t, "%31[^/]/%15[^/]/%23s", alg, mode, pad);
+    if (!strchr(t, '/')) { strcpy(mode, "ECB"); strcpy(pad, "PKCS5Padding"); }
+    p->alg = !strncasecmp(alg, "AES", 3) ? kCCAlgorithmAES
+           : !strncasecmp(alg, "DESede", 6) || !strcasecmp(alg, "3DES") ? kCCAlgorithm3DES
+           : !strcasecmp(alg, "DES") ? kCCAlgorithmDES : -1;
+    p->mode = !strcasecmp(mode, "CBC") ? kCCModeCBC
+            : !strcasecmp(mode, "CTR") ? kCCModeCTR
+            : !strcasecmp(mode, "CFB") ? kCCModeCFB
+            : !strcasecmp(mode, "OFB") ? kCCModeOFB : kCCModeECB;
+    p->pad = strncasecmp(pad, "No", 2) ? ccPKCS7Padding : ccNoPadding;
+    if (p->alg < 0) p->passthrough = true;
     c->ret = vl(ci);
 }
 static void Cipher_init(tl_jcall *c)
 {
+    ciph *p = ciph_of(c->self);
+    p->op = c->args[0].i == 2 || c->args[0].i == 4 ? kCCDecrypt : kCCEncrypt;
     set_int(c->self, "mode", c->args[0].i);
-    if (c->args[1].l) tl_jni_set_field(c->self, "key", "Ljava/security/Key;", c->args[1]);
-    if (c->args[2].l) tl_jni_set_field(c->self, "params", "Ljava/security/spec/AlgorithmParameterSpec;", c->args[2]);
+    jobj *key = c->args[1].l;
+    if (key) tl_jni_set_field(c->self, "key", "Ljava/security/Key;", c->args[1]);
+    jobj *enc = key ? tl_jni_get_field(key, "encoded", "[B").l : NULL;
+    if (!enc && key) {
+        jvalue r = tl_jni_call(key, "getEncoded", "()[B", NULL);
+        enc = r.l;
+    }
+    if (enc && enc->kind == TL_K_PRIM_ARRAY) {
+        p->keyn = enc->arr.len > sizeof(p->key) ? sizeof(p->key) : enc->arr.len;
+        memcpy(p->key, enc->arr.data, p->keyn);
+    }
+    for (int i = 2; i < 4 && c->args; i++) {
+        jobj *pr = c->args[i].l;
+        if (!pr) continue;
+        tl_jni_set_field(c->self, "params", "Ljava/security/spec/AlgorithmParameterSpec;", c->args[i]);
+        jobj *iv = tl_jni_get_field(pr, "iv", "[B").l;
+        if (iv && iv->kind == TL_K_PRIM_ARRAY) {
+            p->ivn = iv->arr.len > sizeof(p->iv) ? sizeof(p->iv) : iv->arr.len;
+            memcpy(p->iv, iv->arr.data, p->ivn);
+        }
+    }
+    if (!p->passthrough && p->alg >= 0) {
+        if (p->cr) { CCCryptorRelease(p->cr); p->cr = NULL; }
+        CCCryptorStatus st = CCCryptorCreateWithMode(
+            p->op, p->mode, (CCAlgorithm)p->alg, p->pad,
+            p->ivn ? p->iv : NULL, p->key, p->keyn,
+            NULL, 0, 0, 0, &p->cr);
+        if (st != kCCSuccess) { p->passthrough = true; }
+    }
+}
+static jobj *cipher_run(ciph *p, const uint8_t *in, size_t inn, bool final, bool *ok)
+{
+    *ok = true;
+    if (p->passthrough || !p->cr) {
+        jobj *a = tl_jni_new_prim_array('B', (uint32_t)inn);
+        if (inn) memcpy(a->arr.data, in, inn);
+        return a;
+    }
+    size_t cap = inn + 32;
+    uint8_t *out = malloc(cap);
+    size_t total = 0, n1 = 0;
+    if (inn && CCCryptorUpdate(p->cr, in, inn, out, cap, &n1)) { *ok = false; free(out); return NULL; }
+    total += n1;
+    if (final) {
+        size_t n2 = 0;
+        if (CCCryptorFinal(p->cr, out + total, cap - total, &n2)) { *ok = false; free(out); return NULL; }
+        total += n2;
+        CCCryptorRelease(p->cr); p->cr = NULL;
+    }
+    jobj *a = tl_jni_new_prim_array('B', (uint32_t)total);
+    memcpy(a->arr.data, out, total); free(out);
+    return a;
 }
 static void Cipher_update(tl_jcall *c)
 {
     jobj *a = c->args[0].l;
-    c->ret = vl(a ? tl_jni_ref(a) : NULL);
+    const uint8_t *in = a && a->kind == TL_K_PRIM_ARRAY ? a->arr.data : NULL;
+    size_t inn = in ? a->arr.len : 0;
+    bool ok;
+    jobj *r = cipher_run(ciph_of(c->self), in, inn, false, &ok);
+    if (!ok) { tl_jni_throw("javax/crypto/BadPaddingException", "cipher update failed"); return; }
+    c->ret = vl(r);
 }
-static void Cipher_updateRange(tl_jcall *c) { Cipher_update(c); }
+static void Cipher_updateRange(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (!a || a->kind != TL_K_PRIM_ARRAY) { c->ret = vl(NULL); return; }
+    int off = c->args[1].i, n = c->args[2].i;
+    if (off < 0) off = 0;
+    if (off + n > (int)a->arr.len) n = (int)a->arr.len - off;
+    if (n < 0) n = 0;
+    bool ok;
+    jobj *r = cipher_run(ciph_of(c->self), (uint8_t *)a->arr.data + off, (size_t)n, false, &ok);
+    if (!ok) { tl_jni_throw("javax/crypto/BadPaddingException", "cipher update failed"); return; }
+    c->ret = vl(r);
+}
 static void Cipher_doFinal(tl_jcall *c)
 {
     jobj *a = c->args[0].l;
-    c->ret = vl(a ? tl_jni_ref(a) : tl_jni_new_prim_array('B', 0));
+    const uint8_t *in = a && a->kind == TL_K_PRIM_ARRAY ? a->arr.data : NULL;
+    size_t inn = in ? a->arr.len : 0;
+    bool ok;
+    jobj *r = cipher_run(ciph_of(c->self), in, inn, true, &ok);
+    if (!ok) { tl_jni_throw("javax/crypto/BadPaddingException", "decrypt failed"); return; }
+    c->ret = vl(r);
 }
-static void Cipher_doFinal0(tl_jcall *c) { c->ret = vl(tl_jni_new_prim_array('B', 0)); }
+static void Cipher_doFinalRange(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (!a || a->kind != TL_K_PRIM_ARRAY) { c->ret = vl(NULL); return; }
+    int off = c->args[1].i, n = c->args[2].i;
+    if (off < 0) off = 0;
+    if (off + n > (int)a->arr.len) n = (int)a->arr.len - off;
+    if (n < 0) n = 0;
+    bool ok;
+    jobj *r = cipher_run(ciph_of(c->self), (uint8_t *)a->arr.data + off, (size_t)n, true, &ok);
+    if (!ok) { tl_jni_throw("javax/crypto/BadPaddingException", "decrypt failed"); return; }
+    c->ret = vl(r);
+}
+static void Cipher_doFinal0(tl_jcall *c)
+{
+    bool ok;
+    jobj *r = cipher_run(ciph_of(c->self), NULL, 0, true, &ok);
+    if (!ok) { tl_jni_throw("javax/crypto/BadPaddingException", "decrypt failed"); return; }
+    c->ret = vl(r);
+}
 static void Cipher_getBlockSize(tl_jcall *c) { c->ret = vi(16); }
 static void Cipher_getOutputSize(tl_jcall *c) { c->ret = c->args[0]; }
 static void Cipher_getIV(tl_jcall *c) { c->ret = vl(tl_jni_new_prim_array('B', 16)); }
@@ -20324,8 +20450,8 @@ static const tl_jhle k_more_hle[] = {
     M("javax/crypto/Mac", "getAlgorithm", NULL, Mac_getAlgorithm),
     M("javax/crypto/Mac", "getMacLength", NULL, Mac_getMacLength),
     M("javax/crypto/Mac", "clone", NULL, Mac_clone),
-    M("javax/crypto/spec/SecretKeySpec", "<init>", "(Ljava/lang/Object;Ljava/lang/Object;)V", SKS_init),
-    M("javax/crypto/spec/SecretKeySpec", "<init>", "(Ljava/lang/Object;IILjava/lang/Object;)V", SKS_init2),
+    M("javax/crypto/spec/SecretKeySpec", "<init>", "([BLjava/lang/String;)V", SKS_init),
+    M("javax/crypto/spec/SecretKeySpec", "<init>", "([BIILjava/lang/String;)V", SKS_init2),
     M("java/security/Key", "getEncoded", NULL, Key_getEncoded),
     M("javax/crypto/SecretKey", "getEncoded", NULL, Key_getEncoded),
     M("javax/crypto/spec/SecretKeySpec", "getEncoded", NULL, Key_getEncoded),
@@ -20338,19 +20464,24 @@ static const tl_jhle k_more_hle[] = {
     M("javax/crypto/KeyGenerator", "getInstance", "(Ljava/lang/Object;)Ljava/lang/Object;", KG_getInstance),
     M("javax/crypto/KeyGenerator", "init", "(I)V", KG_init),
     M("javax/crypto/KeyGenerator", "generateKey", NULL, KG_generateKey),
-    M("java/security/SecureRandom", "setSeedB", NULL, SR_setSeedB),
-    M("java/security/SecureRandom", "setSeedJ", NULL, SR_setSeedJ),
+    M("java/security/SecureRandom", "setSeed", "([B)V", SR_setSeedB),
+    M("java/security/SecureRandom", "setSeed", "(J)V", SR_setSeedJ),
     M("java/security/SecureRandom", "nextInt", NULL, SR_nextInt),
     M("java/security/SecureRandom", "nextLong", NULL, SR_nextLong),
     M("java/security/SecureRandom", "getSeed", "(I)Ljava/lang/Object;", SR_getSeed),
     M("java/security/SecureRandom", "generateSeed", "()V", SR_generateSeed),
     M("java/security/SecureRandom", "getInstanceStrong", NULL, SR_getInstanceStrong),
-    M("javax/crypto/Cipher", "getInstance", "(Ljava/lang/Object;)Ljava/lang/Object;", Cipher_getInstance),
-    M("javax/crypto/Cipher", "<init>", "(ILjava/lang/Object;Ljava/lang/Object;)V", Cipher_init),
-    M("javax/crypto/Cipher", "update", "(Ljava/lang/Object;)Ljava/lang/Object;", Cipher_update),
-    M("javax/crypto/Cipher", "update", "()V", Cipher_updateRange),
-    M("javax/crypto/Cipher", "doFinal", "(Ljava/lang/Object;)Ljava/lang/Object;", Cipher_doFinal),
-    M("javax/crypto/Cipher", "doFinal", "()Ljava/lang/Object;", Cipher_doFinal0),
+    M("javax/crypto/Cipher", "getInstance", "(Ljava/lang/String;)Ljavax/crypto/Cipher;", Cipher_getInstance),
+    M("javax/crypto/Cipher", "init", "(ILjava/security/Key;)V", Cipher_init),
+    M("javax/crypto/Cipher", "init", "(ILjava/security/Key;Ljava/security/spec/AlgorithmParameterSpec;)V", Cipher_init),
+    M("javax/crypto/Cipher", "init", "(ILjava/security/Key;Ljava/security/SecureRandom;)V", Cipher_init),
+    M("javax/crypto/Cipher", "init", "(ILjava/security/Key;Ljava/security/spec/AlgorithmParameterSpec;Ljava/security/SecureRandom;)V", Cipher_init),
+    M("javax/crypto/Cipher", "init", "(ILjava/security/Key;Ljava/security/AlgorithmParameters;)V", Cipher_init),
+    M("javax/crypto/Cipher", "update", "([B)[B", Cipher_update),
+    M("javax/crypto/Cipher", "update", "([BII)[B", Cipher_updateRange),
+    M("javax/crypto/Cipher", "doFinal", "([B)[B", Cipher_doFinal),
+    M("javax/crypto/Cipher", "doFinal", "([BII)[B", Cipher_doFinalRange),
+    M("javax/crypto/Cipher", "doFinal", "()[B", Cipher_doFinal0),
     M("javax/crypto/Cipher", "getBlockSize", NULL, Cipher_getBlockSize),
     M("javax/crypto/Cipher", "getOutputSize", "(Ljava/lang/Object;)Ljava/lang/Object;", Cipher_getOutputSize),
     M("javax/crypto/Cipher", "getIV", NULL, Cipher_getIV),
@@ -20361,8 +20492,8 @@ static const tl_jhle k_more_hle[] = {
     M("javax/crypto/Cipher", "getExemptionMechanism", NULL, Cipher_getExemptionMechanism),
     M("javax/crypto/Cipher", "wrap", NULL, Cipher_wrap),
     M("javax/crypto/Cipher", "unwrap", NULL, Cipher_unwrap),
-    M("javax/crypto/spec/IvParameterSpec", "<init>", "(Ljava/lang/Object;)V", IvPS_init),
-    M("javax/crypto/spec/IvParameterSpec", "<init>", "(Ljava/lang/Object;II)V", IvPS_init2),
+    M("javax/crypto/spec/IvParameterSpec", "<init>", "([B)V", IvPS_init),
+    M("javax/crypto/spec/IvParameterSpec", "<init>", "([BII)V", IvPS_init2),
     M("javax/crypto/spec/IvParameterSpec", "getIV", NULL, IvPS_getIV),
     M("android/view/View", "<init>", NULL, View_init),
     M("android/view/View", "getWidth", NULL, View_getWidth),
