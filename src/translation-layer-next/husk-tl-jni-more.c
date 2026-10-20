@@ -1045,6 +1045,122 @@ static void Thread_getState(tl_jcall *c)
 static void Thread_isInterrupted(tl_jcall *c) { c->ret = vz(get_int(c->self, "interrupted")); }
 static void Thread_interrupt(tl_jcall *c)     { set_bool(c->self, "interrupted", 1); }
 static void Thread_interrupted(tl_jcall *c)   { c->ret = vz(0); }
+
+/* ---- android.os.Handler/Looper/Message: single FIFO worker per looper.
+ * Apps rely on post() returning before run() (deferred UI work), so we keep
+ * a real queue + worker thread instead of running inline. postDelayed uses
+ * the same queue with an earliest-run timestamp. ---- */
+typedef struct htask { jobj *r, *msg, *handler; int64_t at; struct htask *next; } htask;
+static htask *h_q, *h_tail;
+static pthread_mutex_t h_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t h_cv = PTHREAD_COND_INITIALIZER;
+static int h_started;
+static int64_t h_now_ms(void)
+{
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+static void *h_worker(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        pthread_mutex_lock(&h_mu);
+        while (!h_q) pthread_cond_wait(&h_cv, &h_mu);
+        htask *t = h_q;
+        if (t->at > h_now_ms()) {
+            struct timespec ts = { .tv_sec = t->at / 1000, .tv_nsec = (t->at % 1000) * 1000000L };
+            pthread_cond_timedwait(&h_cv, &h_mu, &ts);
+            pthread_mutex_unlock(&h_mu);
+            continue;
+        }
+        h_q = t->next; if (!h_q) h_tail = NULL;
+        pthread_mutex_unlock(&h_mu);
+        if (t->r) fire(t->r, "java/lang/Runnable", "run", "()V", NULL, 0);
+        if (t->msg && t->handler) {
+            jvalue a = { .l = t->msg };
+            fire(t->handler, "android/os/Handler", "handleMessage", "(Landroid/os/Message;)V", &a, 1);
+        }
+        free(t);
+    }
+    return NULL;
+}
+static void h_enqueue(jobj *r, jobj *msg, jobj *handler, int64_t delay_ms)
+{
+    if (!h_started) { pthread_t w; pthread_create(&w, NULL, h_worker, NULL); pthread_detach(w); h_started = 1; }
+    htask *t = calloc(1, sizeof(htask));
+    t->r = r; t->msg = msg; t->handler = handler;
+    t->at = h_now_ms() + delay_ms;
+    pthread_mutex_lock(&h_mu);
+    if (h_tail) h_tail->next = t; else h_q = t;
+    h_tail = t;
+    pthread_cond_signal(&h_cv);
+    pthread_mutex_unlock(&h_mu);
+}
+static void Hnd_init(tl_jcall *c)        { (void)c; }
+static void Hnd_init_looper(tl_jcall *c) { tl_jni_set_field(c->self, "looper", "Landroid/os/Looper;", c->args[0]); }
+static void Hnd_init_looper_cb(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "looper", "Landroid/os/Looper;", c->args[0]);
+    tl_jni_set_field(c->self, "cb", "Landroid/os/Handler$Callback;", c->args[1]);
+}
+static void Hnd_init_cb(tl_jcall *c)     { tl_jni_set_field(c->self, "cb", "Landroid/os/Handler$Callback;", c->args[0]); }
+static void Hnd_post(tl_jcall *c)          { h_enqueue(c->args[0].l, NULL, NULL, 0); c->ret = vz(c->args[0].l != NULL); }
+static void Hnd_postDelayed(tl_jcall *c)   { h_enqueue(c->args[0].l, NULL, NULL, c->args[1].j); c->ret = vz(c->args[0].l != NULL); }
+static void Hnd_postAtTime(tl_jcall *c)
+{
+    int64_t d = c->args[1].j - h_now_ms();
+    h_enqueue(c->args[0].l, NULL, NULL, d > 0 ? d : 0);
+    c->ret = vz(c->args[0].l != NULL);
+}
+static void Hnd_sendMessage(tl_jcall *c)   { h_enqueue(NULL, c->args[0].l, tl_jni_ref(c->self), 0); c->ret = vz(c->args[0].l != NULL); }
+static void Hnd_sendMessageDelayed(tl_jcall *c) { h_enqueue(NULL, c->args[0].l, tl_jni_ref(c->self), c->args[1].j); c->ret = vz(1); }
+static void Hnd_sendEmptyMessage(tl_jcall *c)
+{
+    jobj *m = make("android/os/Message"); set_int(m, "what", c->args[0].i);
+    h_enqueue(NULL, m, tl_jni_ref(c->self), 0); c->ret = vz(1);
+}
+static void Hnd_obtainMessage0(tl_jcall *c)   { c->ret = vl(make("android/os/Message")); }
+static void Hnd_obtainMessage_what(tl_jcall *c)
+{
+    jobj *m = make("android/os/Message"); set_int(m, "what", c->args[0].i); c->ret = vl(m);
+}
+static void Hnd_obtainMessage_full(tl_jcall *c)
+{
+    jobj *m = make("android/os/Message");
+    set_int(m, "what", c->args[0].i); set_int(m, "arg1", c->args[1].i); set_int(m, "arg2", c->args[2].i);
+    tl_jni_set_field(m, "obj", "Ljava/lang/Object;", c->args[3]);
+    c->ret = vl(m);
+}
+static void Hnd_obtainMessage_obj(tl_jcall *c)
+{
+    jobj *m = make("android/os/Message");
+    set_int(m, "what", c->args[0].i);
+    if (c->args[1].l) tl_jni_set_field(m, "obj", "Ljava/lang/Object;", c->args[1]);
+    c->ret = vl(m);
+}
+static void Hnd_removeCallbacks(tl_jcall *c) { (void)c; }   /* queued tasks are tiny; dropping is acceptable */
+static void Hnd_getLooper(tl_jcall *c)  { c->ret = tl_jni_get_field(c->self, "looper", "Landroid/os/Looper;"); }
+static void Hnd_handleMessage(tl_jcall *c) { (void)c; }      /* default no-op handler */
+static void Hnd_dispatchMessage(tl_jcall *c)
+{
+    jobj *cb = tl_jni_get_field(c->self, "cb", "Landroid/os/Handler$Callback;").l;
+    if (cb) fire(cb, "android/os/Handler$Callback", "handleMessage", "(Landroid/os/Message;)Z", &c->args[0], 1);
+    else fire(c->self, "android/os/Handler", "handleMessage", "(Landroid/os/Message;)V", &c->args[0], 1);
+}
+static void Loop_mainLooper(tl_jcall *c)  { static jobj *m; if (!m) m = make("android/os/Looper"); c->ret = vl(m); }
+static void Loop_myLooper(tl_jcall *c)    { Loop_mainLooper(c); }
+static void Loop_prepare(tl_jcall *c)     { (void)c; }
+static void Loop_loop(tl_jcall *c)        { (void)c; }
+static void Loop_quit(tl_jcall *c)        { (void)c; }
+static void Loop_getThread(tl_jcall *c)   { Thread_currentThread(c); }
+static void Loop_isCurrentThread(tl_jcall *c) { c->ret = vz(0); }
+static void Msg_obtain(tl_jcall *c)       { c->ret = vl(make("android/os/Message")); }
+static void Msg_sendToTarget(tl_jcall *c) { h_enqueue(NULL, tl_jni_ref(c->self), tl_jni_get_field(c->self, "target", "Landroid/os/Handler;").l, 0); }
+static void Msg_recycle(tl_jcall *c)      { (void)c; }
+static void Msg_getWhat(tl_jcall *c)      { c->ret = vi(get_int(c->self, "what")); }
+static void Msg_setTarget(tl_jcall *c)    { tl_jni_set_field(c->self, "target", "Landroid/os/Handler;", c->args[0]); }
+static void Msg_getData(tl_jcall *c)      { c->ret = vl(make("android/os/Bundle")); }
+static void Msg_setData(tl_jcall *c)      { (void)c; }
 static void Thread_sleep(tl_jcall *c)
 {
     int64_t ms = c->args[0].j; if (ms < 0) ms = 0; if (ms > 60000) ms = 60000;
@@ -18085,6 +18201,41 @@ static const tl_jhle k_more_hle[] = {
     M("java/lang/Thread", "getThreadGroup", NULL, Thread_getThreadGroup),
     M("java/lang/Thread", "dumpStack", NULL, Thread_dumpStack),
     M("java/lang/Thread", "activeCount", NULL, Thread_activeCount),
+    M("android/os/Handler", "<init>", "()V", Hnd_init),
+    M("android/os/Handler", "<init>", "(Landroid/os/Looper;)V", Hnd_init_looper),
+    M("android/os/Handler", "<init>", "(Landroid/os/Looper;Landroid/os/Handler$Callback;)V", Hnd_init_looper_cb),
+    M("android/os/Handler", "<init>", "(Landroid/os/Handler$Callback;)V", Hnd_init_cb),
+    M("android/os/Handler", "post", "(Ljava/lang/Runnable;)Z", Hnd_post),
+    M("android/os/Handler", "postDelayed", "(Ljava/lang/Runnable;J)Z", Hnd_postDelayed),
+    M("android/os/Handler", "postAtTime", "(Ljava/lang/Runnable;J)Z", Hnd_postAtTime),
+    M("android/os/Handler", "sendMessage", "(Landroid/os/Message;)Z", Hnd_sendMessage),
+    M("android/os/Handler", "sendMessageDelayed", "(Landroid/os/Message;J)Z", Hnd_sendMessageDelayed),
+    M("android/os/Handler", "sendEmptyMessage", "(I)Z", Hnd_sendEmptyMessage),
+    M("android/os/Handler", "obtainMessage", "()Landroid/os/Message;", Hnd_obtainMessage0),
+    M("android/os/Handler", "obtainMessage", "(I)Landroid/os/Message;", Hnd_obtainMessage_what),
+    M("android/os/Handler", "obtainMessage", "(IIILjava/lang/Object;)Landroid/os/Message;", Hnd_obtainMessage_full),
+    M("android/os/Handler", "obtainMessage", "(ILjava/lang/Object;)Landroid/os/Message;", Hnd_obtainMessage_obj),
+    M("android/os/Handler", "removeCallbacks", "(Ljava/lang/Runnable;)V", Hnd_removeCallbacks),
+    M("android/os/Handler", "removeMessages", "(I)V", Hnd_removeCallbacks),
+    M("android/os/Handler", "removeCallbacksAndMessages", "(Ljava/lang/Object;)V", Hnd_removeCallbacks),
+    M("android/os/Handler", "hasMessages", "(I)Z", False),
+    M("android/os/Handler", "getLooper", "()Landroid/os/Looper;", Hnd_getLooper),
+    M("android/os/Handler", "handleMessage", "(Landroid/os/Message;)V", Hnd_handleMessage),
+    M("android/os/Handler", "dispatchMessage", "(Landroid/os/Message;)V", Hnd_dispatchMessage),
+    M("android/os/Looper", "getMainLooper", "()Landroid/os/Looper;", Loop_mainLooper),
+    M("android/os/Looper", "myLooper", "()Landroid/os/Looper;", Loop_myLooper),
+    M("android/os/Looper", "prepare", "()V", Loop_prepare),
+    M("android/os/Looper", "loop", "()V", Loop_loop),
+    M("android/os/Looper", "quit", "()V", Loop_quit),
+    M("android/os/Looper", "quitSafely", "()V", Loop_quit),
+    M("android/os/Looper", "getThread", "()Ljava/lang/Thread;", Loop_getThread),
+    M("android/os/Looper", "isCurrentThread", "()Z", Loop_isCurrentThread),
+    M("android/os/Message", "obtain", "()Landroid/os/Message;", Msg_obtain),
+    M("android/os/Message", "sendToTarget", "()V", Msg_sendToTarget),
+    M("android/os/Message", "recycle", "()V", Msg_recycle),
+    M("android/os/Message", "setTarget", "(Landroid/os/Handler;)V", Msg_setTarget),
+    M("android/os/Message", "getData", "()Landroid/os/Bundle;", Msg_getData),
+    M("android/os/Message", "setData", "(Landroid/os/Bundle;)V", Msg_setData),
     M("java/lang/ThreadGroup", "getName", NULL, ThreadGroup_getName),
     M("java/lang/ThreadGroup", "getParent", NULL, ThreadGroup_getParent),
     M("java/lang/ThreadGroup", "activeCount", NULL, ThreadGroup_activeCount),
@@ -23016,6 +23167,11 @@ static const struct { const char *name, *super; } k_more_classes[] = {
     { "android/util/SparseBooleanArray", "java/lang/Object" },
     { "android/os/Bundle", "java/lang/Object" },
     { "android/os/BaseBundle", "java/lang/Object" },
+    { "android/os/Handler", "java/lang/Object" },
+    { "android/os/Handler$Callback", "java/lang/Object" },
+    { "android/os/Looper", "java/lang/Object" },
+    { "android/os/Message", "java/lang/Object" },
+    { "android/os/Messenger", "java/lang/Object" },
     { "android/content/Intent", "java/lang/Object" },
     { "android/os/StatFs", "java/lang/Object" },
     { "android/os/Debug", "java/lang/Object" },
