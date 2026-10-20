@@ -937,6 +937,7 @@ final class GuestImage: ObservableObject {
                 try? FileManager.default.removeItem(at: dest)
                 try? FileManager.default.removeItem(atPath: self.snapshotStampPath)
                 DispatchQueue.main.async {
+                    self.isFetchingSnapshot = false
                     self.state = .failed(String(localized: "Could not unpack the snapshot: \(error.localizedDescription)"))
                 }
             }

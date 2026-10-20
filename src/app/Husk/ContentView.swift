@@ -357,6 +357,10 @@ struct ContentView: View {
         // A PS4 game started in this run holds the same JIT region QEMU would take.
         if let console = husk_console_loaded_game() {
             HuskLog.log("jit", "refusing to start QEMU: \(String(cString: console)) is loaded in this run; close Husk first")
+            host.say("Android can't start while a console game is loaded",
+                     "\(String(cString: console)) holds the JIT region. Close and reopen BetterHusk, then start Android first.",
+                     good: false)
+            booting = false
             return
         }
         started = true
