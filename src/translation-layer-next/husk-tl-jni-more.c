@@ -4903,6 +4903,209 @@ static void BB_putDoubleAt(tl_jcall *c)
     bb_write(c->self, c->args[0].i, u, 8); c->ret = vl(tl_jni_ref(c->self));
 }
 static void BB_putCharAt(tl_jcall *c)  { bb_write(c->self, c->args[0].i, c->args[1].c, 2); c->ret = vl(tl_jni_ref(c->self)); }
+
+/* java.nio.charset.Charset — real encode/decode for the charsets Android
+ * knows: UTF-8, UTF-16LE/BE, ISO-8859-1, US-ASCII (aliases included). */
+static const char *cs_name_of(jobj *o) { jobj *n = tl_jni_get_field(o, "name", "Ljava/lang/String;").l; return n ? S(n) : "UTF-8"; }
+static int cs_kind(const char *n)
+{
+    if (!n) return 0;
+    if (!strcasecmp(n, "UTF-8") || !strcasecmp(n, "UTF8") || !strcasecmp(n, "unicode-1-1-utf-8")) return 0;
+    if (!strcasecmp(n, "UTF-16") || !strcasecmp(n, "UTF-16LE") || !strcasecmp(n, "UTF_16LE") || !strcasecmp(n, "unicodeLittleUnmarked")) return 1;
+    if (!strcasecmp(n, "UTF-16BE") || !strcasecmp(n, "UTF_16BE") || !strcasecmp(n, "x-utf-16be")) return 2;
+    if (!strcasecmp(n, "ISO-8859-1") || !strcasecmp(n, "latin1") || !strcasecmp(n, "ISO8859_1") || !strcasecmp(n, "8859_1")) return 3;
+    if (!strcasecmp(n, "US-ASCII") || !strcasecmp(n, "ASCII") || !strcasecmp(n, "ANSI_X3.4-1968")) return 4;
+    return 0;
+}
+static jobj *cs_new(const char *name)
+{
+    jobj *o = make("java/nio/charset/Charset");
+    set_str(o, "name", name);
+    return o;
+}
+static void CS_forName(tl_jcall *c)
+{
+    const char *n = c->args[0].l ? S(c->args[0].l) : "UTF-8";
+    static const char *const canon[] = { "UTF-8", "UTF-16LE", "UTF-16BE", "ISO-8859-1", "US-ASCII" };
+    if (strncasecmp(n, "UTF", 3) && strncasecmp(n, "ISO", 3) && strncasecmp(n, "US-", 3) &&
+        strncasecmp(n, "ASCII", 5) && strncasecmp(n, "latin", 5) && strncasecmp(n, "8859", 4) &&
+        strncasecmp(n, "unicode", 7) && strncasecmp(n, "x-", 2)) {
+        tl_jni_throw("java/nio/charset/UnsupportedCharsetException", n);
+        return;
+    }
+    c->ret = vl(cs_new(canon[cs_kind(n)]));
+}
+static void CS_defaultCharset(tl_jcall *c) { c->ret = vl(cs_new("UTF-8")); }
+static void CS_name(tl_jcall *c)    { c->ret = tl_jni_get_field(c->self, "name", "Ljava/lang/String;"); }
+static void CS_displayName(tl_jcall *c) { CS_name(c); }
+static void CS_isRegistered(tl_jcall *c) { (void)c; c->ret = vz(true); }
+static void CS_canEncode(tl_jcall *c)    { (void)c; c->ret = vz(true); }
+static void CS_equals(tl_jcall *c)
+{
+    jobj *o = c->args[0].l;
+    c->ret = vz(o && !strcasecmp(cs_name_of(c->self), cs_name_of(o)));
+}
+static void CS_hashCode(tl_jcall *c)
+{
+    int h = 0;
+    for (const unsigned char *p = (const unsigned char *)cs_name_of(c->self); *p; p++) h = h * 31 + *p;
+    c->ret = vi(h);
+}
+static void CS_toString(tl_jcall *c) { CS_name(c); }
+static int cs_put8(sbuf *b, uint8_t u) { sb_add_n(b, (const char *)&u, 1); return 0; }
+static int cs_utf8enc(sbuf *b, uint32_t cp)
+{
+    uint8_t t[4]; int k = 0;
+    if (cp < 0x80) t[k++] = (uint8_t)cp;
+    else if (cp < 0x800) { t[k++] = (uint8_t)(0xC0 | (cp >> 6)); t[k++] = (uint8_t)(0x80 | (cp & 0x3f)); }
+    else if (cp < 0x10000) { t[k++] = (uint8_t)(0xE0 | (cp >> 12)); t[k++] = (uint8_t)(0x80 | ((cp >> 6) & 0x3f)); t[k++] = (uint8_t)(0x80 | (cp & 0x3f)); }
+    else { t[k++] = (uint8_t)(0xF0 | (cp >> 18)); t[k++] = (uint8_t)(0x80 | ((cp >> 12) & 0x3f)); t[k++] = (uint8_t)(0x80 | ((cp >> 6) & 0x3f)); t[k++] = (uint8_t)(0x80 | (cp & 0x3f)); }
+    sb_add_n(b, (const char *)t, (size_t)k);
+    return k;
+}
+/* encode str into a fresh malloc'd byte buffer in the object's charset */
+static size_t cs_encode(const char *s, int kind, uint8_t **out)
+{
+    sbuf b = {0};
+    size_t n = strlen(s);
+    for (size_t i = 0; i < n;) {
+        uint32_t cp = utf8_dec(s, (int)i);
+        size_t adv = cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
+        if (i + adv > n) { adv = 1; cp = '?'; }
+        i += adv;
+        switch (kind) {
+        case 1: cs_put8(&b, (uint8_t)(cp & 0xff)); cs_put8(&b, (uint8_t)(cp >> 8)); break;
+        case 2: cs_put8(&b, (uint8_t)(cp >> 8)); cs_put8(&b, (uint8_t)(cp & 0xff)); break;
+        case 3: cs_put8(&b, (uint8_t)(cp > 255 ? '?' : cp)); break;
+        case 4: cs_put8(&b, (uint8_t)(cp > 127 ? '?' : cp)); break;
+        default: cs_utf8enc(&b, cp); break;
+        }
+    }
+    *out = (uint8_t *)b.p;
+    return b.n;
+}
+static size_t cs_decode(const uint8_t *d, size_t n, int kind, char **out)
+{
+    sbuf b = {0};
+    if (kind == 1 || kind == 2) {
+        for (size_t i = 0; i + 1 < n; i += 2) {
+            uint32_t cp = kind == 1 ? (uint32_t)(d[i] | ((uint32_t)d[i + 1] << 8)) : (uint32_t)(((uint32_t)d[i] << 8) | d[i + 1]);
+            cs_utf8enc(&b, cp);
+        }
+    } else if (kind == 3) {
+        for (size_t i = 0; i < n; i++) cs_utf8enc(&b, d[i]);
+    } else sb_add_n(&b, (const char *)d, n);
+    *out = b.p;
+    return b.n;
+}
+static void CS_encode(tl_jcall *c)
+{
+    const char *s = c->args[0].l ? S(c->args[0].l) : "";
+    uint8_t *out = NULL;
+    size_t n = cs_encode(s, cs_kind(cs_name_of(c->self)), &out);
+    c->ret = vl(new_bb(out, (int64_t)n, true));
+}
+static void CS_decode(tl_jcall *c)
+{
+    jobj *bb = c->args[0].l;
+    uint8_t *addr = bb ? bb_addr(bb) : NULL;
+    int pos = bb ? bb_pos(bb) : 0, lim = bb ? bb_lim(bb) : 0;
+    char *out = NULL;
+    size_t n = addr ? cs_decode(addr + pos, (size_t)(lim - pos), cs_kind(cs_name_of(c->self)), &out) : 0;
+    jobj *cb = make("java/nio/CharBuffer");
+    jobj *str = STR(out ? out : "");
+    set_obj(cb, "str", "Ljava/lang/String;", str);
+    set_int(cb, "pos", 0); set_int(cb, "lim", (int)n);
+    set_int(cb, "cap", (int)n);
+    free(out);
+    c->ret = vl(cb);
+}
+static void CS_newEncoder(tl_jcall *c)
+{
+    jobj *e = make("java/nio/charset/CharsetEncoder");
+    tl_jni_set_field(e, "cs", "Ljava/nio/charset/Charset;", vl(c->self));
+    c->ret = vl(e);
+}
+static void CS_newDecoder(tl_jcall *c)
+{
+    jobj *e = make("java/nio/charset/CharsetDecoder");
+    tl_jni_set_field(e, "cs", "Ljava/nio/charset/Charset;", vl(c->self));
+    c->ret = vl(e);
+}
+static void CSE_charset(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "cs", "Ljava/nio/charset/Charset;"); }
+static void CSE_encode(tl_jcall *c)
+{
+    jobj *cs = tl_jni_get_field(c->self, "cs", "Ljava/nio/charset/Charset;").l;
+    const char *s = c->args[0].l ? S(c->args[0].l) : "";
+    uint8_t *out = NULL;
+    size_t n = cs_encode(s, cs_kind(cs ? cs_name_of(cs) : "UTF-8"), &out);
+    c->ret = vl(new_bb(out, (int64_t)n, true));
+}
+static void CSD_decode(tl_jcall *c)
+{
+    jobj *cs = tl_jni_get_field(c->self, "cs", "Ljava/nio/charset/Charset;").l;
+    jobj *bb = c->args[0].l;
+    uint8_t *addr = bb ? bb_addr(bb) : NULL;
+    int pos = bb ? bb_pos(bb) : 0, lim = bb ? bb_lim(bb) : 0;
+    char *out = NULL;
+    size_t n = addr ? cs_decode(addr + pos, (size_t)(lim - pos), cs_kind(cs ? cs_name_of(cs) : "UTF-8"), &out) : 0;
+    jobj *cb = make("java/nio/CharBuffer");
+    set_obj(cb, "str", "Ljava/lang/String;", STR(out ? out : ""));
+    set_int(cb, "pos", 0); set_int(cb, "lim", (int)n); set_int(cb, "cap", (int)n);
+    free(out);
+    c->ret = vl(cb);
+}
+static void CB_toString(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "str", "Ljava/lang/String;"); }
+static void CB_length(tl_jcall *c)   { jobj *s = tl_jni_get_field(c->self, "str", "Ljava/lang/String;").l; c->ret = vi(s ? (int)strlen(S(s)) : 0); }
+static void CB_charAt(tl_jcall *c)
+{
+    jobj *s = tl_jni_get_field(c->self, "str", "Ljava/lang/String;").l;
+    const char *p = s ? S(s) : "";
+    c->ret = vc((uint16_t)utf8_dec(p, utf8_byteof(p, c->args[0].i)));
+}
+static void CB_remaining(tl_jcall *c) { c->ret = vi(get_int(c->self, "lim") - get_int(c->self, "pos")); }
+static void CB_subSequence(tl_jcall *c) { CB_toString(c); }
+static void CB_toArray(tl_jcall *c)
+{
+    jobj *s = tl_jni_get_field(c->self, "str", "Ljava/lang/String;").l;
+    const char *p = s ? S(s) : "";
+    int n = utf8_nchars(p, (int)strlen(p));
+    jobj *a = tl_jni_new_prim_array('C', (uint32_t)n);
+    uint16_t *w = a->arr.data;
+    for (int i = 0, j = 0; i < n; i++) { int byte = utf8_byteof(p, i); w[j++] = (uint16_t)utf8_dec(p, byte); }
+    c->ret = vl(a);
+}
+/* String overloads that take a Charset object */
+static void String_getBytes_cs(tl_jcall *c)
+{
+    jobj *cs = c->args[0].l;
+    uint8_t *out = NULL;
+    size_t n = cs_encode(S(c->self), cs_kind(cs ? cs_name_of(cs) : "UTF-8"), &out);
+    jobj *a = tl_jni_new_prim_array('B', (uint32_t)n);
+    if (n) memcpy(a->arr.data, out, n);
+    free(out);
+    c->ret = vl(a);
+}
+static void String_init_cs(tl_jcall *c)
+{
+    jobj *a = c->args[0].l, *cs = c->args[1].l;
+    if (!a || a->kind != TL_K_PRIM_ARRAY) { c->ret = vl(STR("")); return; }
+    char *out = NULL;
+    cs_decode(a->arr.data, a->arr.len, cs_kind(cs ? cs_name_of(cs) : "UTF-8"), &out);
+    c->ret = vl(STR(out ? out : ""));
+    free(out);
+}
+static void String_init_cs_range(tl_jcall *c)
+{
+    jobj *a = c->args[0].l; int off = c->args[1].i, n = c->args[2].i;
+    jobj *cs = c->args[3].l;
+    if (!a || a->kind != TL_K_PRIM_ARRAY || off < 0 || off >= (int)a->arr.len) { c->ret = vl(STR("")); return; }
+    if (off + n > (int)a->arr.len) n = (int)a->arr.len - off;
+    char *out = NULL;
+    cs_decode((uint8_t *)a->arr.data + off, (size_t)n, cs_kind(cs ? cs_name_of(cs) : "UTF-8"), &out);
+    c->ret = vl(STR(out ? out : ""));
+    free(out);
+}
 static void BB_position(tl_jcall *c)    { c->ret = vi(bb_pos(c->self)); }
 static void BB_setPos(tl_jcall *c)      { set_int(c->self, "pos", c->args[0].i); c->ret = vl(tl_jni_ref(c->self)); }
 static void BB_limit(tl_jcall *c)       { c->ret = vi(bb_lim(c->self)); }
@@ -15965,6 +16168,33 @@ static void Res_openRawResourceFd(tl_jcall *c)
 
 #define M(c, n, s, f) { c, n, s, f }
 static const tl_jhle k_more_hle[] = {
+    M("java/lang/String", "<init>", "([BLjava/nio/charset/Charset;)V", String_init_cs),
+    M("java/lang/String", "<init>", "([BIILjava/nio/charset/Charset;)V", String_init_cs_range),
+    M("java/lang/String", "getBytes", "(Ljava/nio/charset/Charset;)[B", String_getBytes_cs),
+    M("java/nio/charset/Charset", "forName", "(Ljava/lang/String;)Ljava/nio/charset/Charset;", CS_forName),
+    M("java/nio/charset/Charset", "defaultCharset", "()Ljava/nio/charset/Charset;", CS_defaultCharset),
+    M("java/nio/charset/Charset", "name", "()Ljava/lang/String;", CS_name),
+    M("java/nio/charset/Charset", "displayName", NULL, CS_displayName),
+    M("java/nio/charset/Charset", "isRegistered", "()Z", CS_isRegistered),
+    M("java/nio/charset/Charset", "canEncode", "()Z", CS_canEncode),
+    M("java/nio/charset/Charset", "equals", "(Ljava/lang/Object;)Z", CS_equals),
+    M("java/nio/charset/Charset", "hashCode", "()I", CS_hashCode),
+    M("java/nio/charset/Charset", "toString", "()Ljava/lang/String;", CS_toString),
+    M("java/nio/charset/Charset", "encode", "(Ljava/lang/String;)Ljava/nio/ByteBuffer;", CS_encode),
+    M("java/nio/charset/Charset", "decode", "(Ljava/nio/ByteBuffer;)Ljava/nio/CharBuffer;", CS_decode),
+    M("java/nio/charset/Charset", "newEncoder", "()Ljava/nio/charset/CharsetEncoder;", CS_newEncoder),
+    M("java/nio/charset/Charset", "newDecoder", "()Ljava/nio/charset/CharsetDecoder;", CS_newDecoder),
+    M("java/nio/charset/CharsetEncoder", "encode", "(Ljava/lang/String;)Ljava/nio/ByteBuffer;", CSE_encode),
+    M("java/nio/charset/CharsetEncoder", "charset", "()Ljava/nio/charset/Charset;", CSE_charset),
+    M("java/nio/charset/CharsetDecoder", "decode", "(Ljava/nio/ByteBuffer;)Ljava/nio/CharBuffer;", CSD_decode),
+    M("java/nio/charset/CharsetDecoder", "charset", "()Ljava/nio/charset/Charset;", CSE_charset),
+    M("java/nio/CharBuffer", "toString", "()Ljava/lang/String;", CB_toString),
+    M("java/nio/CharBuffer", "length", "()I", CB_length),
+    M("java/nio/CharBuffer", "charAt", "(I)C", CB_charAt),
+    M("java/nio/CharBuffer", "remaining", "()I", CB_remaining),
+    M("java/nio/CharBuffer", "subSequence", "(II)Ljava/lang/CharSequence;", CB_subSequence),
+    M("java/nio/CharBuffer", "array", "()[C", CB_toArray),
+    M("java/nio/CharBuffer", "put", "(C)Ljava/nio/CharBuffer;", Self),
     M("java/lang/String", "charAt", "(I)C", String_charAt),
     M("java/lang/String", "codePointAt", "(I)I", String_codePointAt),
     M("java/lang/String", "substring", "(I)Ljava/lang/Object;", String_substring),
@@ -22593,6 +22823,13 @@ static const struct { const char *name, *super; } k_more_classes[] = {
     { "java/util/ConcurrentModificationException", "java/lang/RuntimeException" },
     { "java/util/EmptyStackException", "java/util/NoSuchElementException" },
     { "java/util/UnknownFormatConversionException", "java/lang/RuntimeException" },
+    { "java/nio/charset/Charset", "java/lang/Object" },
+    { "java/nio/charset/StandardCharsets", "java/lang/Object" },
+    { "java/nio/charset/CharsetEncoder", "java/lang/Object" },
+    { "java/nio/charset/CharsetDecoder", "java/lang/Object" },
+    { "java/nio/charset/UnsupportedCharsetException", "java/lang/IllegalArgumentException" },
+    { "java/nio/charset/CodingErrorAction", "java/lang/Object" },
+    { "java/nio/CharBuffer", "java/nio/Buffer" },
     { "java/nio/BufferOverflowException", "java/lang/RuntimeException" },
     { "java/nio/BufferUnderflowException", "java/lang/RuntimeException" },
     { "java/nio/InvalidMarkException", "java/lang/IllegalStateException" },
@@ -22952,4 +23189,10 @@ void tl_more_install(void)
     for (size_t i = 0; i < sizeof(k_more_classes) / sizeof(k_more_classes[0]); i++)
         tl_jni_declare(k_more_classes[i].name, k_more_classes[i].super);
     tl_jni_register_hle(k_more_hle);
+    static const char *const sc[] = { "UTF_8", "UTF_16", "UTF_16LE", "UTF_16BE", "ISO_8859_1", "US_ASCII" };
+    static const char *const scn[] = { "UTF-8", "UTF-16", "UTF-16LE", "UTF-16BE", "ISO-8859-1", "US-ASCII" };
+    for (int i = 0; i < 6; i++) {
+        jobj *cs = cs_new(scn[i]);
+        tl_jni_set_static("java/nio/charset/StandardCharsets", sc[i], "Ljava/nio/charset/Charset;", vl(cs));
+    }
 }
