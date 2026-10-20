@@ -543,7 +543,16 @@ void husk_java_back(void) { if (atomic_load(&A.state) == HUSK_UNITY_RUNNING && A
 void tl_web_attach(void *screen_view, void *container, float scale, bool fresh);
 bool tl_web_hit(float x, float y);
 void husk_java_web_attach(void *screen_view, void *container, float scale, int fresh) { tl_web_attach(screen_view, container, scale, fresh != 0); }
-int husk_java_web_hit(float x, float y) { return java_running() && tl_web_hit(x, y) ? 1 : 0; }
+/* A touch a web page claims never reaches the Java dispatcher, so the Diagnostics log would say nothing at all and
+ * the game would look deaf. Say it here instead, once when a point starts being claimed (every hitTest asks). */
+int husk_java_web_hit(float x, float y)
+{
+    bool hit = java_running() && tl_web_hit(x, y);
+    static _Atomic int said;
+    if (hit && A.diag && !atomic_exchange(&said, 1)) tl_log_line("web: touches at %.0f,%.0f belong to a web page now", x, y);
+    if (!hit) atomic_store(&said, 0);
+    return hit ? 1 : 0;
+}
 void husk_java_key(int android_keycode, int down) { if (atomic_load(&A.state) == HUSK_UNITY_RUNNING && A.engine == ENGINE_JAVA) tl_javaapp_key(android_keycode, down != 0); }
 int husk_flutter_is_app(const char *apk) { return tl_flutter_is_app(apk) ? 1 : 0; }
 void husk_flutter_set_pixel_ratio(float ratio) { tl_flutter_set_pixel_ratio(ratio); }
@@ -666,6 +675,10 @@ void husk_unity_perf_snapshot(husk_unity_perf *out)
 void husk_unity_touch(int phase, int id, float x, float y)
 {
     if (atomic_load(&A.state) != HUSK_UNITY_RUNNING) return;
+    /* Diagnostics: a finger down says which engine answered it -- a game classified as the wrong one takes touches
+     * meant for another, and the Java side's own route log would then stay silent for a reason this line shows. */
+    static const char *eng[] = { "unity", "cocos", "gameactivity", "sdl", "ue4", "gta", "godot", "flutter", "gamemaker", "java" };
+    if (A.diag && phase == 0) tl_log_line("touch: down %d at %.0f,%.0f -> %s", id, x, y, eng[A.engine >= 0 && A.engine <= 9 ? A.engine : 0]);
     if (A.engine == ENGINE_JAVA) tl_javaapp_touch(phase, id, x, y);
     else if (A.engine == ENGINE_GAMEMAKER) tl_gm_touch(phase, id, x, y);
     else if (A.engine == ENGINE_FLUTTER) tl_flutter_touch(phase, id, x, y);
