@@ -175,6 +175,71 @@ static void PrefMgr_getDefaultSharedPreferences(tl_jcall *c)
     }
     c->ret = vl(tl_jni_ref(def));
 }
+extern int tl_more_open_url(const char *url);
+/* startActivity on any Context (not just Activity): ACTION_VIEW intents open the host browser. */
+static void Context_startActivity(tl_jcall *c)
+{
+    jobj *i = c->args[0].l;
+    if (!i) return;
+    jobj *u = tl_jni_get_field(i, "mData", "Landroid/net/Uri;").l;
+    if (!u) u = tl_jni_get_field(i, "data", "Landroid/net/Uri;").l;
+    if (u) {
+        jvalue v = tl_jni_call(u, "toString", "()Ljava/lang/String;", NULL);
+        if (v.l) tl_more_open_url(S(v.l));
+    }
+}
+static void Context_startService(tl_jcall *c)
+{
+    jobj *i = c->args[0].l;
+    jobj *cn = make("android/content/ComponentName");
+    set_str(cn, "mPackage", H.pkg);
+    jobj *cls = i ? tl_jni_get_field(i, "mClass", "Ljava/lang/String;").l : NULL;
+    if (cls) tl_jni_set_field(cn, "mClass", "Ljava/lang/String;", vl(cls));
+    c->ret = vl(cn);
+}
+static void Context_stopService(tl_jcall *c)  { (void)c; c->ret = vz(1); }
+static void Context_bindService(tl_jcall *c)  { (void)c; c->ret = vz(1); }
+static void Context_noop(tl_jcall *c)         { (void)c; }
+static void Context_registerReceiver(tl_jcall *c) { c->ret = vl(NULL); }
+static void Context_openFileInput(tl_jcall *c)
+{
+    char p[1000]; snprintf(p, sizeof(p), "%s/%s", H.files, S(c->args[0].l));
+    jobj *s = make("java/io/FileInputStream");
+    jvalue a = { .j = 0, .l = STR(p) };
+    tl_jni_call(s, "<init>", "(Ljava/lang/String;)V", &a);
+    c->ret = vl(s);
+}
+static void Context_openFileOutput(tl_jcall *c)
+{
+    char p[1000]; snprintf(p, sizeof(p), "%s/%s", H.files, S(c->args[0].l));
+    jobj *s = make("java/io/FileOutputStream");
+    jvalue a[2] = { { .j = 0, .l = STR(p) }, { .j = 0, .z = (c->args[1].i & 0x8000) != 0 } };  /* MODE_APPEND */
+    tl_jni_call(s, "<init>", "(Ljava/lang/String;Z)V", a);
+    c->ret = vl(s);
+}
+static void Context_deleteFile(tl_jcall *c) { char p[1000]; snprintf(p, sizeof(p), "%s/%s", H.files, S(c->args[0].l)); c->ret = vz(unlink(p) == 0); }
+static jobj *dir_names(const char *path)
+{
+    uint32_t n = 0;
+    DIR *d = opendir(path);
+    if (d) { struct dirent *de; while ((de = readdir(d))) if (de->d_name[0] != '.') n++; closedir(d); }
+    jobj *a = tl_jni_new_obj_array(C("java/lang/String"), n);
+    d = opendir(path); uint32_t i = 0;
+    if (d) { struct dirent *de; while ((de = readdir(d)) && i < n) if (de->d_name[0] != '.') a->oarr.v[i++] = STR(de->d_name); closedir(d); }
+    return a;
+}
+static void Context_fileList(tl_jcall *c) { c->ret = vl(dir_names(H.files)); }
+static void Context_getFileStreamPath(tl_jcall *c) { char p[1000]; snprintf(p, sizeof(p), "%s/%s", H.files, S(c->args[0].l)); c->ret = vl(new_file(p)); }
+static void db_path(char *out, size_t n, const char *name)
+{
+    snprintf(out, n, "%s/databases", H.data); mkdirs(out);
+    size_t l = strlen(out); snprintf(out + l, n - l, "/%s", name);
+}
+static void Context_getDatabasePath(tl_jcall *c) { char p[1000]; db_path(p, sizeof(p), S(c->args[0].l)); c->ret = vl(new_file(p)); }
+static void Context_deleteDatabase(tl_jcall *c) { char p[1000]; db_path(p, sizeof(p), S(c->args[0].l)); c->ret = vz(unlink(p) == 0); }
+static void Context_databaseList(tl_jcall *c) { char p[800]; snprintf(p, sizeof(p), "%s/databases", H.data); c->ret = vl(dir_names(p)); }
+static void Context_getOpPackageName(tl_jcall *c) { c->ret = vl(STR(H.pkg)); }
+static void Context_createPackageContext(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
 static void Context_checkCallingOrSelfPermission(tl_jcall *c) { c->ret = vi(0); }   /* PERMISSION_GRANTED */
 static void Context_checkSelfPermission(tl_jcall *c) { c->ret = vi(0); }
 
@@ -230,7 +295,7 @@ static void Activity_getComponentName(tl_jcall *c) { c->ret = vl(make("android/c
 static void Resources_getAssets(tl_jcall *c) { c->ret = vl(H.assets); }
 static void Resources_getConfiguration(tl_jcall *c) { c->ret = vl(H.config); }
 static void Resources_getDisplayMetrics(tl_jcall *c) { c->ret = vl(H.metrics); }
-static void Resources_getIdentifier(tl_jcall *c) { c->ret = vi(0); }
+/* resource id<->name<->value resolution lives in husk-tl-jni-more.c (resources.arsc parser) */
 
 static void fill_metrics(jobj *m)
 {
@@ -1362,6 +1427,29 @@ static const tl_jhle k_hle[] = {
     M("android/content/Context", "getClassLoader", "()Ljava/lang/ClassLoader;", Context_getClassLoader),
     M("android/content/Context", "getSharedPreferences", "(Ljava/lang/String;I)Landroid/content/SharedPreferences;", Context_getSharedPreferences),
     M("android/preference/PreferenceManager", "getDefaultSharedPreferences", "(Landroid/content/Context;)Landroid/content/SharedPreferences;", PrefMgr_getDefaultSharedPreferences),
+    M("android/content/Context", "startActivity", "(Landroid/content/Intent;)V", Context_startActivity),
+    M("android/content/Context", "startService", "(Landroid/content/Intent;)Landroid/content/ComponentName;", Context_startService),
+    M("android/content/Context", "stopService", "(Landroid/content/Intent;)Z", Context_stopService),
+    M("android/content/Context", "bindService", "(Landroid/content/Intent;Landroid/content/ServiceConnection;I)Z", Context_bindService),
+    M("android/content/Context", "unbindService", "(Landroid/content/ServiceConnection;)V", Context_noop),
+    M("android/content/Context", "registerReceiver", "(Landroid/content/BroadcastReceiver;Landroid/content/IntentFilter;)Landroid/content/Intent;", Context_registerReceiver),
+    M("android/content/Context", "registerReceiver", "(Landroid/content/BroadcastReceiver;Landroid/content/IntentFilter;I)Landroid/content/Intent;", Context_registerReceiver),
+    M("android/content/Context", "unregisterReceiver", "(Landroid/content/BroadcastReceiver;)V", Context_noop),
+    M("android/content/Context", "sendBroadcast", "(Landroid/content/Intent;)V", Context_noop),
+    M("android/content/Context", "sendOrderedBroadcast", "(Landroid/content/Intent;Ljava/lang/String;)V", Context_noop),
+    M("android/content/Context", "openFileInput", "(Ljava/lang/String;)Ljava/io/FileInputStream;", Context_openFileInput),
+    M("android/content/Context", "openFileOutput", "(Ljava/lang/String;I)Ljava/io/FileOutputStream;", Context_openFileOutput),
+    M("android/content/Context", "deleteFile", "(Ljava/lang/String;)Z", Context_deleteFile),
+    M("android/content/Context", "fileList", "()[Ljava/lang/String;", Context_fileList),
+    M("android/content/Context", "getFileStreamPath", "(Ljava/lang/String;)Ljava/io/File;", Context_getFileStreamPath),
+    M("android/content/Context", "getDatabasePath", "(Ljava/lang/String;)Ljava/io/File;", Context_getDatabasePath),
+    M("android/content/Context", "deleteDatabase", "(Ljava/lang/String;)Z", Context_deleteDatabase),
+    M("android/content/Context", "databaseList", "()[Ljava/lang/String;", Context_databaseList),
+    M("android/content/Context", "getOpPackageName", "()Ljava/lang/String;", Context_getOpPackageName),
+    M("android/content/Context", "getBasePackageName", "()Ljava/lang/String;", Context_getOpPackageName),
+    M("android/content/Context", "createPackageContext", "(Ljava/lang/String;I)Landroid/content/Context;", Context_createPackageContext),
+    M("android/content/Context", "grantUriPermission", "(Ljava/lang/String;Landroid/net/Uri;I)V", Context_noop),
+    M("android/content/Context", "revokeUriPermission", "(Landroid/net/Uri;I)V", Context_noop),
     M("android/content/Context", "checkCallingOrSelfPermission", "(Ljava/lang/String;)I", Context_checkCallingOrSelfPermission),
     M("android/content/Context", "checkSelfPermission", "(Ljava/lang/String;)I", Context_checkSelfPermission),
     M("android/content/Context", "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;", Context_getSystemService),
@@ -1374,7 +1462,7 @@ static const tl_jhle k_hle[] = {
     M("android/content/res/Resources", "getAssets", "()Landroid/content/res/AssetManager;", Resources_getAssets),
     M("android/content/res/Resources", "getConfiguration", "()Landroid/content/res/Configuration;", Resources_getConfiguration),
     M("android/content/res/Resources", "getDisplayMetrics", "()Landroid/util/DisplayMetrics;", Resources_getDisplayMetrics),
-    M("android/content/res/Resources", "getIdentifier", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)I", Resources_getIdentifier),
+    /* getIdentifier + getString/getBoolean/... resolve through resources.arsc in husk-tl-jni-more.c */
     M("android/view/Display", "getMetrics", "(Landroid/util/DisplayMetrics;)V", Display_getMetrics),
     M("android/view/Display", "getRealMetrics", "(Landroid/util/DisplayMetrics;)V", Display_getMetrics),
     M("android/view/Display", "getRotation", "()I", Display_getRotation),

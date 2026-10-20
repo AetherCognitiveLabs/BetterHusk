@@ -11294,11 +11294,283 @@ static void CV_init_copy(tl_jcall *c)
     (void)d;
 }
 
-/* ============================================================== registration
- * Entries whose signature is NULL act as wildcards (hle_find matches any
- * overload); entries with real signatures are needed where the impl reads
- * c->args -- the argument slot types must match the caller's signature.
+/* ============================================================== resources.arsc
+ * The binary resource table in the APK. SDKs and apps pull strings (API keys,
+ * app_name), colors, dimensions, and booleans through Resources.getString(id)
+ * and friends, resolving ids with getIdentifier(name, defType, defPackage).
+ * A 0 from getIdentifier means "missing" to callers, so it has to answer for
+ * real: parse the table once and resolve names to the same ids the app's own
+ * R class was compiled with.
  */
+typedef struct { const uint8_t *d; size_t n; bool owned; } arsc_blob;
+static arsc_blob g_arsc;
+static int g_arsc_state;   /* 0 untried, 1 loaded, -1 absent */
+
+static uint16_t ar16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
+static uint32_t ar32(const uint8_t *p) { return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24); }
+
+/* entry `idx` of a ResStringPool at `pool` (psz bytes) as UTF-8 */
+static bool spool_get(const uint8_t *pool, size_t psz, uint32_t idx, char *out, size_t n)
+{
+    if (!pool || psz < 28 || ar16(pool) != 0x0001 || n < 2) return false;
+    uint32_t count = ar32(pool + 8), flags = ar32(pool + 16), start = ar32(pool + 20);
+    uint16_t hsz = ar16(pool + 2);
+    if (idx >= count || (size_t)hsz + idx * 4 + 4 > psz || start > psz) return false;
+    uint32_t off = ar32(pool + hsz + idx * 4);
+    const uint8_t *s = pool + start + off, *e = pool + psz;
+    if (s >= e) return false;
+    size_t o = 0;
+    if (!(flags & 0x100)) {                                     /* UTF-16 */
+        if (s + 2 > e) return false;
+        uint32_t len = ar16(s); s += 2;
+        if (len & 0x8000) { if (s + 2 > e) return false; len = ((len & 0x7fff) << 16) | ar16(s); s += 2; }
+        for (uint32_t i = 0; i < len && s + i * 2 + 1 < e && o + 4 < n; i++) {
+            uint32_t ch = ar16(s + i * 2);
+            if (ch < 0x80) out[o++] = (char)ch;
+            else if (ch < 0x800) { out[o++] = (char)(0xc0 | (ch >> 6)); out[o++] = (char)(0x80 | (ch & 63)); }
+            else { out[o++] = (char)(0xe0 | (ch >> 12)); out[o++] = (char)(0x80 | ((ch >> 6) & 63)); out[o++] = (char)(0x80 | (ch & 63)); }
+        }
+    } else {                                                    /* UTF-8 */
+        if (s + 2 > e) return false;
+        uint32_t u16len = *s++;
+        if (u16len & 0x80) u16len = ((u16len & 0x7f) << 8) | *s++;
+        (void)u16len;
+        uint32_t b8 = *s++;
+        if (b8 & 0x80) b8 = ((b8 & 0x7f) << 8) | *s++;
+        if (s + b8 > e) b8 = (uint32_t)(e - s);
+        if (b8 >= n) b8 = (uint32_t)n - 1;
+        memcpy(out, s, b8); o = b8;
+    }
+    out[o] = 0;
+    return true;
+}
+
+static bool arsc_load(void)
+{
+    if (g_arsc_state) return g_arsc_state > 0;
+    g_arsc_state = -1;
+    for (int i = 0; i < TL_LD_MAX_APKS; i++) {
+        const tl_zip *z = tl_ld_apk_at(i);
+        if (!z) break;
+        const tl_zip_entry *e = tl_zip_find(z, "resources.arsc");
+        if (!e) continue;
+        char err[160];
+        if (tl_zip_data(z, e, (size_t)64 << 20, &g_arsc.d, &g_arsc.n, &g_arsc.owned, err, sizeof(err))) {
+            g_arsc_state = 1;
+            return true;
+        }
+    }
+    return false;
+}
+
+/* The table's chunk stream after the ResTable header + global string pool. */
+typedef bool (*pkg_cb)(const uint8_t *pkg, size_t psz, const uint8_t *gpool, size_t gpsz, void *ctx);
+
+static bool arsc_each_package(pkg_cb fn, void *ctx)
+{
+    if (!arsc_load()) return false;
+    const uint8_t *p = g_arsc.d, *end = p + g_arsc.n;
+    if (g_arsc.n < 16 || ar16(p) != 0x0002) return false;      /* RES_TABLE_TYPE */
+    const uint8_t *ch = p + ar16(p + 2);
+    if ((size_t)(ch - p) + 8 > g_arsc.n || ar16(ch) != 0x0001) return false;
+    const uint8_t *gpool = ch;
+    size_t gpsz = ar32(ch + 4);
+    if (ch + gpsz > end) gpsz = (size_t)(end - ch);
+    for (ch += gpsz; ch + 12 <= end; ) {
+        uint16_t t = ar16(ch); uint32_t sz = ar32(ch + 4);
+        if (sz < 12 || ch + sz > end) break;
+        if (t == 0x0200 && fn(ch, sz, gpool, gpsz, ctx)) return true;
+        ch += sz;
+    }
+    return false;
+}
+
+/* Resolve a Res_value of entry `entryId` inside a ResTable_type chunk of `tsz` bytes. */
+static bool arsc_entry_value(const uint8_t *t, size_t tsz, uint32_t entryId, uint32_t *dtype, uint32_t *data, uint32_t *keyIdx)
+{
+    if (tsz < 24) return false;
+    uint32_t count = ar32(t + 12), entriesStart = ar32(t + 16);
+    uint32_t cfg = ar32(t + 20);                                /* ResTable_config.size */
+    if (entryId >= count || 20 + (size_t)cfg + (size_t)entryId * 4 + 4 > tsz) return false;
+    uint32_t off = ar32(t + 20 + cfg + entryId * 4);
+    if (off == 0xffffffff || (size_t)entriesStart + off + 28 > tsz) return false;
+    const uint8_t *e = t + entriesStart + off;
+    uint16_t flags = ar16(e + 2);
+    if (keyIdx) *keyIdx = ar32(e + 4);
+    if (flags & 1) {                                            /* FLAG_COMPLEX: bag */
+        const uint8_t *v = e + 16;                              /* map[0]: name u32, then Res_value */
+        if (ar32(e + 12) < 1) return false;
+        *dtype = v[7]; *data = ar32(v + 8);
+        return true;
+    }
+    *dtype = e[11]; *data = ar32(e + 12);
+    return true;
+}
+
+struct res_ctx { uint32_t id; bool found; uint32_t dtype, data, key; char str[512]; const uint8_t *gpool; size_t gpsz; const uint8_t *tpool; size_t tsz; const uint8_t *kpool; size_t ksz; };
+
+static bool pkg_find_id(const uint8_t *pkg, size_t psz, const uint8_t *gpool, size_t gpsz, void *vctx)
+{
+    struct res_ctx *x = vctx;
+    if (ar32(pkg + 8) != ((x->id >> 24) & 0xff)) return false;
+    x->gpool = gpool; x->gpsz = gpsz;
+    uint32_t toff = ar32(pkg + 268), koff = ar32(pkg + 276);
+    if (toff >= psz || koff >= psz) return true;
+    x->tpool = pkg + toff; x->tsz = psz - toff;
+    x->kpool = pkg + koff; x->ksz = psz - koff;
+    uint16_t hsz = ar16(pkg + 2);
+    int typeId = (x->id >> 16) & 0xff, entryId = x->id & 0xffff;
+    for (const uint8_t *ch = pkg + hsz; ch + 12 <= pkg + psz; ) {
+        uint16_t t = ar16(ch); uint32_t sz = ar32(ch + 4);
+        if (sz < 12 || ch + sz > pkg + psz) break;
+        if (t == 0x0202 && ch[8] == typeId && arsc_entry_value(ch, sz, (uint32_t)entryId, &x->dtype, &x->data, &x->key)) {
+            x->found = true;
+            if (x->dtype == 0x03) spool_get(gpool, gpsz, x->data, x->str, sizeof(x->str));   /* TYPE_STRING */
+            return true;
+        }
+        ch += sz;
+    }
+    return true;    /* package matched; stop scanning even when the id misses */
+}
+
+/* id -> decoded value. Strings land in x->str, scalars in x->data. */
+static bool res_resolve(uint32_t id, struct res_ctx *x)
+{
+    memset(x, 0, sizeof(*x));
+    x->id = id;
+    x->key = 0xffffffff;
+    arsc_each_package(pkg_find_id, x);
+    return x->found;
+}
+
+/* name -> id: scan every package's type pool for defType, then entries for the key name. */
+struct find_ctx { const char *name, *defType, *defPkg; uint32_t id; };
+static bool pkg_find_name(const uint8_t *pkg, size_t psz, const uint8_t *gpool, size_t gpsz, void *vctx)
+{
+    struct find_ctx *x = vctx;
+    (void)gpool; (void)gpsz;
+    if (x->defPkg && *x->defPkg) {
+        char pn[128]; const uint8_t *nm = pkg + 12;
+        size_t o = 0;
+        for (int i = 0; i < 128 && o + 4 < sizeof(pn); i++) {
+            uint32_t ch = ar16(nm + i * 2); if (!ch) break;
+            if (ch < 0x80) pn[o++] = (char)ch; else { pn[o++] = '?'; break; }
+        }
+        pn[o] = 0;
+        if (strcmp(pn, x->defPkg)) return false;
+    }
+    uint32_t toff = ar32(pkg + 268), koff = ar32(pkg + 276);
+    if (toff >= psz || koff >= psz) return false;
+    const uint8_t *tpool = pkg + toff, *kpool = pkg + koff;
+    size_t tsz = psz - toff, ksz = psz - koff;
+    if (ar16(tpool) != 0x0001 || ar16(kpool) != 0x0001) return false;
+    uint32_t typeCount = ar32(tpool + 8);
+    uint16_t hsz = ar16(pkg + 2);
+    for (uint32_t ti = 0; ti < typeCount && !x->id; ti++) {
+        char tn[64];
+        if (!spool_get(tpool, tsz, ti, tn, sizeof(tn)) || strcmp(tn, x->defType)) continue;
+        int typeId = (int)ti + 1;
+        for (const uint8_t *ch = pkg + hsz; ch + 12 <= pkg + psz; ) {
+            uint16_t t = ar16(ch); uint32_t sz = ar32(ch + 4);
+            if (sz < 12 || ch + sz > pkg + psz) break;
+            if (t == 0x0202 && ch[8] == typeId) {
+                uint32_t count = ar32(ch + 12);
+                for (uint32_t ei = 0; ei < count; ei++) {
+                    uint32_t key, dt, dv;
+                    if (!arsc_entry_value(ch, sz, ei, &dt, &dv, &key)) continue;
+                    char kn[128];
+                    if (spool_get(kpool, ksz, key, kn, sizeof(kn)) && !strcmp(kn, x->name)) {
+                        x->id = ((uint32_t)ar32(pkg + 8) << 24) | ((uint32_t)typeId << 16) | ei;
+                        return true;
+                    }
+                }
+            }
+            ch += sz;
+        }
+    }
+    return false;
+}
+
+static uint32_t res_identifier(const char *name, const char *defType, const char *defPkg)
+{
+    struct find_ctx x = { name && *name ? name : "", defType && *defType ? defType : "string", defPkg, 0 };
+    arsc_each_package(pkg_find_name, &x);
+    return x.id;
+}
+
+static bool res_name_part(uint32_t id, int part, char *out, size_t n)   /* 0 pkg, 1 type, 2 entry */
+{
+    struct res_ctx x;
+    if (!res_resolve(id, &x) || !x.tpool) return false;
+    if (part == 1) return spool_get(x.tpool, x.tsz, (uint32_t)(((id >> 16) & 0xff) - 1), out, n);
+    if (part == 2) return x.key != 0xffffffff && spool_get(x.kpool, x.ksz, x.key, out, n);
+    return false;
+}
+
+static void Res_getIdentifier(tl_jcall *c)
+{
+    const char *name = S(c->args[0].l), *type = S(c->args[1].l), *pkg = c->args[2].l ? S(c->args[2].l) : NULL;
+    c->ret = vi((int)res_identifier(name, type, pkg));
+}
+static void Res_getString(tl_jcall *c)
+{
+    struct res_ctx x;
+    if (res_resolve((uint32_t)c->args[0].i, &x) && x.dtype == 0x03) { c->ret = vl(STR(x.str)); return; }
+    tl_jni_throw("android/content/res/Resources$NotFoundException", "resource not found");
+    c->ret = vl(NULL);
+}
+static void Res_getText(tl_jcall *c)  { Res_getString(c); }
+static void Res_getBoolean(tl_jcall *c)
+{
+    struct res_ctx x;
+    c->ret = vz(res_resolve((uint32_t)c->args[0].i, &x) && x.dtype == 0x12 && x.data != 0);
+}
+static void Res_getInteger(tl_jcall *c)
+{
+    struct res_ctx x;
+    c->ret = vi(res_resolve((uint32_t)c->args[0].i, &x) && (x.dtype == 0x10 || x.dtype == 0x11) ? (int)x.data : 0);
+}
+static void Res_getColor(tl_jcall *c)
+{
+    struct res_ctx x;
+    c->ret = vi(res_resolve((uint32_t)c->args[0].i, &x) && x.dtype >= 0x1c && x.dtype <= 0x1f ? (int)x.data : 0);
+}
+static void Res_getDimension(tl_jcall *c)
+{
+    struct res_ctx x;
+    if (!res_resolve((uint32_t)c->args[0].i, &x) || x.dtype != 0x05) { c->ret = vf(0); return; }
+    static const float radix[] = { 1.0f, 128.0f, 32768.0f, 8388608.0f };
+    int32_t mant = (int32_t)(x.data >> 8) << 8 >> 8;                 /* signed 24-bit mantissa */
+    float val = (float)mant / radix[(x.data >> 4) & 3];
+    /* px per unit at ~xhdpi (the density HLE reports); dip and sp scale with it */
+    float dpi = 320.0f;
+    static const float k[] = { 1.0f, 2.0f, 2.0f, 320.0f / 72.0f, 320.0f, 320.0f / 25.4f, 2.0f, 2.0f };
+    int u = (int)(x.data & 0xf);
+    (void)dpi;
+    c->ret = vf(val * (u < 8 ? k[u] : 1.0f));
+}
+static void Res_getResourceTypeName(tl_jcall *c)
+{
+    char b[64];
+    c->ret = vl(res_name_part((uint32_t)c->args[0].i, 1, b, sizeof(b)) ? STR(b) : NULL);
+}
+static void Res_getResourceEntryName(tl_jcall *c)
+{
+    char b[128];
+    c->ret = vl(res_name_part((uint32_t)c->args[0].i, 2, b, sizeof(b)) ? STR(b) : NULL);
+}
+static void Res_getResourceName(tl_jcall *c)
+{
+    char t[64], e[128], b[256];
+    uint32_t id = (uint32_t)c->args[0].i;
+    if (res_name_part(id, 1, t, sizeof(t)) && res_name_part(id, 2, e, sizeof(e))) {
+        snprintf(b, sizeof(b), "%s:%s/%s", M2.pkg, t, e);
+        c->ret = vl(STR(b));
+    } else c->ret = vl(NULL);
+}
+static void Res_getResourcePackageName(tl_jcall *c) { c->ret = vl(STR(M2.pkg)); }
+
+
 
 #define M(c, n, s, f) { c, n, s, f }
 static const tl_jhle k_more_hle[] = {
@@ -17013,6 +17285,19 @@ static const tl_jhle k_more_hle[] = {
     M("android/content/ContentResolver", "openAssetFileDescriptor", NULL, CR_openAssetFileDescriptor),
     M("android/content/ContentResolver", "openTypedAssetFileDescriptor", NULL, CR_openTypedAssetFileDescriptor),
     M("android/content/ContentResolver", "loadThumbnail", NULL, CR_loadThumbnail),
+    /* Resources: resolve real ids/values from resources.arsc */
+    M("android/content/res/Resources", "getIdentifier", "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)I", Res_getIdentifier),
+    M("android/content/res/Resources", "getString", "(I)Ljava/lang/Object;", Res_getString),
+    M("android/content/res/Resources", "getText", "(I)Ljava/lang/Object;", Res_getText),
+    M("android/content/res/Resources", "getBoolean", "(I)Z", Res_getBoolean),
+    M("android/content/res/Resources", "getInteger", "(I)I", Res_getInteger),
+    M("android/content/res/Resources", "getColor", "(I)I", Res_getColor),
+    M("android/content/res/Resources", "getColor", "(ILjava/lang/Object;)I", Res_getColor),
+    M("android/content/res/Resources", "getDimension", "(I)F", Res_getDimension),
+    M("android/content/res/Resources", "getResourceName", "(I)Ljava/lang/Object;", Res_getResourceName),
+    M("android/content/res/Resources", "getResourceTypeName", "(I)Ljava/lang/Object;", Res_getResourceTypeName),
+    M("android/content/res/Resources", "getResourceEntryName", "(I)Ljava/lang/Object;", Res_getResourceEntryName),
+    M("android/content/res/Resources", "getResourcePackageName", "(I)Ljava/lang/Object;", Res_getResourcePackageName),
     { NULL, NULL, NULL, NULL }
 };
 
@@ -17108,6 +17393,7 @@ static const struct { const char *name, *super; } k_more_classes[] = {
     { "android/os/DeadObjectException", "java/lang/RuntimeException" },
     { "android/app/PendingIntent$CanceledException", "java/lang/Exception" },
     { "android/util/AndroidRuntimeException", "java/lang/RuntimeException" },
+    { "android/content/res/Resources$NotFoundException", "java/lang/RuntimeException" },
     { "android/view/InflateException", "java/lang/RuntimeException" },
     { "android/database/SQLException", "java/lang/RuntimeException" },
     { "android/database/sqlite/SQLiteException", "java/lang/RuntimeException" },
