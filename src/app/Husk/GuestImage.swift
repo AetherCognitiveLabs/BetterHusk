@@ -329,6 +329,18 @@ final class GuestImage: ObservableObject {
 
     private var task: URLSessionDownloadTask?
 
+    /// The guest image and the snapshot parts download through background sessions: leaving the page, the Control
+    /// Center or the app itself no longer abandons a gigabyte of progress -- iOS keeps the transfer and hands its
+    /// events back, even after relaunching Husk to deliver them.
+    nonisolated static let imageSessionID = "com.betterhusk.guest-downloads"
+
+    /// iOS woke Husk to answer for a background download; stored here, and the delegate calls it once events are handled.
+    var backgroundCompletion: (() -> Void)?
+
+    private var imageSession: URLSession?
+    /// Bytes a failed download kept: trying again continues from where it stopped instead of from the start.
+    private var resumeData: Data?
+
     /// Bump whenever the set or order of virtio devices in the Phase 1 command
     /// line changes. Any change renumbers the PCI bus and invalidates recorded
     /// UEFI boot entries.
@@ -503,6 +515,7 @@ final class GuestImage: ObservableObject {
     }
 
     func refresh() {
+        adoptPendingDownloads()
         if case .downloading = state { return }
         if case .installing = state { return }
         removeStaleDownloads()
@@ -766,17 +779,65 @@ final class GuestImage: ObservableObject {
         try? fm.removeItem(atPath: userdataBrokenStampPath)
     }
 
+    /// One background session for the image and the snapshot parts alike: leaving the page, the Control Center or the
+    /// app itself no longer abandons a gigabyte of progress -- iOS keeps the transfer and hands its events back, even
+    /// after relaunching Husk to deliver them. Snapshot parts are tagged "part-N" and routed to the active fetcher.
+    @discardableResult
+    private func imageDownloadSession() -> URLSession {
+        if let imageSession { return imageSession }
+        let config = URLSessionConfiguration.background(withIdentifier: Self.imageSessionID)
+        config.sessionSendsLaunchEvents = true
+        let router = DownloadDelegate(owner: self)
+        downloadDelegate = router
+        let session = URLSession(configuration: config, delegate: router, delegateQueue: nil)
+        imageSession = session
+        session.getAllTasks { [weak self] tasks in
+            Task { @MainActor in
+                guard let self else { return }
+                for t in tasks {
+                    guard let found = t as? URLSessionDownloadTask else { continue }
+                    if found.taskDescription?.hasPrefix("part-") == true {
+                        // Belongs to a snapshot fetcher that died with the last run: its bytes cannot rejoin the
+                        // hash cleanly, so it is cancelled and fetched again.
+                        found.cancel()
+                        continue
+                    }
+                    self.task = found
+                    if case .downloading = self.state {} else {
+                        self.state = .downloading(progress: 0, received: found.countOfBytesReceived,
+                                                  total: found.countOfBytesExpectedToReceive)
+                    }
+                    HuskLog.log("guest", "reattached to a guest-image download that outlived the last run "
+                                         + "(\(found.countOfBytesReceived / 1_048_576) MiB in)")
+                }
+            }
+        }
+        return session
+    }
+
+    /// The delegate that answers the session: kept so snapshot parts can be routed to whichever fetcher is live.
+    private var downloadDelegate: DownloadDelegate?
+
+    /// Recreate the download sessions so a transfer still running in the background has a delegate to answer again.
+    /// Called at launch and whenever the Android page is shown.
+    func adoptPendingDownloads() { imageDownloadSession() }
+
     func download() {
         if case .downloading = state { return }
         state = .downloading(progress: 0, received: 0, total: 0)
         HuskLog.log("guest", "downloading guest image from \(Self.imageURL.absoluteString)")
 
-        let delegate = DownloadDelegate(owner: self)
-        let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+        let session = imageDownloadSession()
         // The manifest names the file, so publishing a new image needs no new
         // app build. The constant is only the fallback for a first run that
         // could not reach the release.
-        task = session.downloadTask(with: manifest?.imageURL ?? Self.imageURL)
+        if let resumeData {
+            task = session.downloadTask(withResumeData: resumeData)
+            self.resumeData = nil
+            HuskLog.log("guest", "resuming where the earlier attempt stopped")
+        } else {
+            task = session.downloadTask(with: manifest?.imageURL ?? Self.imageURL)
+        }
         task?.resume()
     }
 
@@ -815,6 +876,7 @@ final class GuestImage: ObservableObject {
         HuskLog.log("guest", "downloading pre-booted snapshot (about 2 GB)")
         fetcher = SnapshotFetcher(
             urls: manifest?.partURLs ?? Self.snapshotPartURLs,
+            session: imageDownloadSession(),
             progress: { [weak self] got, total in
                 Task { @MainActor in self?.progressed(received: got, total: total) }
             },
@@ -840,8 +902,11 @@ final class GuestImage: ObservableObject {
         fetcher?.start()
     }
 
-    /// Held so the fetcher -- and the URLSession it owns -- outlives this call.
-    private var fetcher: SnapshotFetcher?
+    /// Held so the fetcher outlives this call. The session's delegate needs to know it too: snapshot parts arriving
+    /// off the main thread are routed to it there, before the temp file they report is removed.
+    private var fetcher: SnapshotFetcher? {
+        didSet { downloadDelegate?.fetcher = fetcher }
+    }
 
     /// Unpack a downloaded snapshot over userdata.
     fileprivate func finishedSnapshot(tempURL: URL, digest: String?) {
@@ -888,6 +953,7 @@ final class GuestImage: ObservableObject {
         let expected = manifest?.snapshot.sha256
         fetcher = SnapshotFetcher(
             urls: manifest?.partURLs ?? Self.snapshotPartURLs,
+            session: imageDownloadSession(),
             progress: { [weak self] got, total in
                 Task { @MainActor in self?.progressed(received: got, total: total) }
             },
@@ -1151,14 +1217,44 @@ final class GuestImage: ObservableObject {
         HuskLog.log("guest", "download FAILED: \(message)")
         state = .failed(message)
     }
+
+    /// A download that stopped short of "cancelled": keep whatever iOS kept of it so the next try continues.
+    fileprivate func downloadStopped(_ message: String, resumeData: Data?) {
+        self.resumeData = resumeData
+        failed(resumeData != nil
+               ? String(localized: "\(message) Trying again continues where it stopped.")
+               : message)
+    }
+
+    /// All events for a background transfer are handled; answer iOS so it can suspend Husk again.
+    fileprivate func backgroundEventsHandled() {
+        backgroundCompletion?()
+        backgroundCompletion = nil
+    }
 }
 
 private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate {
     weak var owner: GuestImage?
+    /// Snapshot parts ("part-N" task descriptions) are routed here: the fetcher's logic
+    /// runs on this delegate queue, where the delivered temp file is still valid.
+    weak var fetcher: SnapshotFetcher?
     init(owner: GuestImage) { self.owner = owner }
+
+    private static func isPart(_ task: URLSessionTask) -> Bool {
+        task.taskDescription?.hasPrefix("part-") == true
+    }
 
     func urlSession(_ s: URLSession, downloadTask: URLSessionDownloadTask,
                     didFinishDownloadingTo location: URL) {
+        if Self.isPart(downloadTask) {
+            if let fetcher {
+                fetcher.downloaded(downloadTask, to: location)
+            } else {
+                // The fetcher that asked for it is gone; nothing can safely claim the bytes.
+                try? FileManager.default.removeItem(at: location)
+            }
+            return
+        }
         // A download task reports "finished" for any completed HTTP exchange,
         // including a 404 -- whose body then lands on disk as if it were the file
         // asked for. This is exactly how a 9-byte "Not Found" once became the
@@ -1198,6 +1294,11 @@ private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate {
     func urlSession(_ s: URLSession, downloadTask: URLSessionDownloadTask,
                     didWriteData bytesWritten: Int64,
                     totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
+        if Self.isPart(downloadTask) {
+            fetcher?.wrote(downloadTask, totalBytesWritten: totalBytesWritten,
+                           totalBytesExpectedToWrite: totalBytesExpectedToWrite)
+            return
+        }
         Task { @MainActor in
             self.owner?.progressed(received: totalBytesWritten,
                                    total: totalBytesExpectedToWrite)
@@ -1205,9 +1306,20 @@ private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate {
     }
 
     func urlSession(_ s: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        if let error {
-            Task { @MainActor in self.owner?.failed(error.localizedDescription) }
+        if Self.isPart(task) {
+            fetcher?.completed(task, error: error)
+            return
         }
+        guard let error else { return }
+        let nsError = error as NSError
+        // "Cancel Download" reports through the same channel -- it is not a failure to show in red.
+        guard !(nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled) else { return }
+        let resume = nsError.userInfo[NSURLSessionDownloadTaskResumeDataKey] as? Data
+        Task { @MainActor in self.owner?.downloadStopped(error.localizedDescription, resumeData: resume) }
+    }
+
+    func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
+        Task { @MainActor in self.owner?.backgroundEventsHandled() }
     }
 }
 
@@ -1216,7 +1328,7 @@ private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate {
 /// One part at a time, deliberately. Two gigabytes arriving in parallel would
 /// need both in flight at once, and this runs on a phone that is about to be
 /// asked for another four gigabytes to unpack into.
-private final class SnapshotFetcher: NSObject, URLSessionDownloadDelegate {
+private final class SnapshotFetcher {
     private let urls: [URL]
     private let onProgress: (Int64, Int64) -> Void
     private let onDone: (Result<Joined, Error>) -> Void
@@ -1236,22 +1348,32 @@ private final class SnapshotFetcher: NSObject, URLSessionDownloadDelegate {
     /// Bytes belonging to parts already appended, so progress does not restart
     /// at zero every time a part finishes.
     private var bytesDone: Int64 = 0
-    private var session: URLSession!
 
-    init(urls: [URL],
+    /// The guest download session, shared with the image download. Its delegate routes
+    /// part tasks here -- it is not this fetcher's to invalidate.
+    private let session: URLSession
+
+    init(urls: [URL], session: URLSession,
          progress: @escaping (Int64, Int64) -> Void,
          completion: @escaping (Result<Joined, Error>) -> Void) {
         self.urls = urls
+        self.session = session
         self.onProgress = progress
         self.onDone = completion
-        super.init()
-        session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
     }
 
     func start() {
-        try? FileManager.default.removeItem(at: staged)
-        FileManager.default.createFile(atPath: staged.path, contents: nil)
-        next()
+        // Parts a previous fetcher never finished still belong to this session.
+        // Their bytes can no longer join correctly -- the running hash would not
+        // cover them -- so they are cancelled and fetched again.
+        session.getAllTasks { [weak self] stale in
+            stale.filter { $0.taskDescription?.hasPrefix("part-") == true }
+                 .forEach { $0.cancel() }
+            guard let self else { return }
+            try? FileManager.default.removeItem(at: self.staged)
+            FileManager.default.createFile(atPath: self.staged.path, contents: nil)
+            self.next()
+        }
     }
 
     private func next() {
@@ -1262,22 +1384,32 @@ private final class SnapshotFetcher: NSObject, URLSessionDownloadDelegate {
             HuskLog.log("guest", "snapshot download complete (\(size ?? 0) bytes, "
                                + "sha256 \(digest.prefix(12))…)")
             onDone(.success(Joined(url: staged, digest: digest)))
-            session.finishTasksAndInvalidate()
             return
         }
         HuskLog.log("guest", "fetching snapshot part \(index + 1) of \(urls.count)")
-        session.downloadTask(with: urls[index]).resume()
+        let task = session.downloadTask(with: urls[index])
+        // Which part this is must survive a relaunch: a stale part arriving late
+        // otherwise appends out of order and corrupts the join.
+        task.taskDescription = "part-\(index)"
+        task.resume()
     }
 
     private func fail(_ message: String) {
         try? FileManager.default.removeItem(at: staged)
-        session.invalidateAndCancel()
         onDone(.failure(NSError(domain: "husk", code: 10,
                                 userInfo: [NSLocalizedDescriptionKey: message])))
     }
 
-    func urlSession(_ s: URLSession, downloadTask: URLSessionDownloadTask,
-                    didFinishDownloadingTo location: URL) {
+    /// A part arrived. Called on the session's delegate queue: the temp file is
+    /// removed when this returns, so it is joined here and now.
+    func downloaded(_ downloadTask: URLSessionDownloadTask, to location: URL) {
+        // A cancelled task can still deliver its file. A part whose description does
+        // not match the part being fetched now belongs to an abandoned run -- its
+        // bytes would corrupt the join, so it goes straight to the bin.
+        guard downloadTask.taskDescription == "part-\(index)" else {
+            try? FileManager.default.removeItem(at: location)
+            return
+        }
         // A completed exchange is not a successful one: a 404 body lands on disk
         // looking exactly like the file that was asked for.
         if let http = downloadTask.response as? HTTPURLResponse,
@@ -1305,9 +1437,8 @@ private final class SnapshotFetcher: NSObject, URLSessionDownloadDelegate {
         next()
     }
 
-    func urlSession(_ s: URLSession, downloadTask: URLSessionDownloadTask,
-                    didWriteData bytesWritten: Int64,
-                    totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
+    func wrote(_ downloadTask: URLSessionDownloadTask,
+               totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
         // The parts are near enough the same size that one of them stands in for
         // the rest; the alternative is a HEAD request per part before starting,
         // which buys a smoother bar and nothing else.
@@ -1318,7 +1449,7 @@ private final class SnapshotFetcher: NSObject, URLSessionDownloadDelegate {
         onProgress(bytesDone + totalBytesWritten, estimate)
     }
 
-    func urlSession(_ s: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+    func completed(_ task: URLSessionTask, error: Error?) {
         if let error, (error as NSError).code != NSURLErrorCancelled {
             fail(error.localizedDescription)
         }

@@ -48,7 +48,7 @@ enum HuskBuiltInJIT {
         guard #available(iOS 26.0, *) else {
             return "Built-in JIT needs iOS 26 or later. Use StikDebug instead."
         }
-        if getenv("LC_HOME_PATH") != nil {
+        if JITBootstrap.isInsideLiveContainer {
             return "Built-in JIT is unavailable inside LiveContainer. Use StikDebug instead."
         }
         return nil

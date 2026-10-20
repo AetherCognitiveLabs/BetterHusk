@@ -33,6 +33,7 @@
 #include <sys/ucontext.h>   /* not <ucontext.h>: that one #errors without _XOPEN_SOURCE */
 #include <unistd.h>
 #include <fcntl.h>
+#include <libproc.h>        /* proc_pidinfo: who is tracing us, which csops alone cannot say */
 
 /*
  * Provide pipe2 for iOS systems where libc does not export it.
@@ -458,10 +459,13 @@ static HuskDualMapping husk_self_dual_mapping(size_t bytes)
  * and held until QEMU asks for it.
  */
 static HuskDualMapping husk_ios_jit_allocate_real(size_t bytes);
+static HuskDualMapping *husk_prewarm_retry(size_t bytes);
+static pid_t husk_tracer_pid(void);
 
 static HuskDualMapping husk_prewarmed;
 static bool husk_prewarm_done;
 static bool husk_prewarm_debugged;   /* CS_DEBUGGED was set when the earlier try ran */
+static pid_t husk_prewarm_tpid;      /* who was tracing us then: csops cannot tell flag from attach */
 static atomic_bool husk_prewarm_retried;
 /* Whether a brk from us is expected to be serviced (the JIT method is
  * StikDebug). A debugged process is not the same thing: TrollStore's
@@ -475,10 +479,14 @@ HUSK_EXPORT void husk_ios_jit_expect_servicer(void) { atomic_store(&g_servicer_e
 HUSK_EXPORT bool husk_ios_jit_prewarm(size_t bytes)
 {
     if (husk_prewarm_done) {
+        /* Done is not dead: a NEW attach after a flag-only failure (LiveContainer, StikDebug arriving late) still
+         * earns its one retry here, not only inside get_mapping. */
+        if (!husk_prewarmed.rw_addr) husk_prewarm_retry(bytes);
         return husk_prewarmed.rw_addr != NULL;
     }
     husk_prewarm_done = true;
     husk_prewarm_debugged = husk_kernel_debugged();
+    husk_prewarm_tpid = husk_tracer_pid();
     husk_prewarmed = husk_ios_jit_allocate_real(bytes);
     fprintf(stderr, "[husk-jit] prewarm %s: %zu bytes\n",
             husk_prewarmed.rw_addr ? "OK" : "FAILED", bytes);
@@ -491,15 +499,24 @@ HUSK_EXPORT bool husk_ios_jit_prewarm(size_t bytes)
 #define HUSK_JIT_REGION_BYTES ((size_t)512 << 20)
 
 /* The trap is worth one more attempt once a debugger shows up where none was
- * when the earlier try ran: inside LiveContainer the servicer (StikDebug
- * attached to the container process) can arrive after Husk's launch-time
- * prewarm already failed, or after no prewarm ran at all (#155). A failure
- * measured WITH a debugger stays final -- an attached servicer that does not
- * answer would only leave the process stopped on the brk. */
+ * when the earlier try ran -- or once a DIFFERENT attach does. Inside
+ * LiveContainer CS_DEBUGGED is set on the shared process whether or not a
+ * servicer is attached, so the flag alone cannot date the failure; the tracer
+ * pid can. StikDebug attaching to the container after a flag-only failure is
+ * a new attach, and earns the retry (#155). A failure measured against the
+ * same attach stays final -- a servicer that does not answer would only leave
+ * the process stopped on the brk a second time. */
+static pid_t husk_tracer_pid(void)
+{
+    struct proc_bsdinfo pbi;
+    if (proc_pidinfo(getpid(), PROC_PIDTBSDINFO, 0, &pbi, sizeof(pbi)) != sizeof(pbi)) return -1;
+    return (pid_t)pbi.pbi_tpid;
+}
+
 static HuskDualMapping *husk_prewarm_retry(size_t bytes)
 {
-    if (husk_prewarm_debugged
-        || !atomic_load(&g_servicer_expected) || !husk_kernel_debugged()) return NULL;
+    if (!atomic_load(&g_servicer_expected) || !husk_kernel_debugged()) return NULL;
+    if (husk_prewarm_debugged && husk_tracer_pid() == husk_prewarm_tpid) return NULL;
     if (atomic_exchange(&husk_prewarm_retried, true)) return NULL;   /* one retry, even across threads */
     husk_prewarm_done = true;
     fprintf(stderr, "[husk-jit] a debugger is attached now; requesting the JIT region\n");

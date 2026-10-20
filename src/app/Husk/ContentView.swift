@@ -246,6 +246,9 @@ struct ContentView: View {
     }
 
     private func evaluate() {
+        // A return from LiveContainer's settings is exactly when its JIT answer can have changed.
+        JITBootstrap.noteBecameActive()
+        jit.noteForegroundRecheck()
         // Before anything else wants JIT: the setting that turns it on as Husk opens.
         jit.enableAtLaunchIfAsked()
         try? guest.prepareFirmware()

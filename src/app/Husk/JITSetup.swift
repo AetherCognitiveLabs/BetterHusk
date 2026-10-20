@@ -145,6 +145,10 @@ final class JITCoordinator: ObservableObject {
     }
 
     var automaticDescription: String {
+        if JITBootstrap.isInsideLiveContainer {
+            return "BetterHusk is running inside LiveContainer, so its JIT is LiveContainer's: enable JIT for "
+                 + "BetterHusk in LiveContainer's app settings, or attach StikDebug to the process both share."
+        }
         switch resolvedMethod {
         case .stikDebug: return "StikDebug is installed, so Husk will open it."
         case .trollStore: return "TrollStore is installed, so Husk will ask it to enable JIT."
@@ -155,6 +159,19 @@ final class JITCoordinator: ObservableObject {
 
     func refreshPairingStatus() {
         pairingSource = JITPairingFileStore.source
+    }
+
+    /// The last answer `ready` gave, so a flip can be published. Not read here: asking at coordinator-init
+    /// could probe before the trap guard exists, which inside LiveContainer is a hard stop.
+    private var readyKnown = false
+
+    /// Foreground re-check: a LiveContainer launch option or a StikDebug attach on the shared process lands with no call
+    /// into Husk, so without this nothing observes the flip and every "JIT is off" view stays off.
+    func noteForegroundRecheck() {
+        let now = JITBootstrap.ready
+        guard now != readyKnown else { return }
+        readyKnown = now
+        if now { attachGeneration += 1; log("JIT came on without Husk asking (attach from outside)") }
     }
 
     private func log(_ line: String) { HuskLog.log("jit", line) }
@@ -324,6 +341,8 @@ final class JITCoordinator: ObservableObject {
         connectionProblem = nil
         status = "Starting Husk's JIT helper…"
         log("enabling JIT with the built-in helper")
+        // The helper services traps while it attaches -- the same "a servicer is coming" StikDebug's handoff declares.
+        husk_ios_jit_expect_servicer()
         var readiness: Timer?
         var finished = false
         let finish: (String?) -> Void = { [weak self] failure in

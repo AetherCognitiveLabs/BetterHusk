@@ -48,9 +48,20 @@ final class HuskAppDelegate: NSObject, UIApplicationDelegate {
 
     /// iOS woke Husk because background downloads finished or need attention: handle them, then say so.
     func application(_ application: UIApplication, handleEventsForBackgroundURLSession identifier: String, completionHandler: @escaping () -> Void) {
-        guard identifier == Downloads.sessionID else { completionHandler(); return }
-        HuskLog.log("downloads", "woken for background download events")
-        Downloads.shared.backgroundCompletion = completionHandler
+        if identifier == Downloads.sessionID {
+            HuskLog.log("downloads", "woken for background download events")
+            Downloads.shared.backgroundCompletion = completionHandler
+            return
+        }
+        if identifier == GuestImage.imageSessionID {
+            HuskLog.log("guest", "woken for background guest-download events")
+            Task { @MainActor in
+                GuestImage.shared.backgroundCompletion = completionHandler
+                GuestImage.shared.adoptPendingDownloads()
+            }
+            return
+        }
+        completionHandler()
     }
 }
 

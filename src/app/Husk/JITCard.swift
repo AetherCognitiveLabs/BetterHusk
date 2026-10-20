@@ -56,8 +56,12 @@ struct JITCard: View {
                     ProgressView()
                 } else {
                     Button {
-                        if offered == .builtIn, HuskBuiltInJIT.isAvailable { jit.method = .builtIn }
-                        jit.enable()
+                        if JITBootstrap.isInsideLiveContainer, !JITBootstrap.isStikDebugInstalled {
+                            jit.showSetup = true
+                        } else {
+                            if offered == .builtIn, HuskBuiltInJIT.isAvailable { jit.method = .builtIn }
+                            jit.enable()
+                        }
                     } label: {
                         Text("Turn On")
                             .font(.subheadline.weight(.bold))
@@ -78,6 +82,10 @@ struct JITCard: View {
     }
 
     private var explanation: String {
+        if JITBootstrap.isInsideLiveContainer {
+            return "BetterHusk is running inside LiveContainer: turn JIT on for it in LiveContainer's app settings"
+                 + (JITBootstrap.isStikDebugInstalled ? ", or attach StikDebug to the process they share." : ".")
+        }
         switch offered {
         case .trollStore:
             return "TrollStore can turn JIT on for Husk: it opens Husk and enables it, with no computer. "
@@ -93,6 +101,7 @@ struct JITCard: View {
     }
 
     private var buttonTitle: String {
+        if JITBootstrap.isInsideLiveContainer, !JITBootstrap.isStikDebugInstalled { return "How to Get JIT" }
         switch offered {
         case .trollStore: return "Turn On JIT with TrollStore"
         case .jailbreak: return "How to Allow JIT"
@@ -145,9 +154,15 @@ struct JITCard: View {
                 }
             } else {
                 Button {
-                    // The one this card offers, whatever "Automatic" would have picked.
-                    if offered == .builtIn, HuskBuiltInJIT.isAvailable { jit.method = .builtIn }
-                    jit.enable()
+                    // Inside LiveContainer without StikDebug there is nothing to enable from here -- the
+                    // switch lives in LiveContainer's settings, which the walkthrough explains.
+                    if JITBootstrap.isInsideLiveContainer, !JITBootstrap.isStikDebugInstalled {
+                        jit.showSetup = true
+                    } else {
+                        // The one this card offers, whatever "Automatic" would have picked.
+                        if offered == .builtIn, HuskBuiltInJIT.isAvailable { jit.method = .builtIn }
+                        jit.enable()
+                    }
                 } label: {
                     HStack {
                         Spacer()

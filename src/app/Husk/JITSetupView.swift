@@ -9,7 +9,7 @@ import UniformTypeIdentifiers
 /// LocalDevVPN and enabling. StikDebug has its own short page. Presented from
 /// onboarding, Settings › JIT, and whenever Start finds JIT not set up.
 struct JITSetupFlow: View {
-    enum Step: Hashable { case pairOnDevice, importFile, connect, enable, stikDebug, trollStore, jailbreak }
+    enum Step: Hashable { case pairOnDevice, importFile, connect, enable, stikDebug, trollStore, jailbreak, liveContainer }
 
     @ObservedObject private var jit = JITCoordinator.shared
     @ObservedObject private var pairing = OnDevicePairing.shared
@@ -31,6 +31,7 @@ struct JITSetupFlow: View {
                     case .stikDebug: stikDebug
                     case .trollStore: trollStore
                     case .jailbreak: jailbreak
+                    case .liveContainer: liveContainer
                     }
                 }
         }
@@ -45,8 +46,11 @@ struct JITSetupFlow: View {
         .onAppear {
             jit.refreshPairingStatus()
             pairing.reset()
-            // A failed enable from the Library lands on the step that can fix it.
-            if jit.error != nil, jit.hasPairing, jit.resolvedMethod == .builtIn {
+            // A failed enable from the Library lands on the step that can fix it. Inside LiveContainer that step is its
+            // own: the built-in helper cannot be started there, so sending it to the pairing pages would dead-end.
+            if JITBootstrap.isInsideLiveContainer, !JITBootstrap.ready {
+                path = [.liveContainer]
+            } else if jit.error != nil, jit.hasPairing, jit.resolvedMethod == .builtIn {
                 path = [.enable]
             }
             HuskLog.log("ui", "JIT walkthrough opened")
@@ -68,30 +72,41 @@ struct JITSetupFlow: View {
              subtitle: String(localized: "Android needs memory it can write and then run, which on iOS only an attached debugger can grant. Choose how your \(device) gets one.")) {
             VStack(spacing: 10) {
                 let builtIn = HuskBuiltInJIT.unavailableReason
+                if JITBootstrap.isInsideLiveContainer {
+                    way(String(localized: JITBootstrap.ready ? "LiveContainer — JIT is on" : "LiveContainer detected"), symbol: "shippingbox",
+                        detail: String(localized: "BetterHusk is running inside LiveContainer. JIT comes the way LiveContainer gives it to apps — its own launch options or an attached debugger."),
+                        done: JITBootstrap.ready,
+                        recommended: recommendedStep == .liveContainer) { path.append(.liveContainer) }
+                }
                 way(String(localized: "Pair on this \(device)"), symbol: "iphone.radiowaves.left.and.right",
                     detail: builtIn ?? (!OnDevicePairing.isSupported ? "Needs iOS 27 or later."
                         : jit.pairingSource == .onDevice ? String(localized: "Paired on this \(device).")
                         : "No computer needed. Pairs from Settings in a minute."),
                     done: jit.pairingSource == .onDevice,
-                    enabled: builtIn == nil && OnDevicePairing.isSupported) { path.append(.pairOnDevice) }
+                    enabled: builtIn == nil && OnDevicePairing.isSupported,
+                    recommended: recommendedStep == .pairOnDevice) { path.append(.pairOnDevice) }
                 way("Use a pairing file", symbol: "doc.badge.plus",
                     detail: builtIn ?? (jit.pairingSource == .imported ? "Pairing file imported."
                         : "Import a pairing file made on a computer."),
                     done: jit.pairingSource == .imported,
-                    enabled: builtIn == nil) { path.append(.importFile) }
+                    enabled: builtIn == nil,
+                    recommended: recommendedStep == .importFile) { path.append(.importFile) }
                 way("Use StikDebug", symbol: "ant",
                     detail: JITBootstrap.isStikDebugInstalled ? "StikDebug is installed."
                         : "Enable JIT through the StikDebug app.",
-                    done: jit.method == .stikDebug) { path.append(.stikDebug) }
+                    done: jit.method == .stikDebug,
+                    recommended: recommendedStep == .stikDebug) { path.append(.stikDebug) }
                 way("Use TrollStore", symbol: "sparkles",
                     detail: JITBootstrap.isTrollStoreInstalled ? "TrollStore is installed."
                         : "For a Husk installed through TrollStore.",
-                    done: jit.method == .trollStore) { path.append(.trollStore) }
+                    done: jit.method == .trollStore,
+                    recommended: recommendedStep == .trollStore) { path.append(.trollStore) }
                 way("Use a jailbreak", symbol: "lock.open",
                     detail: JITBootstrap.debuggedAtLaunch ? "JIT was already on when Husk opened."
                         : JITBootstrap.isJailbroken ? "A jailbreak was found. Turn on Allow JIT in Apps."
                         : "Dopamine can give every app JIT with one setting.",
-                    done: jit.method == .jailbreak || JITBootstrap.debuggedAtLaunch) { path.append(.jailbreak) }
+                    done: jit.method == .jailbreak || JITBootstrap.debuggedAtLaunch,
+                    recommended: recommendedStep == .jailbreak) { path.append(.jailbreak) }
             }
             if jit.hasPairing && HuskBuiltInJIT.isAvailable {
                 Button { path.append(.connect) } label: {
@@ -107,8 +122,18 @@ struct JITSetupFlow: View {
         }
     }
 
+    /// The one path that fits this device best, said so on its card.
+    private var recommendedStep: Step {
+        if JITBootstrap.isInsideLiveContainer { return .liveContainer }
+        if HuskBuiltInJIT.isAvailable && OnDevicePairing.isSupported { return .pairOnDevice }
+        if JITBootstrap.isStikDebugInstalled { return .stikDebug }
+        if JITBootstrap.isTrollStoreInstalled { return .trollStore }
+        if JITBootstrap.isJailbroken { return .jailbreak }
+        return HuskBuiltInJIT.isAvailable ? .importFile : .stikDebug
+    }
+
     private func way(_ title: String, symbol: String, detail: String, done: Bool,
-                     enabled: Bool = true, action: @escaping () -> Void) -> some View {
+                     enabled: Bool = true, recommended: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 14) {
                 Image(systemName: symbol)
@@ -117,7 +142,16 @@ struct JITSetupFlow: View {
                     .frame(width: 34, height: 34)
                     .background(Theme.accentSoft, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(title.l10n).font(.system(size: 16, weight: .semibold)).foregroundStyle(Theme.text)
+                    HStack(spacing: 6) {
+                        Text(title.l10n).font(.system(size: 16, weight: .semibold)).foregroundStyle(Theme.text)
+                        if recommended {
+                            Text("Recommended")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(Theme.accent)
+                                .padding(.horizontal, 6).padding(.vertical, 2)
+                                .background(Theme.accentSoft, in: Capsule())
+                        }
+                    }
                     Text(detail.l10n).font(.system(size: 13)).foregroundStyle(Theme.textDim)
                         .fixedSize(horizontal: false, vertical: true)
                         .multilineTextAlignment(.leading)
@@ -409,6 +443,46 @@ struct JITSetupFlow: View {
                 close()
             }
             .buttonStyle(PrimaryButtonStyle())
+        }
+    }
+
+    // MARK: LiveContainer
+
+    /// BetterHusk hosted by LiveContainer shares LiveContainer's process, so a debugger that attaches to it attaches to
+    /// BetterHusk too -- and its own helper extension cannot be started there, which is why only the container's own
+    /// options and StikDebug are offered.
+    private var liveContainer: some View {
+        page(symbol: "shippingbox", title: "LiveContainer",
+             subtitle: "BetterHusk is running inside LiveContainer. Both share one process, so JIT for one is JIT for "
+                     + "the other -- it just has to be switched on from outside, the way LiveContainer does it.") {
+            VStack(alignment: .leading, spacing: 14) {
+                point(1, "In **LiveContainer**, open BetterHusk's settings and turn on **JIT** for it (or launch it with JIT).",
+                      done: JITBootstrap.ready)
+                point(2, "Or attach **StikDebug** -- it marks the process LiveContainer and BetterHusk share.",
+                      done: JITBootstrap.ready)
+                point(3, "Come back here. This page notices on its own.", done: JITBootstrap.ready)
+            }
+            .padding(16).huskCard()
+            if JITBootstrap.ready || jit.attachGeneration > 0 {
+                outcome(String(localized: "JIT is on. Games and Android can start."), ok: true)
+            } else if let error = jit.error {
+                outcome(error, ok: false)
+            }
+        } actions: {
+            if JITBootstrap.ready || jit.attachGeneration > 0 {
+                Button("Done") { close() }.buttonStyle(PrimaryButtonStyle())
+            } else {
+                if JITBootstrap.isStikDebugInstalled {
+                    Button {
+                        jit.method = .stikDebug
+                        jit.enable()
+                    } label: { Label("Attach with StikDebug", systemImage: "ant") }
+                        .buttonStyle(PrimaryButtonStyle())
+                }
+                Button("Not now") { close() }
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(Theme.textDim)
+            }
         }
     }
 

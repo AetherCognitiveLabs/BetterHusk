@@ -1066,15 +1066,38 @@ final class QemuRunner: ObservableObject {
                                             : GuestImage.defaultSmp
     }
 
+    /// Whether this device can hold a guest of `mib` MiB this run: within the measured anonymous headroom, or --
+    /// file-backed, where the pages sit in the page cache instead -- where the mapping itself succeeds.
+    /// QEMU's own resident cost beside the guest's RAM. Measured, not guessed.
+    private static let qemuOverheadMiB = 750
+    /// What is deliberately left unspent between the budget and the jetsam line.
+    private static let safetyMarginMiB = 450
+
+    private func guestRAMFits(_ mib: Int) -> Bool {
+        let availableMiB = Int(husk_ios_available_memory() / (1024 * 1024))
+        let jitStillToCome = JITBootstrap.prewarmed ? 0 : Int(JITBootstrap.jitBytes / (1024 * 1024))
+        if availableMiB > 0, mib + Self.safetyMarginMiB + Self.qemuOverheadMiB + jitStillToCome <= availableMiB {
+            return true
+        }
+        return ramFileReady && largestMappableMiB([mib]) == mib
+    }
+
     private func guestMemoryMiB() -> Int {
         // Same reasoning as the resolution: the shipped snapshot was saved with
         // exactly this much RAM, and QEMU rejects a restore that differs by a
         // byte. No probing, no stepping down -- this number or nothing.
         if GuestImage.shared.hasShippedSnapshot {
             let mib = GuestImage.shared.snapshotPins.mib
-            QemuRunner.shared.lastGuestMiB = mib
-            HuskLog.log("qemu", "using the shipped snapshot: guest pinned to \(mib) MiB")
-            return mib
+            // Unless the number cannot be held at all: a 4096 MiB restore pinned onto a 4 GB phone is not a quick
+            // boot, it is a jetsam on every start. Then this run simply does not use the snapshot -- the size below
+            // differs from the pin, so the restore check skips it on its own and Android boots cold.
+            if guestRAMFits(mib) {
+                QemuRunner.shared.lastGuestMiB = mib
+                HuskLog.log("qemu", "using the shipped snapshot: guest pinned to \(mib) MiB")
+                return mib
+            }
+            HuskLog.log("qemu", "shipped snapshot needs a \(mib) MiB guest this device cannot hold; "
+                                  + "booting cold at a size that fits")
         }
 
         // A snapshot pins the size. Restoring into a differently sized machine
@@ -1116,13 +1139,10 @@ final class QemuRunner: ObservableObject {
         // cannot be walked back. Another app reaching a larger number does not
         // transfer -- clean file-backed pages are evictable and charged
         // differently.
-        let jitMiB = 256          // tb-size
-        let qemuOverheadMiB = 750 // measured, not guessed
-        // Real margin, in megabytes rather than a fraction. A fraction of what
-        // was left quietly cost ~375 MiB the guest could have had; the run that
-        // booted Android peaked with ~500 MiB spare, so this is the same shape
-        // of safety without the waste.
-        let safetyMarginMiB = 450
+        // The region prewarm() takes, not tb-size: it is 512 MiB because the native runtime's largest library has to fit
+        // too. Budgeting only tb-size's 256 under-charged every start by a quarter gigabyte -- the difference between
+        // Android booting on a 4 GB phone and being jetsammed inside qemu_init().
+        let jitMiB = Int(JITBootstrap.jitBytes / (1024 * 1024))
 
         guard availableMiB > 0 else {
             HuskLog.log("qemu", "available memory unknown; falling back to 1536 MiB guest")
@@ -1134,8 +1154,10 @@ final class QemuRunner: ObservableObject {
         // fallen by that much -- subtracting again charged for it twice and cut
         // the guest from 1906 MiB to 1650.
         let jitStillToCome = JITBootstrap.prewarmed ? 0 : jitMiB
+        // The floor stays 1024: a guest smaller than that does not boot LineageOS usefully, and below it the
+        // file-backed candidates are what carries a small-memory phone anyway.
         let anonymousTarget = max(1024, min(6144,
-            availableMiB - safetyMarginMiB - jitStillToCome - qemuOverheadMiB))
+            availableMiB - Self.safetyMarginMiB - jitStillToCome - Self.qemuOverheadMiB))
 
         // With a file-backed RAM block the arithmetic above is the wrong shape:
         // it measures room for pages that must stay resident, and these do not
@@ -1186,8 +1208,8 @@ final class QemuRunner: ObservableObject {
         try? String(target).write(toFile: ramAttemptPath, atomically: true, encoding: .utf8)
         HuskLog.log("qemu", "memory budget: \(physMiB) MiB physical but "
                           + "\(availableMiB) MiB before jetsam -- that is the real "
-                          + "ceiling; reserving \(jitMiB) MiB JIT + \(qemuOverheadMiB) "
-                          + "MiB overhead + \(safetyMarginMiB) MiB margin; "
+                          + "ceiling; reserving \(jitMiB) MiB JIT + \(Self.qemuOverheadMiB) "
+                          + "MiB overhead + \(Self.safetyMarginMiB) MiB margin; "
                           + "GUEST GETS \(target) MiB "
                           + (fileBackedTarget != nil
                              ? "from a file-backed block (anonymous memory could only "

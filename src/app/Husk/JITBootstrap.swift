@@ -145,9 +145,28 @@ enum JITBootstrap {
     /// Whether Husk has JIT now: a debugger marked it, or the region is already held. Before iOS 26 this tries, once, to make
     /// the region itself, which is all TrollStore and jailbroken devices need. Cheap after the first call, and logs nothing.
     static var ready: Bool {
-        if debuggedFlag || prewarmed || isLive { return true }
+        if prewarmed || isLive { return true }
+        if debuggedFlag, !isInsideLiveContainer { return true }
+        if isInsideLiveContainer {
+            // LiveContainer sets CS_DEBUGGED on its hosted apps whether or not it granted them JIT -- the flag says
+            // the container is debugged, not that this process can execute memory it wrote. The one probe that tells
+            // is cached for this foreground pass, so a view asking repeatedly does not keep trapping; coming back to
+            // the foreground clears it, since that is when a JIT just switched on in LiveContainer's settings shows up.
+            if let answer = lcReadyAnswer { return answer }
+            let answer = prewarm()
+            lcReadyAnswer = answer
+            return answer
+        }
         guard canGrantOwnJIT, !selfGrantTried else { return false }
         return prewarm()
+    }
+
+    /// The LiveContainer probe's verdict for this foreground pass, nil until asked.
+    nonisolated(unsafe) static private var lcReadyAnswer: Bool?
+
+    /// Husk came back to the front: re-ask LiveContainer's JIT question, because its settings were the thing to change.
+    static func noteBecameActive() {
+        if isInsideLiveContainer { lcReadyAnswer = nil }
     }
 
     /// True once this process has told StikDebug to let go.
@@ -289,6 +308,11 @@ enum JITBootstrap {
     /// A rootless jailbreak (Dopamine and its kin) puts its files in /var/jb and lets apps see it.
     static var isJailbroken: Bool { FileManager.default.fileExists(atPath: "/var/jb") }
 
+    /// BetterHusk is running inside LiveContainer: it sets LC_HOME_PATH for every app it hosts. JIT then belongs to the
+    /// container's process, which is also ours -- an attach that lands on LiveContainer lands on us, and BetterHusk's own
+    /// helper extension cannot be started by LiveContainer at all (HuskBuiltInJIT.unavailableReason).
+    static var isInsideLiveContainer: Bool { ProcessInfo.processInfo.environment["LC_HOME_PATH"] != nil }
+
     /// Whether Husk was already marked as debugged when it was opened, before it asked anything of anyone. That is what a
     /// jailbreak that allows JIT in apps does to every app it launches (Dopamine's "Allow JIT in Apps" setting), and it needs
     /// no hand-off at all. Read once, early (HuskApp.init), so a later attach is not mistaken for it.
@@ -332,6 +356,9 @@ enum JITBootstrap {
     @MainActor
     static func requestAttach() -> Bool {
         HuskLog.log("jit", "requestAttach() -- handing off to StikDebug")
+        // A StikDebug attach is a servicer arriving: let a failed earlier prewarm take its one retry
+        // against the new attach instead of reporting the old flag-only failure forever.
+        husk_ios_jit_expect_servicer()
 
         guard let bundleID = Bundle.main.bundleIdentifier else {
             HuskLog.log("jit", "FAIL: no bundle identifier")
