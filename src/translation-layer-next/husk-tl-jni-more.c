@@ -4182,6 +4182,120 @@ static void ISR_close(tl_jcall *c)
 }
 static void ISR_getEncoding(tl_jcall *c) { c->ret = vl(STR("UTF-8")); }
 
+/* ---- Writer chain: OutputStreamWriter / FileWriter / BufferedWriter ----
+ * native: { sbuf buf; jobj *out; int fd } — fd>=0 means a directly-owned
+ * file descriptor (FileWriter); out!=NULL means delegate downstream
+ * (OutputStreamWriter→OutputStream, BufferedWriter→Writer). UTF-8 only,
+ * matching the charset layer's default. */
+typedef struct { sbuf b; jobj *out; int fd; } wst;
+static wst *ws_of(jobj *o)
+{
+    if (!o->native) { o->native = calloc(1, sizeof(wst)); ((wst *)o->native)->fd = -1; }
+    return o->native;
+}
+/* push bytes downstream: Writer gets write(String), OutputStream gets
+ * write([BII)V, direct fd gets write(2). */
+static void ws_raw(wst *w, const char *d, size_t n)
+{
+    if (!n) return;
+    if (w->fd >= 0) { write(w->fd, d, n); return; }
+    if (!w->out) return;
+    const char *cn = w->out->cls ? w->out->cls->name : "";
+    if (strstr(cn, "Writer") || strstr(cn, "writer")) {
+        char *t = malloc(n + 1); memcpy(t, d, n); t[n] = 0;
+        jvalue a = { .l = STR(t) };
+        tl_jni_call(w->out, "write", "(Ljava/lang/String;)V", &a);
+        free(t);
+    } else {
+        jobj *a = tl_jni_new_prim_array('B', (uint32_t)n);
+        memcpy(a->arr.data, d, n);
+        jvalue args[3] = { { .l = a }, { .i = 0 }, { .i = (int)n } };
+        tl_jni_call(w->out, "write", "([BII)V", args);
+    }
+}
+static void ws_flush_buf(wst *w)
+{
+    ws_raw(w, w->b.p, w->b.n);
+    w->b.n = 0;
+}
+static void ws_write_str(wst *w, const char *s)
+{
+    size_t n = strlen(s);
+    if (w->b.n + n >= 8192) ws_flush_buf(w);
+    if (n >= 8192) { ws_raw(w, s, n); return; }
+    sb_add_n(&w->b, s, n);
+}
+/* utf8-encode a char[] region into the buffer */
+static void ws_write_carr(wst *w, jobj *a, int off, int len)
+{
+    if (!a || a->kind != TL_K_PRIM_ARRAY) return;
+    uint16_t *u = a->arr.data;
+    for (int i = off; i < off + len && i < (int)a->arr.len; i++) {
+        uint8_t t[4]; int k = 0;
+        uint32_t cp = u[i];
+        if (cp < 0x80) t[k++] = (uint8_t)cp;
+        else if (cp < 0x800) { t[k++] = (uint8_t)(0xC0 | (cp >> 6)); t[k++] = (uint8_t)(0x80 | (cp & 0x3f)); }
+        else { t[k++] = (uint8_t)(0xE0 | (cp >> 12)); t[k++] = (uint8_t)(0x80 | ((cp >> 6) & 0x3f)); t[k++] = (uint8_t)(0x80 | (cp & 0x3f)); }
+        if (w->b.n + (size_t)k >= 8192) ws_flush_buf(w);
+        sb_add_n(&w->b, (const char *)t, (size_t)k);
+    }
+}
+static void OSW_init(tl_jcall *c)      { wst *w = ws_of(c->self); w->out = c->args[0].l; }
+static void OSW_init_cs(tl_jcall *c)   { wst *w = ws_of(c->self); w->out = c->args[0].l; }
+static void FW_init_path(tl_jcall *c)  { wst *w = ws_of(c->self); w->fd = open(S(c->args[0].l), O_WRONLY | O_CREAT | O_TRUNC, 0644); if (w->fd < 0) tl_jni_throw("java/io/FileNotFoundException", S(c->args[0].l)); }
+static void FW_init_path_app(tl_jcall *c)
+{
+    wst *w = ws_of(c->self);
+    int fl = O_WRONLY | O_CREAT | (c->args[1].z ? O_APPEND : O_TRUNC);
+    w->fd = open(S(c->args[0].l), fl, 0644);
+    if (w->fd < 0) tl_jni_throw("java/io/FileNotFoundException", S(c->args[0].l));
+}
+static void FW_init_file(tl_jcall *c)
+{
+    wst *w = ws_of(c->self);
+    const char *p = file_path(c->args[0].l);
+    w->fd = open(p, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (w->fd < 0) tl_jni_throw("java/io/FileNotFoundException", p);
+}
+static void FW_init_file_app(tl_jcall *c)
+{
+    wst *w = ws_of(c->self);
+    const char *p = file_path(c->args[0].l);
+    int fl = O_WRONLY | O_CREAT | (c->args[1].z ? O_APPEND : O_TRUNC);
+    w->fd = open(p, fl, 0644);
+    if (w->fd < 0) tl_jni_throw("java/io/FileNotFoundException", p);
+}
+static void W_write_int(tl_jcall *c)   { char ch = (char)c->args[0].i; wst *w = ws_of(c->self); if (w->b.n >= 8192) ws_flush_buf(w); sb_add_n(&w->b, &ch, 1); }
+static void W_write_str(tl_jcall *c)   { ws_write_str(ws_of(c->self), c->args[0].l ? S(c->args[0].l) : "null"); }
+static void W_write_str_range(tl_jcall *c)
+{
+    const char *s = c->args[0].l ? S(c->args[0].l) : "null";
+    int off = c->args[1].i, n = c->args[2].i;
+    if (off < 0) off = 0;
+    if (off + n > (int)strlen(s)) n = (int)strlen(s) - off;
+    char *t = malloc((size_t)n + 1); memcpy(t, s + off, (size_t)n); t[n] = 0;
+    ws_write_str(ws_of(c->self), t); free(t);
+}
+static void W_write_carr(tl_jcall *c)  { ws_write_carr(ws_of(c->self), c->args[0].l, 0, c->args[0].l ? (int)((jobj *)c->args[0].l)->arr.len : 0); }
+static void W_write_carr_range(tl_jcall *c) { ws_write_carr(ws_of(c->self), c->args[0].l, c->args[1].i, c->args[2].i); }
+static void W_flush(tl_jcall *c)       { wst *w = ws_of(c->self); ws_flush_buf(w); if (w->out) tl_jni_call(w->out, "flush", "()V", NULL); }
+static void W_close(tl_jcall *c)
+{
+    wst *w = ws_of(c->self);
+    ws_flush_buf(w);
+    if (w->fd >= 0) { close(w->fd); w->fd = -1; }
+    else if (w->out) tl_jni_call(w->out, "close", "()V", NULL);
+}
+static void BW_init(tl_jcall *c)       { wst *w = ws_of(c->self); w->out = c->args[0].l; }
+static void BW_newLine(tl_jcall *c)    { ws_write_str(ws_of(c->self), "\n"); }
+static void BW_write_str(tl_jcall *c)  { W_write_str(c); }
+static void OSW_getEncoding(tl_jcall *c) { c->ret = vl(STR("UTF8")); }
+static void OSW_write_bytes(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (a && a->kind == TL_K_PRIM_ARRAY) ws_raw(ws_of(c->self), a->arr.data, a->arr.len);
+}
+
 static void BR_init(tl_jcall *c) { tl_jni_set_field(c->self, "in", "Ljava/io/Reader;", c->args[0]); set_str(c->self, "_line", ""); }
 static void BR_readLine(tl_jcall *c)
 {
@@ -19498,6 +19612,44 @@ static const tl_jhle k_more_hle[] = {
     M("java/io/FileReader", "close", NULL, ISR_close),
     M("java/io/InputStreamReader", "getEncoding", NULL, ISR_getEncoding),
     M("java/io/FileReader", "getEncoding", NULL, ISR_getEncoding),
+    M("java/io/OutputStreamWriter", "<init>", "(Ljava/io/OutputStream;)V", OSW_init),
+    M("java/io/OutputStreamWriter", "<init>", "(Ljava/io/OutputStream;Ljava/lang/String;)V", OSW_init_cs),
+    M("java/io/OutputStreamWriter", "<init>", "(Ljava/io/OutputStream;Ljava/nio/charset/Charset;)V", OSW_init_cs),
+    M("java/io/OutputStreamWriter", "write", "(I)V", W_write_int),
+    M("java/io/OutputStreamWriter", "write", "(Ljava/lang/String;)V", W_write_str),
+    M("java/io/OutputStreamWriter", "write", "(Ljava/lang/String;II)V", W_write_str_range),
+    M("java/io/OutputStreamWriter", "write", "([C)V", W_write_carr),
+    M("java/io/OutputStreamWriter", "write", "([CII)V", W_write_carr_range),
+    M("java/io/OutputStreamWriter", "flush", "()V", W_flush),
+    M("java/io/OutputStreamWriter", "close", "()V", W_close),
+    M("java/io/OutputStreamWriter", "getEncoding", "()Ljava/lang/String;", OSW_getEncoding),
+    M("java/io/FileWriter", "<init>", "(Ljava/lang/String;)V", FW_init_path),
+    M("java/io/FileWriter", "<init>", "(Ljava/lang/String;Z)V", FW_init_path_app),
+    M("java/io/FileWriter", "<init>", "(Ljava/io/File;)V", FW_init_file),
+    M("java/io/FileWriter", "<init>", "(Ljava/io/File;Z)V", FW_init_file_app),
+    M("java/io/FileWriter", "write", "(I)V", W_write_int),
+    M("java/io/FileWriter", "write", "(Ljava/lang/String;)V", W_write_str),
+    M("java/io/FileWriter", "write", "(Ljava/lang/String;II)V", W_write_str_range),
+    M("java/io/FileWriter", "write", "([C)V", W_write_carr),
+    M("java/io/FileWriter", "write", "([CII)V", W_write_carr_range),
+    M("java/io/FileWriter", "flush", "()V", W_flush),
+    M("java/io/FileWriter", "close", "()V", W_close),
+    M("java/io/BufferedWriter", "<init>", "(Ljava/io/Writer;)V", BW_init),
+    M("java/io/BufferedWriter", "<init>", "(Ljava/io/Writer;I)V", BW_init),
+    M("java/io/BufferedWriter", "write", "(I)V", W_write_int),
+    M("java/io/BufferedWriter", "write", "(Ljava/lang/String;)V", W_write_str),
+    M("java/io/BufferedWriter", "write", "(Ljava/lang/String;II)V", W_write_str_range),
+    M("java/io/BufferedWriter", "write", "([C)V", W_write_carr),
+    M("java/io/BufferedWriter", "write", "([CII)V", W_write_carr_range),
+    M("java/io/BufferedWriter", "newLine", "()V", BW_newLine),
+    M("java/io/BufferedWriter", "flush", "()V", W_flush),
+    M("java/io/BufferedWriter", "close", "()V", W_close),
+    M("java/io/Writer", "write", "(I)V", W_write_int),
+    M("java/io/Writer", "write", "(Ljava/lang/String;)V", W_write_str),
+    M("java/io/Writer", "write", "([C)V", W_write_carr),
+    M("java/io/Writer", "write", "([CII)V", W_write_carr_range),
+    M("java/io/Writer", "flush", "()V", W_flush),
+    M("java/io/Writer", "close", "()V", W_close),
     M("java/io/BufferedReader", "<init>", "(Ljava/lang/Object;)V", BR_init),
     M("java/io/LineNumberReader", "<init>", "(Ljava/lang/Object;)V", BR_init),
     M("java/io/BufferedReader", "readLine", NULL, BR_readLine),
@@ -23123,6 +23275,9 @@ static const struct { const char *name, *super; } k_more_classes[] = {
     { "java/io/BufferedReader", "java/io/Reader" },
     { "java/io/LineNumberReader", "java/io/BufferedReader" },
     { "java/io/Writer", "java/lang/Object" },
+    { "java/io/OutputStreamWriter", "java/io/Writer" },
+    { "java/io/FileWriter", "java/io/OutputStreamWriter" },
+    { "java/io/BufferedWriter", "java/io/Writer" },
     { "java/io/PrintWriter", "java/io/Writer" },
     { "java/io/RandomAccessFile", "java/lang/Object" },
     { "java/io/File", "java/lang/Object" },
