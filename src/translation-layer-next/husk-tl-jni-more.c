@@ -9820,7 +9820,7 @@ static void NB_setPriority(tl_jcall *c) { set_int(c->self, "priority", c->args[0
 static void NB_setChannelId(tl_jcall *c) { if (c->args[0].l) set_str(c->self, "channelId", S(c->args[0].l)); c->ret = vl(tl_jni_ref(c->self)); }
 static void NB_setDefaults(tl_jcall *c) { set_int(c->self, "defaults", c->args[0].i); c->ret = vl(tl_jni_ref(c->self)); }
 static void NB_setTicker(tl_jcall *c) { if (c->args[0].l) set_str(c->self, "tickerText", S(c->args[0].l)); c->ret = vl(tl_jni_ref(c->self)); }
-static void NB_setWhen(tl_jcall *c) { set_lng(c->self, "when", c->args[0].j); c->ret = vl(tl_jni_ref(c->self)); }
+static void NB_setWhen(tl_jcall *c) { set_long(c->self, "when", c->args[0].j); c->ret = vl(tl_jni_ref(c->self)); }
 static void NB_setProgress(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
 static void NB_setStyle(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
 static void NB_addAction(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
@@ -9854,7 +9854,7 @@ static void NB_build(tl_jcall *c)
     for (int i = 0; i < 5; i++) set_int(n, nf[i], get_int(c->self, nf[i]));
     static const char *bf[] = { "autoCancel", "ongoing", "onlyAlertOnce" };
     for (int i = 0; i < 3; i++) set_bool(n, bf[i], get_int(c->self, bf[i]));
-    set_lng(n, "when", get_lng(c->self, "when"));
+    set_long(n, "when", get_lng(c->self, "when"));
     jobj *pi = tl_jni_get_field(c->self, "contentIntent", "Landroid/app/PendingIntent;").l;
     if (pi) tl_jni_set_field(n, "contentIntent", "Landroid/app/PendingIntent;", vl(tl_jni_ref(pi)));
     c->ret = vl(n);
@@ -10538,6 +10538,316 @@ static void IMM_isFullscreen(tl_jcall *c)  { c->ret = vz(0); }
 static void IMM_restartInput(tl_jcall *c)  { (void)c; }
 static void IMM_showStatusIcon(tl_jcall *c){ (void)c; }
 static void IMM_updateSelection(tl_jcall *c){ (void)c; }
+
+/* ---- Spannable / Editable: the mutable text CharSequence returns ----
+ * getText() hands back one of these; apps append, insert and read back. */
+typedef struct { sbuf b; } edit;
+static edit *edit_of(jobj *o) { if (!o->native) o->native = calloc(1, sizeof(edit)); return o->native; }
+static jobj *editable_new(const char *s)
+{
+    jobj *e = make("android/text/SpannableStringBuilder");
+    edit *d = edit_of(e); if (s) sb_add(&d->b, s);
+    return e;
+}
+static void Ed_init(tl_jcall *c) { edit_of(c->self); if (c->args[0].l) sb_add(&edit_of(c->self)->b, S(c->args[0].l)); }
+static void Ed_length(tl_jcall *c)  { c->ret = vi((int)edit_of(c->self)->b.n); }
+static void Ed_charAt(tl_jcall *c)  { edit *d = edit_of(c->self); int i = c->args[0].i; c->ret = vc((i >= 0 && (size_t)i < d->b.n) ? d->b.p[i] : 0); }
+static void Ed_toString(tl_jcall *c) { edit *d = edit_of(c->self); c->ret = vl(STR(d->b.p ? d->b.p : "")); }
+static void Ed_append(tl_jcall *c)
+{
+    edit *d = edit_of(c->self);
+    if (c->args[0].l) sb_add(&d->b, S(c->args[0].l));
+    c->ret = vl(c->self);
+}
+static void Ed_insert(tl_jcall *c)   /* (int where, CharSequence text [,start,end]) */
+{
+    edit *d = edit_of(c->self);
+    const char *t = c->args[1].l ? S(c->args[1].l) : "";
+    int w = c->args[0].i; if (w < 0) w = 0; if ((size_t)w > d->b.n) w = (int)d->b.n;
+    size_t tl = strlen(t);
+    sb_add_n(&d->b, "", 0); /* ensure buffer */
+    memmove(d->b.p + w + tl, d->b.p + w, d->b.n - (size_t)w + 1);
+    memcpy(d->b.p + w, t, tl); d->b.n += tl;
+    c->ret = vl(c->self);
+}
+static void Ed_delete(tl_jcall *c)   /* (int start, int end) */
+{
+    edit *d = edit_of(c->self);
+    int a = c->args[0].i, b = c->args[1].i;
+    if (a < 0) a = 0; if ((size_t)b > d->b.n) b = (int)d->b.n;
+    if (b > a) { memmove(d->b.p + a, d->b.p + b, d->b.n - (size_t)b + 1); d->b.n -= (size_t)(b - a); }
+    c->ret = vl(c->self);
+}
+static void Ed_replace(tl_jcall *c)  /* (int, int, CharSequence [,s,e]) */
+{
+    tl_jcall x = *c; Ed_delete(&x);
+    jvalue a[2] = { c->args[0], c->args[2] };
+    x.args = a; Ed_insert(&x);
+    c->ret = vl(c->self);
+}
+static void Ed_subSequence(tl_jcall *c)
+{
+    edit *d = edit_of(c->self);
+    int a = c->args[0].i, b = c->args[1].i;
+    if (a < 0) a = 0; if ((size_t)b > d->b.n) b = (int)d->b.n; if (b < a) b = a;
+    char *t = malloc((size_t)(b - a) + 1); memcpy(t, d->b.p + a, (size_t)(b - a)); t[b - a] = 0;
+    c->ret = vl(editable_new(t)); free(t);
+}
+static void Ed_clear(tl_jcall *c) { edit *d = edit_of(c->self); d->b.n = 0; if (d->b.p) d->b.p[0] = 0; }
+static void Ed_getChars(tl_jcall *c) /* (int start, int end, char[] dst, int dstoff) */
+{
+    edit *d = edit_of(c->self);
+    int a = c->args[0].i, b = c->args[1].i, off = c->args[3].i;
+    jobj *arr = c->args[2].l;
+    if (!arr || arr->kind != TL_K_PRIM_ARRAY) return;
+    uint16_t *dst = arr->arr.data;
+    for (int i = a; i < b && (size_t)i < d->b.n; i++) dst[off + i - a] = (uint8_t)d->b.p[i];
+}
+static void SS_init_str(tl_jcall *c)  /* SpannableString(CharSequence) — immutable view of text */
+{
+    edit *d = edit_of(c->self);
+    if (c->args[0].l) sb_add(&d->b, S(c->args[0].l));
+}
+
+/* ---- TextView/EditText + friends: the widget surface forms need ----
+ * The model: text lives in an Editable; setText routes through it so
+ * TextWatchers fire; EditText focus posts the IME. */
+static jobj *tv_text(jobj *o)
+{
+    jobj *e = tl_jni_get_field(o, "text", "Landroid/text/Editable;").l;
+    if (!e) { e = editable_new(NULL); tl_jni_set_field(o, "text", "Landroid/text/Editable;", vl(tl_jni_ref(e))); }
+    return e;
+}
+static void tv_fire_watchers(jobj *self, const char *when)
+{
+    jobj *l = tl_jni_get_field(self, "watchers", "Ljava/util/ArrayList;").l;
+    if (!l) return;
+    jobj *e = tv_text(self);
+    jvalue len = tl_jni_call(l, "size", "()I", NULL);
+    for (int i = 0; i < len.i; i++) {
+        jvalue a[1] = { { .i = i } };
+        jobj *w = tl_jni_call(l, "get", "(I)Ljava/lang/Object;", a).l;
+        if (!w) continue;
+        jvalue arg[4] = { { .j = 0, .l = e }, { .i = 0 }, { .i = 0 }, { .i = 0 } };
+        char sig[96];
+        if (!strcmp(when, "before"))   snprintf(sig, sizeof(sig), "(Ljava/lang/CharSequence;III)V");
+        else if (!strcmp(when, "on"))  snprintf(sig, sizeof(sig), "(Ljava/lang/CharSequence;III)V");
+        else                           snprintf(sig, sizeof(sig), "(Landroid/text/Editable;)V");
+        tl_jni_call(w, !strcmp(when, "before") ? "beforeTextChanged" : !strcmp(when, "on") ? "onTextChanged" : "afterTextChanged", sig, arg);
+        if (tl_jni_pending()) tl_jni_clear();
+    }
+}
+static void TV_init(tl_jcall *c)   /* (Context [,attrs [,defStyle]]) */
+{
+    (void)c->args;
+    jobj *al = make("java/util/ArrayList");
+    tl_jni_set_field(c->self, "watchers", "Ljava/util/ArrayList;", vl(al));
+    jobj *e = editable_new(NULL);
+    tl_jni_set_field(c->self, "text", "Landroid/text/Editable;", vl(e));
+    set_bool(c->self, "enabled", true);
+}
+static void TV_setText(tl_jcall *c)    /* (CharSequence [,BufferType]) */
+{
+    jobj *t = c->args[0].l;
+    tv_fire_watchers(c->self, "before");
+    jobj *e = tv_text(c->self);
+    edit *d = edit_of(e);
+    d->b.n = 0; if (d->b.p) d->b.p[0] = 0;
+    if (t) sb_add(&d->b, S(t));
+    tv_fire_watchers(c->self, "on");
+    tv_fire_watchers(c->self, "after");
+    tl_jni_set_field(c->self, "currText", "Ljava/lang/CharSequence;", t ? vl(t) : vl(NULL));
+}
+static void TV_setTextRes(tl_jcall *c) { (void)c; }
+static void TV_getText(tl_jcall *c)    { c->ret = vl(tv_text(c->self)); }
+static void TV_length(tl_jcall *c)     { c->ret = vi((int)edit_of(tv_text(c->self))->b.n); }
+static void TV_append(tl_jcall *c)     { tl_jcall x = *c; jobj *e = tv_text(c->self); jvalue a[1] = { c->args[0] }; x.self = e; x.args = a; Ed_append(&x); }
+static void TV_setHint(tl_jcall *c)    { if (c->args[0].l) set_str(c->self, "hint", S(c->args[0].l)); }
+static void TV_getHint(tl_jcall *c)    { c->ret = tl_jni_get_field(c->self, "hint", "Ljava/lang/String;"); }
+static void TV_setTextColor(tl_jcall *c) { set_int(c->self, "textColor", c->args[0].i); }
+static void TV_getTextColor(tl_jcall *c) { c->ret = vi(get_int(c->self, "textColor") ? get_int(c->self, "textColor") : 0xFF000000); }
+static void TV_setTextSize(tl_jcall *c)  { set_float(c->self, "textSize", c->args[0].f); }
+static void TV_setTextSizeUnit(tl_jcall *c) { set_float(c->self, "textSize", c->args[1].f); }
+static void TV_getTextSize(tl_jcall *c)  { c->ret = vf(get_flt(c->self, "textSize")); }
+static void TV_setGravity(tl_jcall *c)   { set_int(c->self, "gravity", c->args[0].i); }
+static void TV_getGravity(tl_jcall *c)   { c->ret = vi(get_int(c->self, "gravity")); }
+static void TV_setInputType(tl_jcall *c) { set_int(c->self, "inputType", c->args[0].i); }
+static void TV_getInputType(tl_jcall *c) { c->ret = vi(get_int(c->self, "inputType")); }
+static void TV_setImeOptions(tl_jcall *c){ set_int(c->self, "imeOptions", c->args[0].i); }
+static void TV_setMaxLines(tl_jcall *c)  { set_int(c->self, "maxLines", c->args[0].i); }
+static void TV_setLines(tl_jcall *c)     { set_int(c->self, "lines", c->args[0].i); }
+static void TV_setMinLines(tl_jcall *c)  { set_int(c->self, "minLines", c->args[0].i); }
+static void TV_setSingleLine(tl_jcall *c){ set_bool(c->self, "singleLine", c->args[0].z); }
+static void TV_setError(tl_jcall *c)     { if (c->args[0].l) set_str(c->self, "error", S(c->args[0].l)); }
+static void TV_getError(tl_jcall *c)     { c->ret = tl_jni_get_field(c->self, "error", "Ljava/lang/String;"); }
+static void TV_setEnabled(tl_jcall *c)   { set_bool(c->self, "enabled", c->args[0].z); }
+static void TV_isEnabled(tl_jcall *c)    { c->ret = vz(get_int(c->self, "enabled")); }
+static void TV_addWatcher(tl_jcall *c)
+{
+    jobj *l = tl_jni_get_field(c->self, "watchers", "Ljava/util/ArrayList;").l;
+    if (l && c->args[0].l) { jvalue a[1] = { c->args[0] }; tl_jni_call(l, "add", "(Ljava/lang/Object;)Z", a); }
+}
+static void TV_removeWatcher(tl_jcall *c)
+{
+    jobj *l = tl_jni_get_field(c->self, "watchers", "Ljava/util/ArrayList;").l;
+    if (l && c->args[0].l) { jvalue a[1] = { c->args[0] }; tl_jni_call(l, "remove", "(Ljava/lang/Object;)Z", a); }
+}
+static void TV_setSelection(tl_jcall *c) { set_int(c->self, "selStart", c->args[0].i); set_int(c->self, "selEnd", c->args[1].i); }
+static void TV_setSelectionOne(tl_jcall *c){ set_int(c->self, "selStart", c->args[0].i); set_int(c->self, "selEnd", c->args[0].i); }
+static void TV_getSelStart(tl_jcall *c)  { c->ret = vi(get_int(c->self, "selStart")); }
+static void TV_getSelEnd(tl_jcall *c)    { c->ret = vi(get_int(c->self, "selEnd")); }
+static void TV_selectAll(tl_jcall *c)    { set_int(c->self, "selStart", 0); set_int(c->self, "selEnd", (int)edit_of(tv_text(c->self))->b.n); }
+static void TV_setOnEditorAction(tl_jcall *c) { if (c->args[0].l) tl_jni_set_field(c->self, "editorAction", "Ljava/lang/Object;", c->args[0]); }
+static void TV_requestFocus(tl_jcall *c)
+{
+    (void)c;
+    if (tl_cocos_keyboard_hook) tl_cocos_keyboard_hook(1);
+    c->ret = vz(1);
+}
+static void ET_setTextKeep(tl_jcall *c)  { TV_setText(c); }
+
+/* CompoundButton: CheckBox/RadioButton/Switch/ToggleButton */
+static void CB_init(tl_jcall *c) { (void)c; }
+static void CB_setChecked(tl_jcall *c)
+{
+    bool v = c->args[0].z;
+    if (get_int(c->self, "checked") == (int)v) return;
+    set_bool(c->self, "checked", v);
+    jobj *l = tl_jni_get_field(c->self, "onCheckedChange", "Ljava/lang/Object;").l;
+    if (l) { jvalue a[2] = { { .j = 0, .l = c->self }, { .z = v } };
+             tl_jni_call(l, "onCheckedChanged", "(Landroid/widget/CompoundButton;Z)V", a);
+             if (tl_jni_pending()) tl_jni_clear(); }
+}
+static void CB_isChecked(tl_jcall *c) { c->ret = vz(get_int(c->self, "checked")); }
+static void CB_toggle(tl_jcall *c)    { bool v = !get_int(c->self, "checked"); jvalue a[1] = { { .z = v } }; tl_jcall x = *c; x.args = a; CB_setChecked(&x); }
+static void CB_setOnChecked(tl_jcall *c) { if (c->args[0].l) tl_jni_set_field(c->self, "onCheckedChange", "Ljava/lang/Object;", c->args[0]); }
+static void CB_setButtonDrawable(tl_jcall *c) { (void)c; }
+
+/* ProgressBar / SeekBar */
+static void PB_init(tl_jcall *c) { set_int(c->self, "max", 100); }
+static void PB_setProgress(tl_jcall *c) { set_int(c->self, "progress", c->args[0].i);
+    jobj *l = tl_jni_get_field(c->self, "seekListener", "Ljava/lang/Object;").l;
+    if (l) { jvalue a[3] = { { .j = 0, .l = c->self }, { .i = c->args[0].i }, { .z = 0 } };
+             tl_jni_call(l, "onProgressChanged", "(Landroid/widget/SeekBar;IZ)V", a); if (tl_jni_pending()) tl_jni_clear(); } }
+static void PB_getProgress(tl_jcall *c) { c->ret = vi(get_int(c->self, "progress")); }
+static void PB_setMax(tl_jcall *c) { set_int(c->self, "max", c->args[0].i); }
+static void PB_getMax(tl_jcall *c) { c->ret = vi(get_int(c->self, "max") ? get_int(c->self, "max") : 100); }
+static void PB_setIndeterminate(tl_jcall *c) { set_bool(c->self, "indeterminate", c->args[0].z); }
+static void PB_isIndeterminate(tl_jcall *c)  { c->ret = vz(get_int(c->self, "indeterminate")); }
+static void PB_setSecondary(tl_jcall *c)     { set_int(c->self, "secondaryProgress", c->args[0].i); }
+static void PB_getSecondary(tl_jcall *c)     { c->ret = vi(get_int(c->self, "secondaryProgress")); }
+static void SB_setOnSeekBarChange(tl_jcall *c) { if (c->args[0].l) tl_jni_set_field(c->self, "seekListener", "Ljava/lang/Object;", c->args[0]); }
+
+/* ImageView */
+static void IV_init(tl_jcall *c) { (void)c; }
+static void IV_setImageBitmap(tl_jcall *c) { if (c->args[0].l) tl_jni_set_field(c->self, "bitmap", "Landroid/graphics/Bitmap;", c->args[0]); }
+static void IV_setImageResource(tl_jcall *c) { set_int(c->self, "imageRes", c->args[0].i); }
+static void IV_setImageDrawable(tl_jcall *c) { if (c->args[0].l) tl_jni_set_field(c->self, "drawable", "Landroid/graphics/drawable/Drawable;", c->args[0]); }
+static void IV_setImageURI(tl_jcall *c)   { if (c->args[0].l) tl_jni_set_field(c->self, "imageUri", "Landroid/net/Uri;", c->args[0]); }
+static void IV_setScaleType(tl_jcall *c)  { (void)c; }
+static void IV_getDrawable(tl_jcall *c)   { c->ret = tl_jni_get_field(c->self, "drawable", "Landroid/graphics/drawable/Drawable;"); }
+
+/* AdapterView/Spinner/ListView + ArrayAdapter: data-model widgets. The
+ * adapter keeps a real item list; selection listeners fire synchronously
+ * because our widgets have no async event loop of their own. */
+static void AV_init(tl_jcall *c) { (void)c; }
+static void AV_setAdapter(tl_jcall *c) { if (c->args[0].l) tl_jni_set_field(c->self, "adapter", "Ljava/lang/Object;", c->args[0]); }
+static void AV_getAdapter(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "adapter", "Ljava/lang/Object;"); }
+static void AV_setOnItemClick(tl_jcall *c)   { if (c->args[0].l) tl_jni_set_field(c->self, "onItemClick", "Ljava/lang/Object;", c->args[0]); }
+static void AV_setOnItemSelected(tl_jcall *c){ if (c->args[0].l) tl_jni_set_field(c->self, "onItemSelected", "Ljava/lang/Object;", c->args[0]); }
+static void AV_setSelection(tl_jcall *c)
+{
+    set_int(c->self, "selPos", c->args[0].i);
+    jobj *l = tl_jni_get_field(c->self, "onItemSelected", "Ljava/lang/Object;").l;
+    jobj *ad = tl_jni_get_field(c->self, "adapter", "Ljava/lang/Object;").l;
+    jobj *item = NULL;
+    if (ad) { jvalue a[1] = { c->args[0] }; item = tl_jni_call(ad, "getItem", "(I)Ljava/lang/Object;", a).l; }
+    if (l) { jvalue a[4] = { { .j = 0, .l = c->self }, { .j = 0, .l = NULL }, { .i = c->args[0].i }, { .j = c->args[0].i } };
+             tl_jni_call(l, "onItemSelected", "(Landroid/widget/AdapterView;Landroid/view/View;IJ)V", a);
+             if (tl_jni_pending()) tl_jni_clear(); }
+    tl_jni_set_field(c->self, "selItem", "Ljava/lang/Object;", vl(item));
+}
+static void AV_getSelectedItem(tl_jcall *c)         { c->ret = tl_jni_get_field(c->self, "selItem", "Ljava/lang/Object;"); }
+static void AV_getSelectedItemPosition(tl_jcall *c) { c->ret = vi(get_int(c->self, "selPos") ? get_int(c->self, "selPos") : 0); }
+static void AV_getCount(tl_jcall *c)
+{
+    jobj *ad = tl_jni_get_field(c->self, "adapter", "Ljava/lang/Object;").l;
+    jvalue n = ad ? tl_jni_call(ad, "getCount", "()I", NULL) : vi(0);
+    if (tl_jni_pending()) { tl_jni_clear(); n = vi(0); }
+    c->ret = n;
+}
+static void AV_setEmptyView(tl_jcall *c) { (void)c; }
+static void AV_performItemClick(tl_jcall *c) { c->ret = vz(1); }
+
+/* ArrayAdapter(Context, layoutRes[, items[]|List]) */
+static void aa_fill(jobj *src, jobj *items)
+{
+    if (!src) return;
+    if (src->kind == TL_K_OBJ_ARRAY) {
+        for (uint32_t i = 0; i < src->oarr.len; i++) { jvalue a[1] = { { .j = 0, .l = src->oarr.v[i] } }; tl_jni_call(items, "add", "(Ljava/lang/Object;)Z", a); }
+    } else {
+        jvalue n = tl_jni_call(src, "size", "()I", NULL);
+        if (!tl_jni_pending()) for (int i = 0; i < n.i; i++) {
+            jvalue a[1] = { { .i = i } };
+            jvalue it = tl_jni_call(src, "get", "(I)Ljava/lang/Object;", a);
+            jvalue b[1] = { it };
+            tl_jni_call(items, "add", "(Ljava/lang/Object;)Z", b);
+        }
+        if (tl_jni_pending()) tl_jni_clear();
+    }
+}
+static void aa_setup(tl_jcall *c, jobj *src)
+{
+    jobj *items = make("java/util/ArrayList");
+    aa_fill(src, items);
+    tl_jni_set_field(c->self, "items", "Ljava/util/ArrayList;", vl(items));
+    set_int(c->self, "layoutRes", c->args[1].i);
+}
+static void AA_init(tl_jcall *c)   { aa_setup(c, c->args[2].l); }   /* (ctx, res, items) */
+static void AA_init2(tl_jcall *c)  { aa_setup(c, NULL); }           /* (ctx, res) */
+static void AA_getCount(tl_jcall *c)
+{
+    jobj *l = tl_jni_get_field(c->self, "items", "Ljava/util/ArrayList;").l;
+    c->ret = l ? tl_jni_call(l, "size", "()I", NULL) : vi(0);
+}
+static void AA_getItem(tl_jcall *c)
+{
+    jobj *l = tl_jni_get_field(c->self, "items", "Ljava/util/ArrayList;").l;
+    jvalue a[1] = { c->args[0] };
+    c->ret = l ? tl_jni_call(l, "get", "(I)Ljava/lang/Object;", a) : vl(NULL);
+}
+static void AA_getItemId(tl_jcall *c) { c->ret = vj(c->args[0].i); }
+static void AA_getView(tl_jcall *c)
+{
+    /* real enough for layout passers: a TextView carrying the item's text */
+    jobj *v = make("android/widget/TextView");
+    TV_init(&(tl_jcall){ .self = v, .cls = v->cls, .args = NULL });
+    jobj *it = NULL; { tl_jcall x = *c; AA_getItem(&x); it = x.ret.l; }
+    if (it) { jvalue a[1] = { { .j = 0, .l = it } }; tl_jcall x = *c; x.self = v; x.args = a; TV_setText(&x); }
+    c->ret = vl(v);
+}
+static void AA_add(tl_jcall *c)
+{
+    jobj *l = tl_jni_get_field(c->self, "items", "Ljava/util/ArrayList;").l;
+    if (l) { jvalue a[1] = { c->args[0] }; tl_jni_call(l, "add", "(Ljava/lang/Object;)Z", a); }
+}
+static void AA_remove(tl_jcall *c)
+{
+    jobj *l = tl_jni_get_field(c->self, "items", "Ljava/util/ArrayList;").l;
+    if (l) { jvalue a[1] = { c->args[0] }; tl_jni_call(l, "remove", "(Ljava/lang/Object;)Z", a); }
+}
+static void AA_clear(tl_jcall *c)
+{
+    jobj *l = tl_jni_get_field(c->self, "items", "Ljava/util/ArrayList;").l;
+    if (l) tl_jni_call(l, "clear", "()V", NULL);
+}
+static void AA_notifyChanged(tl_jcall *c) { (void)c; }
+static void AA_getPosition(tl_jcall *c)
+{
+    jobj *l = tl_jni_get_field(c->self, "items", "Ljava/util/ArrayList;").l;
+    jvalue a[1] = { c->args[0] };
+    c->ret = l ? tl_jni_call(l, "indexOf", "(Ljava/lang/Object;)I", a) : vi(-1);
+}
 
 /* ---- Settings$System / Settings$Global ---- */
 static void SS_getString(tl_jcall *c)
@@ -18743,7 +19053,118 @@ static const tl_jhle k_more_hle[] = {
     M("android/view/inputmethod/InputMethodManager", "restartInput", "(Ljava/lang/Object;)V", IMM_restartInput),
     M("android/view/inputmethod/InputMethodManager", "showStatusIcon", "(Ljava/lang/Object;Ljava/lang/String;I)V", IMM_showStatusIcon),
     M("android/view/inputmethod/InputMethodManager", "updateSelection", "(Ljava/lang/Object;IIII)V", IMM_updateSelection),
-    M("android/app/PendingIntent", "getActivity", "(Ljava/lang/Object;ILjava/lang/Object;I)Ljava/lang/Object;", PI_getActivity),
+    M("android/text/SpannableStringBuilder", "<init>", "()V", Ed_init),
+    M("android/text/SpannableStringBuilder", "<init>", "(Ljava/lang/Object;)V", Ed_init),
+    M("android/text/SpannableStringBuilder", "length", "()I", Ed_length),
+    M("android/text/SpannableStringBuilder", "charAt", "(I)C", Ed_charAt),
+    M("android/text/SpannableStringBuilder", "toString", "()Ljava/lang/String;", Ed_toString),
+    M("android/text/SpannableStringBuilder", "append", "(Ljava/lang/Object;)Ljava/lang/Object;", Ed_append),
+    M("android/text/SpannableStringBuilder", "append", "(C)Ljava/lang/Object;", Ed_append),
+    M("android/text/SpannableStringBuilder", "insert", "(ILjava/lang/Object;)Ljava/lang/Object;", Ed_insert),
+    M("android/text/SpannableStringBuilder", "insert", "(ILjava/lang/Object;II)Ljava/lang/Object;", Ed_insert),
+    M("android/text/SpannableStringBuilder", "delete", "(II)Ljava/lang/Object;", Ed_delete),
+    M("android/text/SpannableStringBuilder", "replace", "(IILjava/lang/Object;)Ljava/lang/Object;", Ed_replace),
+    M("android/text/SpannableStringBuilder", "replace", "(IILjava/lang/Object;II)Ljava/lang/Object;", Ed_replace),
+    M("android/text/SpannableStringBuilder", "subSequence", "(II)Ljava/lang/Object;", Ed_subSequence),
+    M("android/text/SpannableStringBuilder", "clear", "()V", Ed_clear),
+    M("android/text/SpannableStringBuilder", "getChars", "(II[CI)V", Ed_getChars),
+    M("android/text/SpannableString", "<init>", "(Ljava/lang/Object;)V", SS_init_str),
+    M("android/text/SpannableString", "length", "()I", Ed_length),
+    M("android/text/SpannableString", "charAt", "(I)C", Ed_charAt),
+    M("android/text/SpannableString", "toString", "()Ljava/lang/String;", Ed_toString),
+    M("android/text/SpannableString", "subSequence", "(II)Ljava/lang/Object;", Ed_subSequence),
+    M("android/widget/TextView", "<init>", NULL, TV_init),
+    M("android/widget/TextView", "setText", "(Ljava/lang/Object;)V", TV_setText),
+    M("android/widget/TextView", "setText", "(Ljava/lang/Object;Ljava/lang/Object;)V", TV_setText),
+    M("android/widget/TextView", "setText", "(I)V", TV_setTextRes),
+    M("android/widget/TextView", "getText", "()Ljava/lang/Object;", TV_getText),
+    M("android/widget/TextView", "length", "()I", TV_length),
+    M("android/widget/TextView", "append", "(Ljava/lang/Object;)V", TV_append),
+    M("android/widget/TextView", "setHint", "(Ljava/lang/Object;)V", TV_setHint),
+    M("android/widget/TextView", "setHint", "(I)V", TV_setHint),
+    M("android/widget/TextView", "getHint", "()Ljava/lang/Object;", TV_getHint),
+    M("android/widget/TextView", "setTextColor", "(I)V", TV_setTextColor),
+    M("android/widget/TextView", "getTextColor", "()I", TV_getTextColor),
+    M("android/widget/TextView", "setTextSize", "(F)V", TV_setTextSize),
+    M("android/widget/TextView", "setTextSize", "(IF)V", TV_setTextSizeUnit),
+    M("android/widget/TextView", "getTextSize", "()F", TV_getTextSize),
+    M("android/widget/TextView", "setGravity", "(I)V", TV_setGravity),
+    M("android/widget/TextView", "getGravity", "()I", TV_getGravity),
+    M("android/widget/TextView", "setInputType", "(I)V", TV_setInputType),
+    M("android/widget/TextView", "getInputType", "()I", TV_getInputType),
+    M("android/widget/TextView", "setImeOptions", "(I)V", TV_setImeOptions),
+    M("android/widget/TextView", "setMaxLines", "(I)V", TV_setMaxLines),
+    M("android/widget/TextView", "setLines", "(I)V", TV_setLines),
+    M("android/widget/TextView", "setMinLines", "(I)V", TV_setMinLines),
+    M("android/widget/TextView", "setSingleLine", "(Z)V", TV_setSingleLine),
+    M("android/widget/TextView", "setError", "(Ljava/lang/Object;)V", TV_setError),
+    M("android/widget/TextView", "getError", "()Ljava/lang/Object;", TV_getError),
+    M("android/widget/TextView", "setEnabled", "(Z)V", TV_setEnabled),
+    M("android/widget/TextView", "isEnabled", "()Z", TV_isEnabled),
+    M("android/widget/TextView", "addTextChangedListener", "(Ljava/lang/Object;)V", TV_addWatcher),
+    M("android/widget/TextView", "removeTextChangedListener", "(Ljava/lang/Object;)V", TV_removeWatcher),
+    M("android/widget/TextView", "setOnEditorActionListener", "(Ljava/lang/Object;)V", TV_setOnEditorAction),
+    M("android/widget/TextView", "requestFocus", "()Z", TV_requestFocus),
+    M("android/widget/EditText", "<init>", NULL, TV_init),
+    M("android/widget/EditText", "setSelection", "(II)V", TV_setSelection),
+    M("android/widget/EditText", "setSelection", "(I)V", TV_setSelectionOne),
+    M("android/widget/EditText", "getSelectionStart", "()I", TV_getSelStart),
+    M("android/widget/EditText", "getSelectionEnd", "()I", TV_getSelEnd),
+    M("android/widget/EditText", "selectAll", "()V", TV_selectAll),
+    M("android/widget/EditText", "setText", "(Ljava/lang/Object;Z)V", ET_setTextKeep),
+    M("android/widget/Button", "<init>", NULL, TV_init),
+    M("android/widget/CompoundButton", "<init>", NULL, CB_init),
+    M("android/widget/CompoundButton", "setChecked", "(Z)V", CB_setChecked),
+    M("android/widget/CompoundButton", "isChecked", "()Z", CB_isChecked),
+    M("android/widget/CompoundButton", "toggle", "()V", CB_toggle),
+    M("android/widget/CompoundButton", "setOnCheckedChangeListener", "(Ljava/lang/Object;)V", CB_setOnChecked),
+    M("android/widget/CompoundButton", "setButtonDrawable", "(Ljava/lang/Object;)V", CB_setButtonDrawable),
+    M("android/widget/CheckBox", "<init>", NULL, CB_init),
+    M("android/widget/RadioButton", "<init>", NULL, CB_init),
+    M("android/widget/Switch", "<init>", NULL, CB_init),
+    M("android/widget/ToggleButton", "<init>", NULL, CB_init),
+    M("android/widget/ProgressBar", "<init>", NULL, PB_init),
+    M("android/widget/ProgressBar", "setProgress", "(I)V", PB_setProgress),
+    M("android/widget/ProgressBar", "getProgress", "()I", PB_getProgress),
+    M("android/widget/ProgressBar", "setMax", "(I)V", PB_setMax),
+    M("android/widget/ProgressBar", "getMax", "()I", PB_getMax),
+    M("android/widget/ProgressBar", "setIndeterminate", "(Z)V", PB_setIndeterminate),
+    M("android/widget/ProgressBar", "isIndeterminate", "()Z", PB_isIndeterminate),
+    M("android/widget/ProgressBar", "setSecondaryProgress", "(I)V", PB_setSecondary),
+    M("android/widget/ProgressBar", "getSecondaryProgress", "()I", PB_getSecondary),
+    M("android/widget/SeekBar", "<init>", NULL, PB_init),
+    M("android/widget/SeekBar", "setOnSeekBarChangeListener", "(Ljava/lang/Object;)V", SB_setOnSeekBarChange),
+    M("android/widget/ImageView", "<init>", NULL, IV_init),
+    M("android/widget/ImageView", "setImageBitmap", "(Ljava/lang/Object;)V", IV_setImageBitmap),
+    M("android/widget/ImageView", "setImageResource", "(I)V", IV_setImageResource),
+    M("android/widget/ImageView", "setImageDrawable", "(Ljava/lang/Object;)V", IV_setImageDrawable),
+    M("android/widget/ImageView", "setImageURI", "(Ljava/lang/Object;)V", IV_setImageURI),
+    M("android/widget/ImageView", "setScaleType", "(Ljava/lang/Object;)V", IV_setScaleType),
+    M("android/widget/ImageView", "getDrawable", "()Ljava/lang/Object;", IV_getDrawable),
+    M("android/widget/AdapterView", "setAdapter", "(Ljava/lang/Object;)V", AV_setAdapter),
+    M("android/widget/AdapterView", "getAdapter", "()Ljava/lang/Object;", AV_getAdapter),
+    M("android/widget/AdapterView", "setOnItemClickListener", "(Ljava/lang/Object;)V", AV_setOnItemClick),
+    M("android/widget/AdapterView", "setOnItemSelectedListener", "(Ljava/lang/Object;)V", AV_setOnItemSelected),
+    M("android/widget/AdapterView", "setSelection", "(I)V", AV_setSelection),
+    M("android/widget/AdapterView", "getSelectedItem", "()Ljava/lang/Object;", AV_getSelectedItem),
+    M("android/widget/AdapterView", "getSelectedItemPosition", "()I", AV_getSelectedItemPosition),
+    M("android/widget/AdapterView", "getCount", "()I", AV_getCount),
+    M("android/widget/AdapterView", "setEmptyView", "(Ljava/lang/Object;)V", AV_setEmptyView),
+    M("android/widget/AdapterView", "performItemClick", "(Ljava/lang/Object;IJ)Z", AV_performItemClick),
+    M("android/widget/ListView", "<init>", NULL, AV_init),
+    M("android/widget/GridView", "<init>", NULL, AV_init),
+    M("android/widget/Spinner", "<init>", NULL, AV_init),
+    M("android/widget/ArrayAdapter", "<init>", "(Ljava/lang/Object;ILjava/lang/Object;)V", AA_init),
+    M("android/widget/ArrayAdapter", "<init>", "(Ljava/lang/Object;I)V", AA_init2),
+    M("android/widget/ArrayAdapter", "getCount", "()I", AA_getCount),
+    M("android/widget/ArrayAdapter", "getItem", "(I)Ljava/lang/Object;", AA_getItem),
+    M("android/widget/ArrayAdapter", "getItemId", "(I)J", AA_getItemId),
+    M("android/widget/ArrayAdapter", "getView", "(ILjava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", AA_getView),
+    M("android/widget/ArrayAdapter", "add", "(Ljava/lang/Object;)V", AA_add),
+    M("android/widget/ArrayAdapter", "remove", "(Ljava/lang/Object;)V", AA_remove),
+    M("android/widget/ArrayAdapter", "clear", "()V", AA_clear),
+    M("android/widget/ArrayAdapter", "notifyDataSetChanged", "()V", AA_notifyChanged),
+    M("android/widget/ArrayAdapter", "getPosition", "(Ljava/lang/Object;)I", AA_getPosition),
     M("android/app/PendingIntent", "getActivity", "(Ljava/lang/Object;ILjava/lang/Object;ILjava/lang/Object;)Ljava/lang/Object;", PI_getActivity),
     M("android/app/PendingIntent", "getBroadcast", "(Ljava/lang/Object;ILjava/lang/Object;I)Ljava/lang/Object;", PI_getBroadcast),
     M("android/app/PendingIntent", "getService", "(Ljava/lang/Object;ILjava/lang/Object;I)Ljava/lang/Object;", PI_getService),
@@ -20078,6 +20499,33 @@ static const struct { const char *name, *super; } k_more_classes[] = {
     { "android/widget/AbsoluteLayout", "android/view/ViewGroup" },
     { "android/widget/ScrollView", "android/widget/FrameLayout" },
     { "android/widget/HorizontalScrollView", "android/widget/FrameLayout" },
+    { "android/text/Editable", "java/lang/Object" },
+    { "android/text/Spannable", "java/lang/Object" },
+    { "android/text/SpannableString", "java/lang/Object" },
+    { "android/text/SpannableStringBuilder", "java/lang/Object" },
+    { "android/text/TextWatcher", "java/lang/Object" },
+    { "android/widget/TextView", "android/view/View" },
+    { "android/widget/EditText", "android/widget/TextView" },
+    { "android/widget/Button", "android/widget/TextView" },
+    { "android/widget/CompoundButton", "android/widget/Button" },
+    { "android/widget/CheckBox", "android/widget/CompoundButton" },
+    { "android/widget/RadioButton", "android/widget/CompoundButton" },
+    { "android/widget/Switch", "android/widget/CompoundButton" },
+    { "android/widget/ToggleButton", "android/widget/CompoundButton" },
+    { "android/widget/ProgressBar", "android/view/View" },
+    { "android/widget/AbsSeekBar", "android/widget/ProgressBar" },
+    { "android/widget/SeekBar", "android/widget/AbsSeekBar" },
+    { "android/widget/RatingBar", "android/widget/AbsSeekBar" },
+    { "android/widget/ImageView", "android/view/View" },
+    { "android/widget/AdapterView", "android/view/ViewGroup" },
+    { "android/widget/AbsListView", "android/widget/AdapterView" },
+    { "android/widget/ListView", "android/widget/AbsListView" },
+    { "android/widget/GridView", "android/widget/AbsListView" },
+    { "android/widget/AbsSpinner", "android/widget/AdapterView" },
+    { "android/widget/Spinner", "android/widget/AbsSpinner" },
+    { "android/widget/BaseAdapter", "java/lang/Object" },
+    { "android/widget/ArrayAdapter", "android/widget/BaseAdapter" },
+    { "android/widget/ImageButton", "android/widget/ImageView" },
     { "android/view/ViewGroup$LayoutParams", "java/lang/Object" },
     { "android/view/ViewGroup$MarginLayoutParams", "android/view/ViewGroup$LayoutParams" },
     { "android/view/MotionEvent", "java/lang/Object" },
