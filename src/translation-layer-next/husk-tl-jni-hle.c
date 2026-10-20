@@ -165,10 +165,19 @@ static void Context_getSystemService(tl_jcall *c)
         { "wifi", "android/net/wifi/WifiManager" }, { "media_router", "android/media/MediaRouter" },
         { "activity", "android/app/ActivityManager" }, { "layout_inflater", "android/view/LayoutInflater" },
         { "accessibility", "android/view/accessibility/AccessibilityManager" }, { "uimode", "android/app/UiModeManager" },
+        { "notification", "android/app/NotificationManager" }, { "alarm", "android/app/AlarmManager" },
+        { "keyguard", "android/app/KeyguardManager" }, { "storage", "android/os/storage/StorageManager" },
+        { "batterymanager", "android/os/BatteryManager" }, { "bluetooth", "android/bluetooth/BluetoothManager" },
+        { "media_session", "android/media/session/MediaSessionManager" }, { "appops", "android/app/AppOpsManager" },
+        { "download", "android/app/DownloadManager" }, { "account", "android/accounts/AccountManager" },
+        { "shortcut", "android/content/pm/ShortcutManager" }, { "usagestats", "android/app/usage/UsageStatsManager" },
+        { "jobscheduler", "android/app/job/JobScheduler" }, { "device_policy", "android/app/admin/DevicePolicyManager" },
+        { "search", "android/app/SearchManager" }, { "hardware_properties", "android/os/HardwarePropertiesManager" },
+        { "appwidget", "android/appwidget/AppWidgetManager" }, { "wallpaper", "android/app/WallpaperManager" },
     };
     for (size_t i = 0; i < sizeof(svc) / sizeof(svc[0]); i++) {
         if (!strcmp(n, svc[i].name)) {
-            static jobj *cache[32];
+            static jobj *cache[64];
             if (!cache[i]) cache[i] = make(svc[i].cls);
             if (!strcmp(n, "window")) { c->ret = vl(H.wm); return; }
             c->ret = vl(cache[i]);

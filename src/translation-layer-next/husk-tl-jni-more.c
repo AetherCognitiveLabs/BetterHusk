@@ -10734,6 +10734,186 @@ static void ImgInfo_wh(tl_jcall *c)
     c->ret = vl(p);
 }
 
+/* ============================================================== more services
+ * getSystemService now hands out objects for these; give them answers that
+ * keep an app alive: "allowed", "not locked", "empty list".
+ */
+
+static void KG_isKeyguardLocked(tl_jcall *c) { c->ret = vz(false); }
+static void KG_isDeviceLocked(tl_jcall *c) { c->ret = vz(false); }
+static void KG_inKeyguardRestrictedInputMode(tl_jcall *c) { c->ret = vz(false); }
+static void KG_isDeviceSecure(tl_jcall *c) { c->ret = vz(false); }
+static void KG_requestDismissKeyguard(tl_jcall *c) { (void)c; }
+
+static void Alarm_set(tl_jcall *c) { (void)c; }
+static void Alarm_getNextAlarmClock(tl_jcall *c) { c->ret = vl(NULL); }
+static void Alarm_canScheduleExactAlarms(tl_jcall *c) { c->ret = vz(true); }
+static void Alarm_setAlarmClock(tl_jcall *c) { (void)c; }
+static void Alarm_cancel(tl_jcall *c) { (void)c; }
+static void Alarm_cancelPI(tl_jcall *c) { (void)c; }
+static void Alarm_setTime(tl_jcall *c) { (void)c; }
+static void Alarm_setTimeZone(tl_jcall *c) { (void)c; }
+
+static void NM2_notify(tl_jcall *c) { (void)c; }
+static void NM2_cancel(tl_jcall *c) { (void)c; }
+static void NM2_cancelAll(tl_jcall *c) { (void)c; }
+static void NM2_areNotificationsEnabled(tl_jcall *c) { c->ret = vz(true); }
+static void NM2_getNotificationChannel(tl_jcall *c) { c->ret = vl(NULL); }
+static void NM2_createNotificationChannel(tl_jcall *c) { (void)c; }
+static void NM2_createNotificationChannels(tl_jcall *c) { (void)c; }
+static void NM2_createNotificationChannelGroup(tl_jcall *c) { (void)c; }
+static void NM2_getImportance(tl_jcall *c) { c->ret = vi(3); }
+static void NM2_areBubblesAllowed(tl_jcall *c) { c->ret = vz(false); }
+static void NM2_areBubblesEnabled(tl_jcall *c) { c->ret = vz(false); }
+static void NM2_isNotificationPolicyAccessGranted(tl_jcall *c) { c->ret = vz(false); }
+static void NM2_getActiveNotifications(tl_jcall *c)
+{
+    c->ret = vl(tl_jni_new_obj_array(C("android/service/notification/StatusBarNotification"), 0));
+}
+static void NM2_getNotificationListenerAccessGranted(tl_jcall *c) { c->ret = vz(false); }
+static void NM2_shouldShowSilent(tl_jcall *c) { c->ret = vz(false); }
+static void NM2_matchesCallFilter(tl_jcall *c) { c->ret = vz(true); }
+static void NM2_canNotifyAsPackage(tl_jcall *c) { c->ret = vz(true); }
+static void NM2_getCurrentInterruptionFilter(tl_jcall *c) { c->ret = vi(1); }
+static void NM2_setInterruptionFilter(tl_jcall *c) { (void)c; }
+static void NM2_deleteNotificationChannel(tl_jcall *c) { (void)c; }
+static void NM2_getNotificationChannelGroup(tl_jcall *c) { c->ret = vl(NULL); }
+
+static void AppOps_checkOp(tl_jcall *c) { c->ret = vi(0); }
+static void AppOps_checkOpNoThrow(tl_jcall *c) { c->ret = vi(0); }
+static void AppOps_unsafeCheckOp(tl_jcall *c) { c->ret = vi(0); }
+static void AppOps_unsafeCheckOpNoThrow(tl_jcall *c) { c->ret = vi(0); }
+static void AppOps_noteOp(tl_jcall *c) { c->ret = vi(0); }
+static void AppOps_noteOpNoThrow(tl_jcall *c) { c->ret = vi(0); }
+static void AppOps_checkPackage(tl_jcall *c) { (void)c; }
+static void AppOps_startWatchingMode(tl_jcall *c) { (void)c; }
+static void AppOps_stopWatchingMode(tl_jcall *c) { (void)c; }
+static void AppOps_checkPermission(tl_jcall *c) { c->ret = vi(0); }
+
+static void BM_getIntProperty(tl_jcall *c)
+{
+    switch (c->args[0].i) {
+    case 1: c->ret = vi(tl_more_battery_state()); break;          /* BATTERY_PROPERTY_STATUS */
+    case 4: c->ret = vi(tl_more_battery_pct()); break;            /* BATTERY_PROPERTY_CAPACITY */
+    default: c->ret = vi(0); break;
+    }
+}
+
+static void JobScheduler_schedule(tl_jcall *c) { c->ret = vi(1); }
+static void JobScheduler_cancel(tl_jcall *c) { (void)c; }
+static void JobScheduler_cancelAll(tl_jcall *c) { (void)c; }
+static void JobScheduler_getAllPendingJobs(tl_jcall *c) { c->ret = vl(make("java/util/ArrayList")); }
+static void JobScheduler_getPendingJob(tl_jcall *c) { c->ret = vl(NULL); }
+static void JobScheduler_enqueue(tl_jcall *c) { c->ret = vi(1); }
+
+static void BTMan_getAdapter(tl_jcall *c) { c->ret = vl(NULL); }
+
+static void AcctMan_getAccounts(tl_jcall *c)
+{
+    c->ret = vl(tl_jni_new_obj_array(C("android/accounts/Account"), 0));
+}
+static void AcctMan_getAccountsByType(tl_jcall *c) { AcctMan_getAccounts(c); }
+static void AcctMan_getAccountsByTypeAndFeatures(tl_jcall *c)
+{
+    jobj *cb = c->args[2].l;
+    if (cb) {
+        jvalue v = vl(tl_jni_new_obj_array(C("android/accounts/Account"), 0));
+        tl_jni_call(cb, "run", "(Landroid/accounts/AccountManagerFuture;)V", &v);
+    }
+}
+static void AcctMan_addAccountExplicitly(tl_jcall *c) { c->ret = vz(false); }
+static void AcctMan_removeAccount(tl_jcall *c) { c->ret = vl(NULL); }
+static void AcctMan_getAuthToken(tl_jcall *c) { c->ret = vl(NULL); }
+static void AcctMan_blockingGetAuthToken(tl_jcall *c) { c->ret = vl(NULL); }
+static void AcctMan_peekAuthToken(tl_jcall *c) { c->ret = vl(NULL); }
+static void AcctMan_getUserData(tl_jcall *c) { c->ret = vl(NULL); }
+static void AcctMan_getPassword(tl_jcall *c) { c->ret = vl(NULL); }
+static void AcctMan_hasFeatures(tl_jcall *c)
+{
+    jobj *cb = c->args[2].l;
+    if (cb) { jvalue v = vz(false); tl_jni_call(cb, "run", "(Landroid/accounts/AccountManagerFuture;)V", &v); }
+}
+
+static void Shortcut_getMaxShortcutCountPerActivity(tl_jcall *c) { c->ret = vi(5); }
+static void Shortcut_isRateLimitingActive(tl_jcall *c) { c->ret = vz(false); }
+static void Shortcut_setDynamicShortcuts(tl_jcall *c) { (void)c; }
+static void Shortcut_getDynamicShortcuts(tl_jcall *c) { c->ret = vl(make("java/util/ArrayList")); }
+static void Shortcut_getPinnedShortcuts(tl_jcall *c) { c->ret = vl(make("java/util/ArrayList")); }
+static void Shortcut_removeDynamicShortcuts(tl_jcall *c) { (void)c; }
+static void Shortcut_removeAllDynamicShortcuts(tl_jcall *c) { (void)c; }
+static void Shortcut_addDynamicShortcuts(tl_jcall *c) { c->ret = vz(true); }
+static void Shortcut_updateShortcuts(tl_jcall *c) { c->ret = vz(true); }
+static void Shortcut_reportShortcutUsed(tl_jcall *c) { (void)c; }
+static void Shortcut_isRequestPinShortcutSupported(tl_jcall *c) { c->ret = vz(false); }
+static void Shortcut_requestPinShortcut(tl_jcall *c) { c->ret = vz(false); }
+static void Shortcut_disableShortcuts(tl_jcall *c) { (void)c; }
+static void Shortcut_enableShortcuts(tl_jcall *c) { (void)c; }
+
+static void Search_getSearchableInfo(tl_jcall *c) { c->ret = vl(NULL); }
+static void Search_getSearchablesInGlobalSearch(tl_jcall *c) { c->ret = vl(make("java/util/ArrayList")); }
+static void Search_getGlobalSearchActivity(tl_jcall *c) { c->ret = vl(make("android/content/ComponentName")); }
+static void Search_triggerSearch(tl_jcall *c) { (void)c; }
+static void Search_stopSearch(tl_jcall *c) { (void)c; }
+static void Search_setOnDismissListener(tl_jcall *c) { (void)c; }
+static void Search_setOnCancelListener(tl_jcall *c) { (void)c; }
+
+static void UsageStats_queryUsageStats(tl_jcall *c) { c->ret = vl(make("java/util/ArrayList")); }
+static void UsageStats_queryConfigurations(tl_jcall *c) { c->ret = vl(make("java/util/ArrayList")); }
+static void UsageStats_queryEventStats(tl_jcall *c) { c->ret = vl(make("java/util/ArrayList")); }
+static void UsageStats_queryEvents(tl_jcall *c) { c->ret = vl(make("android/app/usage/UsageEvents")); }
+static void UsageStats_isAppInactive(tl_jcall *c) { c->ret = vz(false); }
+static void UsageStats_getAppStandbyBucket(tl_jcall *c) { c->ret = vi(10); }
+static void UsageStats_queryAndAggregateUsageStats(tl_jcall *c) { c->ret = vl(make("java/util/HashMap")); }
+
+static void HwProps_getDeviceTemperatures(tl_jcall *c)
+{
+    c->ret = vl(tl_jni_new_prim_array('F', 0));
+}
+static void HwProps_getCpuUsages(tl_jcall *c)
+{
+    c->ret = vl(tl_jni_new_obj_array(C("android/os/HardwarePropertiesManager$CpuUsage"), 0));
+}
+static void HwProps_getFanSpeeds(tl_jcall *c) { c->ret = vl(tl_jni_new_prim_array('F', 0)); }
+
+static void DPM_isDeviceOwner(tl_jcall *c) { c->ret = vz(false); }
+static void DPM_isProfileOwner(tl_jcall *c) { c->ret = vz(false); }
+static void DPM_isAdminActive(tl_jcall *c) { c->ret = vz(false); }
+static void DPM_getDeviceOwnerComponent(tl_jcall *c) { c->ret = vl(NULL); }
+static void DPM_isDeviceManaged(tl_jcall *c) { c->ret = vz(false); }
+
+static void WallMan_getDesiredMinimumWidth(tl_jcall *c) { c->ret = vi(0); }
+static void WallMan_getDesiredMinimumHeight(tl_jcall *c) { c->ret = vi(0); }
+static void WallMan_getDrawable(tl_jcall *c) { c->ret = vl(NULL); }
+static void WallMan_peekDrawable(tl_jcall *c) { c->ret = vl(NULL); }
+static void WallMan_setBitmap(tl_jcall *c) { (void)c; }
+static void WallMan_getWallpaperInfo(tl_jcall *c) { c->ret = vl(NULL); }
+
+static void StorageMan_getStorageVolumes(tl_jcall *c) { c->ret = vl(make("java/util/ArrayList")); }
+static void StorageMan_getPrimaryStorageVolume(tl_jcall *c) { c->ret = vl(make("android/os/storage/StorageVolume")); }
+static void StorageMan_isAllocationSupported(tl_jcall *c) { c->ret = vz(false); }
+static void StorageMan_getAllocatableBytes(tl_jcall *c) { c->ret = vj(0); }
+
+static void MSMan_getActiveSessions(tl_jcall *c) { c->ret = vl(make("java/util/ArrayList")); }
+static void MSMan_addOnActiveSessionsChangedListener(tl_jcall *c) { (void)c; }
+static void MSMan_removeOnActiveSessionsChangedListener(tl_jcall *c) { (void)c; }
+static void MSMan_isTrustedForMediaControl(tl_jcall *c) { c->ret = vz(false); }
+
+static void DMan_enqueue(tl_jcall *c)
+{
+    static int next_id = 1;
+    c->ret = vj(next_id++);
+}
+static void DMan_query(tl_jcall *c) { c->ret = vl(make("android/database/MatrixCursor")); }
+static void DMan_remove(tl_jcall *c) { c->ret = vi(0); }
+static void DMan_getUriForDownloadedFile(tl_jcall *c) { c->ret = vl(NULL); }
+static void DMan_addCompletedDownload(tl_jcall *c) { c->ret = vj(-1); }
+static void DMan_getMimeTypeForDownloadedFile(tl_jcall *c) { c->ret = vl(NULL); }
+
+static void AWMan_getAppWidgetsFor(tl_jcall *c) { c->ret = vl(make("java/util/ArrayList")); }
+static void AWMan_getInstalledProviders(tl_jcall *c) { c->ret = vl(make("java/util/ArrayList")); }
+static void AWMan_requestPinAppWidget(tl_jcall *c) { c->ret = vz(false); }
+static void AWMan_isRequestPinAppWidgetSupported(tl_jcall *c) { c->ret = vz(false); }
+
 /* ============================================================== registration
  * Entries whose signature is NULL act as wildcards (hle_find matches any
  * overload); entries with real signatures are needed where the impl reads
@@ -15952,6 +16132,150 @@ static const tl_jhle k_more_hle[] = {
     M("android/webkit/CookieManager", "hasCookies", NULL, CookieMan_hasCookies),
     M("android/webkit/CookieManager", "setAcceptThirdPartyCookies", NULL, CookieMan_setAcceptThirdPartyCookies),
     M("android/webkit/CookieManager", "acceptThirdPartyCookies", NULL, CookieMan_acceptThirdPartyCookies),
+    M("android/app/KeyguardManager", "isKeyguardLocked", NULL, KG_isKeyguardLocked),
+    M("android/app/KeyguardManager", "isDeviceLocked", NULL, KG_isDeviceLocked),
+    M("android/app/KeyguardManager", "inKeyguardRestrictedInputMode", NULL, KG_inKeyguardRestrictedInputMode),
+    M("android/app/KeyguardManager", "isDeviceSecure", NULL, KG_isDeviceSecure),
+    M("android/app/KeyguardManager", "requestDismissKeyguard", NULL, KG_requestDismissKeyguard),
+
+    M("android/app/AlarmManager", "set", NULL, Alarm_set),
+    M("android/app/AlarmManager", "setExact", NULL, Alarm_set),
+    M("android/app/AlarmManager", "setExactAndAllowWhileIdle", NULL, Alarm_set),
+    M("android/app/AlarmManager", "setRepeating", NULL, Alarm_set),
+    M("android/app/AlarmManager", "setInexactRepeating", NULL, Alarm_set),
+    M("android/app/AlarmManager", "setWindow", NULL, Alarm_set),
+    M("android/app/AlarmManager", "setAndAllowWhileIdle", NULL, Alarm_set),
+    M("android/app/AlarmManager", "getNextAlarmClock", NULL, Alarm_getNextAlarmClock),
+    M("android/app/AlarmManager", "canScheduleExactAlarms", NULL, Alarm_canScheduleExactAlarms),
+    M("android/app/AlarmManager", "setAlarmClock", NULL, Alarm_setAlarmClock),
+    M("android/app/AlarmManager", "cancel", NULL, Alarm_cancel),
+    M("android/app/AlarmManager", "setTime", NULL, Alarm_setTime),
+    M("android/app/AlarmManager", "setTimeZone", NULL, Alarm_setTimeZone),
+
+    M("android/app/NotificationManager", "notify", NULL, NM2_notify),
+    M("android/app/NotificationManager", "cancel", NULL, NM2_cancel),
+    M("android/app/NotificationManager", "cancelAll", NULL, NM2_cancelAll),
+    M("android/app/NotificationManager", "areNotificationsEnabled", NULL, NM2_areNotificationsEnabled),
+    M("android/app/NotificationManager", "getNotificationChannel", NULL, NM2_getNotificationChannel),
+    M("android/app/NotificationManager", "getNotificationChannelGroup", NULL, NM2_getNotificationChannelGroup),
+    M("android/app/NotificationManager", "createNotificationChannel", NULL, NM2_createNotificationChannel),
+    M("android/app/NotificationManager", "createNotificationChannels", NULL, NM2_createNotificationChannels),
+    M("android/app/NotificationManager", "createNotificationChannelGroup", NULL, NM2_createNotificationChannelGroup),
+    M("android/app/NotificationManager", "deleteNotificationChannel", NULL, NM2_deleteNotificationChannel),
+    M("android/app/NotificationManager", "getImportance", NULL, NM2_getImportance),
+    M("android/app/NotificationManager", "areBubblesAllowed", NULL, NM2_areBubblesAllowed),
+    M("android/app/NotificationManager", "areBubblesEnabled", NULL, NM2_areBubblesEnabled),
+    M("android/app/NotificationManager", "isNotificationPolicyAccessGranted", NULL, NM2_isNotificationPolicyAccessGranted),
+    M("android/app/NotificationManager", "isNotificationListenerAccessGranted", NULL, NM2_getNotificationListenerAccessGranted),
+    M("android/app/NotificationManager", "getActiveNotifications", NULL, NM2_getActiveNotifications),
+    M("android/app/NotificationManager", "matchesCallFilter", NULL, NM2_matchesCallFilter),
+    M("android/app/NotificationManager", "canNotifyAsPackage", NULL, NM2_canNotifyAsPackage),
+    M("android/app/NotificationManager", "getCurrentInterruptionFilter", NULL, NM2_getCurrentInterruptionFilter),
+    M("android/app/NotificationManager", "setInterruptionFilter", NULL, NM2_setInterruptionFilter),
+
+    M("android/app/AppOpsManager", "checkOp", NULL, AppOps_checkOp),
+    M("android/app/AppOpsManager", "checkOpNoThrow", NULL, AppOps_checkOpNoThrow),
+    M("android/app/AppOpsManager", "unsafeCheckOp", NULL, AppOps_unsafeCheckOp),
+    M("android/app/AppOpsManager", "unsafeCheckOpNoThrow", NULL, AppOps_unsafeCheckOpNoThrow),
+    M("android/app/AppOpsManager", "noteOp", NULL, AppOps_noteOp),
+    M("android/app/AppOpsManager", "noteOpNoThrow", NULL, AppOps_noteOpNoThrow),
+    M("android/app/AppOpsManager", "checkPackage", NULL, AppOps_checkPackage),
+    M("android/app/AppOpsManager", "checkPermission", NULL, AppOps_checkPermission),
+    M("android/app/AppOpsManager", "startWatchingMode", NULL, AppOps_startWatchingMode),
+    M("android/app/AppOpsManager", "stopWatchingMode", NULL, AppOps_stopWatchingMode),
+
+    M("android/os/BatteryManager", "getIntProperty", "(I)I", BM_getIntProperty),
+
+    M("android/app/job/JobScheduler", "schedule", NULL, JobScheduler_schedule),
+    M("android/app/job/JobScheduler", "cancel", NULL, JobScheduler_cancel),
+    M("android/app/job/JobScheduler", "cancelAll", NULL, JobScheduler_cancelAll),
+    M("android/app/job/JobScheduler", "getAllPendingJobs", NULL, JobScheduler_getAllPendingJobs),
+    M("android/app/job/JobScheduler", "getPendingJob", NULL, JobScheduler_getPendingJob),
+    M("android/app/job/JobScheduler", "enqueue", NULL, JobScheduler_enqueue),
+
+    M("android/bluetooth/BluetoothManager", "getAdapter", NULL, BTMan_getAdapter),
+
+    M("android/accounts/AccountManager", "getAccounts", NULL, AcctMan_getAccounts),
+    M("android/accounts/AccountManager", "getAccountsByType", NULL, AcctMan_getAccountsByType),
+    M("android/accounts/AccountManager", "getAccountsByTypeAndFeatures", "(LLLL)Ljava/lang/Object;", AcctMan_getAccountsByTypeAndFeatures),
+    M("android/accounts/AccountManager", "addAccountExplicitly", NULL, AcctMan_addAccountExplicitly),
+    M("android/accounts/AccountManager", "removeAccount", NULL, AcctMan_removeAccount),
+    M("android/accounts/AccountManager", "getAuthToken", NULL, AcctMan_getAuthToken),
+    M("android/accounts/AccountManager", "blockingGetAuthToken", NULL, AcctMan_blockingGetAuthToken),
+    M("android/accounts/AccountManager", "peekAuthToken", NULL, AcctMan_peekAuthToken),
+    M("android/accounts/AccountManager", "getUserData", NULL, AcctMan_getUserData),
+    M("android/accounts/AccountManager", "getPassword", NULL, AcctMan_getPassword),
+    M("android/accounts/AccountManager", "hasFeatures", "(LLL)Ljava/lang/Object;", AcctMan_hasFeatures),
+
+    M("android/content/pm/ShortcutManager", "getMaxShortcutCountPerActivity", NULL, Shortcut_getMaxShortcutCountPerActivity),
+    M("android/content/pm/ShortcutManager", "isRateLimitingActive", NULL, Shortcut_isRateLimitingActive),
+    M("android/content/pm/ShortcutManager", "setDynamicShortcuts", NULL, Shortcut_setDynamicShortcuts),
+    M("android/content/pm/ShortcutManager", "getDynamicShortcuts", NULL, Shortcut_getDynamicShortcuts),
+    M("android/content/pm/ShortcutManager", "getPinnedShortcuts", NULL, Shortcut_getPinnedShortcuts),
+    M("android/content/pm/ShortcutManager", "removeDynamicShortcuts", NULL, Shortcut_removeDynamicShortcuts),
+    M("android/content/pm/ShortcutManager", "removeAllDynamicShortcuts", NULL, Shortcut_removeAllDynamicShortcuts),
+    M("android/content/pm/ShortcutManager", "addDynamicShortcuts", NULL, Shortcut_addDynamicShortcuts),
+    M("android/content/pm/ShortcutManager", "updateShortcuts", NULL, Shortcut_updateShortcuts),
+    M("android/content/pm/ShortcutManager", "reportShortcutUsed", NULL, Shortcut_reportShortcutUsed),
+    M("android/content/pm/ShortcutManager", "isRequestPinShortcutSupported", NULL, Shortcut_isRequestPinShortcutSupported),
+    M("android/content/pm/ShortcutManager", "requestPinShortcut", NULL, Shortcut_requestPinShortcut),
+    M("android/content/pm/ShortcutManager", "disableShortcuts", NULL, Shortcut_disableShortcuts),
+    M("android/content/pm/ShortcutManager", "enableShortcuts", NULL, Shortcut_enableShortcuts),
+
+    M("android/app/SearchManager", "getSearchableInfo", NULL, Search_getSearchableInfo),
+    M("android/app/SearchManager", "getSearchablesInGlobalSearch", NULL, Search_getSearchablesInGlobalSearch),
+    M("android/app/SearchManager", "getGlobalSearchActivity", NULL, Search_getGlobalSearchActivity),
+    M("android/app/SearchManager", "triggerSearch", NULL, Search_triggerSearch),
+    M("android/app/SearchManager", "stopSearch", NULL, Search_stopSearch),
+    M("android/app/SearchManager", "setOnDismissListener", NULL, Search_setOnDismissListener),
+    M("android/app/SearchManager", "setOnCancelListener", NULL, Search_setOnCancelListener),
+
+    M("android/app/usage/UsageStatsManager", "queryUsageStats", NULL, UsageStats_queryUsageStats),
+    M("android/app/usage/UsageStatsManager", "queryConfigurations", NULL, UsageStats_queryConfigurations),
+    M("android/app/usage/UsageStatsManager", "queryEventStats", NULL, UsageStats_queryEventStats),
+    M("android/app/usage/UsageStatsManager", "queryEvents", NULL, UsageStats_queryEvents),
+    M("android/app/usage/UsageStatsManager", "isAppInactive", NULL, UsageStats_isAppInactive),
+    M("android/app/usage/UsageStatsManager", "getAppStandbyBucket", NULL, UsageStats_getAppStandbyBucket),
+    M("android/app/usage/UsageStatsManager", "queryAndAggregateUsageStats", NULL, UsageStats_queryAndAggregateUsageStats),
+
+    M("android/os/HardwarePropertiesManager", "getDeviceTemperatures", "(I)[F", HwProps_getDeviceTemperatures),
+    M("android/os/HardwarePropertiesManager", "getCpuUsages", NULL, HwProps_getCpuUsages),
+    M("android/os/HardwarePropertiesManager", "getFanSpeeds", NULL, HwProps_getFanSpeeds),
+
+    M("android/app/admin/DevicePolicyManager", "isDeviceOwner", NULL, DPM_isDeviceOwner),
+    M("android/app/admin/DevicePolicyManager", "isProfileOwner", NULL, DPM_isProfileOwner),
+    M("android/app/admin/DevicePolicyManager", "isAdminActive", NULL, DPM_isAdminActive),
+    M("android/app/admin/DevicePolicyManager", "getDeviceOwnerComponent", NULL, DPM_getDeviceOwnerComponent),
+    M("android/app/admin/DevicePolicyManager", "isDeviceManaged", NULL, DPM_isDeviceManaged),
+
+    M("android/app/WallpaperManager", "getDesiredMinimumWidth", NULL, WallMan_getDesiredMinimumWidth),
+    M("android/app/WallpaperManager", "getDesiredMinimumHeight", NULL, WallMan_getDesiredMinimumHeight),
+    M("android/app/WallpaperManager", "getDrawable", NULL, WallMan_getDrawable),
+    M("android/app/WallpaperManager", "peekDrawable", NULL, WallMan_peekDrawable),
+    M("android/app/WallpaperManager", "setBitmap", NULL, WallMan_setBitmap),
+    M("android/app/WallpaperManager", "getWallpaperInfo", NULL, WallMan_getWallpaperInfo),
+
+    M("android/os/storage/StorageManager", "getStorageVolumes", NULL, StorageMan_getStorageVolumes),
+    M("android/os/storage/StorageManager", "getPrimaryStorageVolume", NULL, StorageMan_getPrimaryStorageVolume),
+    M("android/os/storage/StorageManager", "isAllocationSupported", NULL, StorageMan_isAllocationSupported),
+    M("android/os/storage/StorageManager", "getAllocatableBytes", NULL, StorageMan_getAllocatableBytes),
+
+    M("android/media/session/MediaSessionManager", "getActiveSessions", NULL, MSMan_getActiveSessions),
+    M("android/media/session/MediaSessionManager", "addOnActiveSessionsChangedListener", NULL, MSMan_addOnActiveSessionsChangedListener),
+    M("android/media/session/MediaSessionManager", "removeOnActiveSessionsChangedListener", NULL, MSMan_removeOnActiveSessionsChangedListener),
+    M("android/media/session/MediaSessionManager", "isTrustedForMediaControl", NULL, MSMan_isTrustedForMediaControl),
+
+    M("android/app/DownloadManager", "enqueue", NULL, DMan_enqueue),
+    M("android/app/DownloadManager", "query", NULL, DMan_query),
+    M("android/app/DownloadManager", "remove", NULL, DMan_remove),
+    M("android/app/DownloadManager", "getUriForDownloadedFile", NULL, DMan_getUriForDownloadedFile),
+    M("android/app/DownloadManager", "addCompletedDownload", NULL, DMan_addCompletedDownload),
+    M("android/app/DownloadManager", "getMimeTypeForDownloadedFile", NULL, DMan_getMimeTypeForDownloadedFile),
+
+    M("android/appwidget/AppWidgetManager", "getAppWidgetsFor", NULL, AWMan_getAppWidgetsFor),
+    M("android/appwidget/AppWidgetManager", "getInstalledProviders", NULL, AWMan_getInstalledProviders),
+    M("android/appwidget/AppWidgetManager", "requestPinAppWidget", NULL, AWMan_requestPinAppWidget),
+    M("android/appwidget/AppWidgetManager", "isRequestPinAppWidgetSupported", NULL, AWMan_isRequestPinAppWidgetSupported),
     { NULL, NULL, NULL, NULL }
 };
 
@@ -16272,6 +16596,28 @@ static const struct { const char *name, *super; } k_more_classes[] = {
     { "android/webkit/WebView", "android/widget/AbsoluteLayout" },
     { "android/webkit/WebSettings", "java/lang/Object" },
     { "android/webkit/CookieManager", "java/lang/Object" },
+    { "android/app/KeyguardManager", "java/lang/Object" },
+    { "android/app/AlarmManager", "java/lang/Object" },
+    { "android/app/AppOpsManager", "java/lang/Object" },
+    { "android/app/job/JobScheduler", "java/lang/Object" },
+    { "android/bluetooth/BluetoothManager", "java/lang/Object" },
+    { "android/accounts/AccountManager", "java/lang/Object" },
+    { "android/accounts/Account", "java/lang/Object" },
+    { "android/content/pm/ShortcutManager", "java/lang/Object" },
+    { "android/app/SearchManager", "java/lang/Object" },
+    { "android/app/usage/UsageStatsManager", "java/lang/Object" },
+    { "android/app/usage/UsageEvents", "java/lang/Object" },
+    { "android/os/HardwarePropertiesManager", "java/lang/Object" },
+    { "android/os/HardwarePropertiesManager$CpuUsage", "java/lang/Object" },
+    { "android/app/admin/DevicePolicyManager", "java/lang/Object" },
+    { "android/app/WallpaperManager", "java/lang/Object" },
+    { "android/os/storage/StorageManager", "java/lang/Object" },
+    { "android/os/storage/StorageVolume", "java/lang/Object" },
+    { "android/media/session/MediaSessionManager", "java/lang/Object" },
+    { "android/app/DownloadManager", "java/lang/Object" },
+    { "android/appwidget/AppWidgetManager", "java/lang/Object" },
+    { "android/database/MatrixCursor", "java/lang/Object" },
+    { "android/service/notification/StatusBarNotification", "java/lang/Object" },
 };
 
 void tl_more_install(void)
