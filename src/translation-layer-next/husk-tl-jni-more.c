@@ -12383,6 +12383,264 @@ static void JW_flush(tl_jcall *c)
 }
 static void JW_close(tl_jcall *c)       { JW_flush(c); }
 
+/* ---- java.util.zip: real zlib inflate/deflate ----
+ * OkHttp transparently gzips; APK assets and bundled config are deflate.
+ * Every networking library dies without InflaterInputStream. */
+#include <zlib.h>
+
+typedef struct {
+    jobj *in;
+    z_stream zs;
+    bool inited, eof, finished;
+    uint8_t ibuf[8192];
+} zin;
+static zin *zin_of(jobj *o) { if (!o->native) o->native = calloc(1, sizeof(zin)); return o->native; }
+
+static int zin_pull(zin *z)   /* returns bytes available in zs.avail_in, or -1 on upstream EOF */
+{
+    if (z->zs.avail_in == 0 && !z->eof) {
+        jobj *arr = tl_jni_new_prim_array('B', sizeof(z->ibuf));
+        jvalue a[3] = { { .j = 0, .l = arr }, { .i = 0 }, { .i = sizeof(z->ibuf) } };
+        jvalue n = tl_jni_call(z->in, "read", "([BII)I", a);
+        if (n.i <= 0) { z->eof = true; return -1; }
+        memcpy(z->ibuf, arr->arr.data, (size_t)n.i);
+        z->zs.next_in = z->ibuf; z->zs.avail_in = (uInt)n.i;
+    }
+    return (int)z->zs.avail_in;
+}
+static void ZIS_init(tl_jcall *c, int wbits)
+{
+    zin *z = zin_of(c->self);
+    z->in = tl_jni_ref(c->args[0].l);
+    memset(&z->zs, 0, sizeof(z->zs));
+    if (inflateInit2(&z->zs, wbits) != Z_OK) { tl_jni_throw("java/io/IOException", "zlib init failed"); return; }
+    z->inited = true;
+    set_obj(c->self, "in", "Ljava/io/InputStream;", z->in);
+}
+static void IIS_init(tl_jcall *c)    { ZIS_init(c, MAX_WBITS); }            /* zlib-framed, like new Inflater() */
+static void GIS_init(tl_jcall *c)    { ZIS_init(c, MAX_WBITS + 16); }       /* gzip */
+static int zis_read(zin *z, uint8_t *out, int len)
+{
+    if (!z->inited) return -1;
+    z->zs.next_out = out; z->zs.avail_out = (uInt)len;
+    for (;;) {
+        int rc = inflate(&z->zs, Z_NO_FLUSH);
+        if (rc == Z_STREAM_END) { z->finished = true; return (int)(len - z->zs.avail_out) ?: -1; }
+        if (rc != Z_OK && rc != Z_BUF_ERROR) return -2;
+        if (z->zs.avail_out == 0) return len;
+        if (zin_pull(z) < 0) {
+            int got = len - (int)z->zs.avail_out;
+            return got ? got : -1;
+        }
+    }
+}
+static void IIS_read0(tl_jcall *c)
+{
+    uint8_t b; int n = zis_read(zin_of(c->self), &b, 1);
+    if (n == -2) { tl_jni_throw("java/util/zip/ZipException", "bad deflate data"); c->ret = vi(-1); return; }
+    c->ret = vi(n < 0 ? -1 : b);
+}
+static void IIS_read_arr(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (!a || a->kind != TL_K_PRIM_ARRAY) { c->ret = vi(-1); return; }
+    int n = zis_read(zin_of(c->self), a->arr.data, (int)a->arr.len);
+    if (n == -2) { tl_jni_throw("java/util/zip/ZipException", "bad deflate data"); c->ret = vi(-1); return; }
+    c->ret = vi(n);
+}
+static void IIS_read_range(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (!a || a->kind != TL_K_PRIM_ARRAY) { c->ret = vi(-1); return; }
+    int n = zis_read(zin_of(c->self), (uint8_t *)a->arr.data + c->args[1].i, c->args[2].i);
+    if (n == -2) { tl_jni_throw("java/util/zip/ZipException", "bad deflate data"); c->ret = vi(-1); return; }
+    c->ret = vi(n);
+}
+static void IIS_close(tl_jcall *c)
+{
+    zin *z = zin_of(c->self);
+    if (z->inited) { inflateEnd(&z->zs); z->inited = false; }
+    if (z->in) tl_jni_call(z->in, "close", "()V", NULL);
+}
+static void IIS_available(tl_jcall *c) { zin *z = zin_of(c->self); c->ret = vi(z->finished ? 0 : 1); }
+static void IIS_skip(tl_jcall *c)
+{
+    uint8_t buf[4096]; int64_t left = c->args[0].j, got = 0; zin *z = zin_of(c->self);
+    while (left > 0) {
+        int n = zis_read(z, buf, left > (int64_t)sizeof(buf) ? (int)sizeof(buf) : (int)left);
+        if (n <= 0) break;
+        got += n; left -= n;
+    }
+    c->ret = vj(got);
+}
+static void IIS_mark(tl_jcall *c)      { (void)c; }
+static void IIS_markSupported(tl_jcall *c) { c->ret = vz(0); }
+static void IIS_reset(tl_jcall *c)     { tl_jni_throw("java/io/IOException", "mark/reset not supported"); }
+
+/* Inflater (push model): apps feed compressed bytes, pull output */
+typedef struct { z_stream zs; bool inited, finished, finishing, need_in; int64_t in_n, out_n; } zinf;
+static zinf *zinf_of(jobj *o) { if (!o->native) o->native = calloc(1, sizeof(zinf)); return o->native; }
+static void Inf_init(tl_jcall *c)
+{
+    zinf *z = zinf_of(c->self); memset(&z->zs, 0, sizeof(z->zs));
+    if (inflateInit(&z->zs) != Z_OK) { tl_jni_throw("java/lang/RuntimeException", "zlib init failed"); return; }
+    z->inited = true; z->need_in = true;
+}
+static void Inf_init_raw(tl_jcall *c)   /* Inflater(boolean nowrap) */
+{
+    if (!c->args[0].z) { Inf_init(c); return; }
+    zinf *z = zinf_of(c->self); memset(&z->zs, 0, sizeof(z->zs));
+    if (inflateInit2(&z->zs, -MAX_WBITS) != Z_OK) { tl_jni_throw("java/lang/RuntimeException", "zlib init failed"); return; }
+    z->inited = true; z->need_in = true;
+}
+static void Inf_setInput(tl_jcall *c)
+{
+    zinf *z = zinf_of(c->self); jobj *a = c->args[0].l;
+    if (!a || a->kind != TL_K_PRIM_ARRAY) return;
+    int off = c->args[1].i, len = c->args[2].i;
+    z->zs.next_in = (uint8_t *)a->arr.data + off; z->zs.avail_in = (uInt)len;
+    z->need_in = false;
+    set_obj(c->self, "_buf", "[B", a);   /* keep the array alive while zlib points into it */
+}
+static void Inf_setInput_arr(tl_jcall *c)   /* setInput(byte[]) */
+{
+    zinf *z = zinf_of(c->self); jobj *a = c->args[0].l;
+    if (!a || a->kind != TL_K_PRIM_ARRAY) return;
+    z->zs.next_in = a->arr.data; z->zs.avail_in = (uInt)a->arr.len;
+    z->need_in = false;
+    set_obj(c->self, "_buf", "[B", a);
+}
+static void inf_inflate(tl_jcall *c, int off, int len)
+{
+    zinf *z = zinf_of(c->self); jobj *a = c->args[0].l;
+    if (!a || a->kind != TL_K_PRIM_ARRAY) { c->ret = vi(0); return; }
+    z->zs.next_out = (uint8_t *)a->arr.data + off; z->zs.avail_out = (uInt)len;
+    int rc = inflate(&z->zs, Z_NO_FLUSH);
+    int got = len - (int)z->zs.avail_out;
+    if (rc == Z_STREAM_END) z->finished = true;
+    else if (rc != Z_OK && rc != Z_BUF_ERROR) { tl_jni_throw("java/util/zip/DataFormatException", "bad deflate data"); c->ret = vi(0); return; }
+    if (z->zs.avail_in == 0) z->need_in = true;
+    z->out_n += got;
+    c->ret = vi(got);
+}
+static void Inf_inflate(tl_jcall *c)     { inf_inflate(c, c->args[1].i, c->args[2].i); }
+static void Inf_inflate_arr(tl_jcall *c) { inf_inflate(c, 0, c->args[0].l && c->args[0].l->kind == TL_K_PRIM_ARRAY ? (int)c->args[0].l->arr.len : 0); }
+static void Inf_needsInput(tl_jcall *c)    { zinf *z = zinf_of(c->self); c->ret = vz(z->need_in || z->zs.avail_in == 0); }
+static void Inf_needsDictionary(tl_jcall *c) { c->ret = vz(0); }
+static void Inf_finished(tl_jcall *c)      { c->ret = vz(zinf_of(c->self)->finished); }
+static void Inf_reset(tl_jcall *c)         { zinf *z = zinf_of(c->self); inflateReset(&z->zs); z->need_in = true; z->in_n = z->out_n = 0; }
+static void Inf_end(tl_jcall *c)           { zinf *z = zinf_of(c->self); if (z->inited) { inflateEnd(&z->zs); z->inited = false; } }
+static void Inf_getRemaining(tl_jcall *c)  { c->ret = vi(zinf_of(c->self)->zs.avail_in); }
+static void Inf_getBytesRead(tl_jcall *c)  { c->ret = vj(zinf_of(c->self)->zs.total_in); }
+static void Inf_getBytesWritten(tl_jcall *c) { c->ret = vj(zinf_of(c->self)->zs.total_out); }
+
+/* Deflater + *OutputStream wrappers (gzip uploads, zip writers) */
+static void def_init(tl_jcall *c, int level, int nowrap)
+{
+    zinf *z = zinf_of(c->self); memset(&z->zs, 0, sizeof(z->zs));
+    if (deflateInit2(&z->zs, level, Z_DEFLATED, nowrap ? -MAX_WBITS : MAX_WBITS, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
+        tl_jni_throw("java/lang/RuntimeException", "zlib init failed"); return;
+    }
+    z->inited = true;
+}
+static void Def_init(tl_jcall *c)      { def_init(c, Z_DEFAULT_COMPRESSION, 0); }
+static void Def_init_lv(tl_jcall *c)   { def_init(c, c->args[0].i, 0); }
+static void Def_init_raw(tl_jcall *c)  { def_init(c, Z_DEFAULT_COMPRESSION, c->args ? c->args[0].z : 0); }
+static void Def_init_lv_raw(tl_jcall *c) { def_init(c, c->args[0].i, c->args[1].z); }
+static void Def_setInput(tl_jcall *c)  { Inf_setInput(c); }
+static void Def_setInput_arr(tl_jcall *c) { Inf_setInput_arr(c); }
+static void def_deflate(tl_jcall *c, int off, int len)
+{
+    zinf *z = zinf_of(c->self); jobj *a = c->args[0].l;
+    if (!a || a->kind != TL_K_PRIM_ARRAY) { c->ret = vi(0); return; }
+    z->zs.next_out = (uint8_t *)a->arr.data + off; z->zs.avail_out = (uInt)len;
+    int rc = deflate(&z->zs, z->finishing ? Z_FINISH : Z_NO_FLUSH);
+    int got = len - (int)z->zs.avail_out;
+    if (rc == Z_STREAM_END) z->finished = true;
+    else if (rc == Z_STREAM_ERROR) { tl_jni_throw("java/lang/RuntimeException", "deflate failed"); c->ret = vi(0); return; }
+    c->ret = vi(got);
+}
+static void Def_deflate(tl_jcall *c)     { def_deflate(c, c->args[1].i, c->args[2].i); }
+static void Def_deflate_arr(tl_jcall *c) { def_deflate(c, 0, c->args[0].l && c->args[0].l->kind == TL_K_PRIM_ARRAY ? (int)c->args[0].l->arr.len : 0); }
+static void Def_finish(tl_jcall *c)    { zinf_of(c->self)->finishing = true; }
+static void Def_finished(tl_jcall *c)  { c->ret = vz(zinf_of(c->self)->finished); }
+static void Def_end(tl_jcall *c)       { zinf *z = zinf_of(c->self); if (z->inited) { deflateEnd(&z->zs); z->inited = false; } }
+
+typedef struct { jobj *out; z_stream zs; bool inited, done; uint8_t buf[8192]; } zout;
+static zout *zout_of(jobj *o) { if (!o->native) o->native = calloc(1, sizeof(zout)); return o->native; }
+static void zos_flush_out(zout *z)
+{
+    size_t have = sizeof(z->buf) - z->zs.avail_out;
+    if (have && z->out) {
+        jobj *arr = tl_jni_new_prim_array('B', (uint32_t)have);
+        memcpy(arr->arr.data, z->buf, have);
+        jvalue a[3] = { { .j = 0, .l = arr }, { .i = 0 }, { .i = (int)have } };
+        tl_jni_call(z->out, "write", "([BII)V", a);
+    }
+    z->zs.next_out = z->buf; z->zs.avail_out = sizeof(z->buf);
+}
+static void ZOS_init(tl_jcall *c, int wbits)
+{
+    zout *z = zout_of(c->self);
+    z->out = tl_jni_ref(c->args[0].l);
+    memset(&z->zs, 0, sizeof(z->zs));
+    if (deflateInit2(&z->zs, Z_DEFAULT_COMPRESSION, Z_DEFLATED, wbits, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
+        tl_jni_throw("java/io/IOException", "zlib init failed"); return;
+    }
+    z->zs.next_out = z->buf; z->zs.avail_out = sizeof(z->buf);
+    z->inited = true;
+    set_obj(c->self, "out", "Ljava/io/OutputStream;", z->out);
+}
+static void DOS_init(tl_jcall *c) { ZOS_init(c, -MAX_WBITS); }
+static void GOS_init(tl_jcall *c) { ZOS_init(c, MAX_WBITS + 16); }
+static void zos_write(zout *z, const uint8_t *p, size_t n)
+{
+    if (!z->inited) return;
+    z->zs.next_in = (Bytef *)p; z->zs.avail_in = (uInt)n;
+    while (z->zs.avail_in > 0) {
+        if (z->zs.avail_out == 0) zos_flush_out(z);
+        if (deflate(&z->zs, Z_NO_FLUSH) == Z_STREAM_ERROR) { tl_jni_throw("java/io/IOException", "deflate failed"); return; }
+    }
+}
+static void DOS_write0(tl_jcall *c)    { uint8_t b = (uint8_t)c->args[0].i; zos_write(zout_of(c->self), &b, 1); }
+static void DOS_write_arr(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (a && a->kind == TL_K_PRIM_ARRAY) zos_write(zout_of(c->self), a->arr.data, a->arr.len);
+}
+static void DOS_write_range(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (a && a->kind == TL_K_PRIM_ARRAY) zos_write(zout_of(c->self), (uint8_t *)a->arr.data + c->args[1].i, (size_t)c->args[2].i);
+}
+static void DOS_finish(tl_jcall *c)
+{
+    zout *z = zout_of(c->self);
+    if (!z->inited || z->done) return;
+    for (;;) {
+        int rc = deflate(&z->zs, Z_FINISH);
+        zos_flush_out(z);
+        if (rc == Z_STREAM_END) break;
+        if (rc != Z_OK && rc != Z_BUF_ERROR) break;
+    }
+    z->done = true;
+}
+static void DOS_close(tl_jcall *c)
+{
+    DOS_finish(c);
+    zout *z = zout_of(c->self);
+    if (z->inited) { deflateEnd(&z->zs); z->inited = false; }
+    if (z->out) tl_jni_call(z->out, "close", "()V", NULL);
+}
+static void DOS_flush(tl_jcall *c)
+{
+    zout *z = zout_of(c->self);
+    if (!z->inited) return;
+    int rc;
+    do { rc = deflate(&z->zs, Z_SYNC_FLUSH); zos_flush_out(z); } while (z->zs.avail_out == 0 && rc == Z_OK);
+    if (z->out) tl_jni_call(z->out, "flush", "()V", NULL);
+}
+
 /* MediaMetadataRetriever: game/asset tooling asks for durations and album art.
  * Without a codec stack we answer honestly: real path/FD kept, extraction
  * yields null rather than fabricated values. */
@@ -18699,6 +18957,51 @@ static const tl_jhle k_more_hle[] = {
     M("android/media/MediaMetadataRetriever", "getFrameAtTime", "(JI)Ljava/lang/Object;", MMR_getFrameAtTime),
     M("android/media/MediaMetadataRetriever", "getEmbeddedPicture", "()[B", MMR_getEmbeddedPicture),
     M("android/media/MediaMetadataRetriever", "release", "()V", MMR_release),
+    M("java/util/zip/InflaterInputStream", "<init>", "(Ljava/lang/Object;)V", IIS_init),
+    M("java/util/zip/InflaterInputStream", "read", "()I", IIS_read0),
+    M("java/util/zip/InflaterInputStream", "read", "([B)I", IIS_read_arr),
+    M("java/util/zip/InflaterInputStream", "read", "([BII)I", IIS_read_range),
+    M("java/util/zip/InflaterInputStream", "close", "()V", IIS_close),
+    M("java/util/zip/InflaterInputStream", "available", "()I", IIS_available),
+    M("java/util/zip/InflaterInputStream", "skip", "(J)J", IIS_skip),
+    M("java/util/zip/InflaterInputStream", "mark", "(I)V", IIS_mark),
+    M("java/util/zip/InflaterInputStream", "markSupported", "()Z", IIS_markSupported),
+    M("java/util/zip/InflaterInputStream", "reset", "()V", IIS_reset),
+    M("java/util/zip/GZIPInputStream", "<init>", "(Ljava/lang/Object;)V", GIS_init),
+    M("java/util/zip/GZIPInputStream", "<init>", "(Ljava/lang/Object;I)V", GIS_init),
+    M("java/util/zip/Inflater", "<init>", "()V", Inf_init),
+    M("java/util/zip/Inflater", "<init>", "(Z)V", Inf_init_raw),
+    M("java/util/zip/Inflater", "setInput", "([B)V", Inf_setInput_arr),
+    M("java/util/zip/Inflater", "setInput", "([BII)V", Inf_setInput),
+    M("java/util/zip/Inflater", "inflate", "([BII)I", Inf_inflate),
+    M("java/util/zip/Inflater", "inflate", "([B)I", Inf_inflate_arr),
+    M("java/util/zip/Inflater", "needsInput", "()Z", Inf_needsInput),
+    M("java/util/zip/Inflater", "needsDictionary", "()Z", Inf_needsDictionary),
+    M("java/util/zip/Inflater", "finished", "()Z", Inf_finished),
+    M("java/util/zip/Inflater", "reset", "()V", Inf_reset),
+    M("java/util/zip/Inflater", "end", "()V", Inf_end),
+    M("java/util/zip/Inflater", "getRemaining", "()I", Inf_getRemaining),
+    M("java/util/zip/Inflater", "getBytesRead", "()J", Inf_getBytesRead),
+    M("java/util/zip/Inflater", "getBytesWritten", "()J", Inf_getBytesWritten),
+    M("java/util/zip/Deflater", "<init>", "()V", Def_init),
+    M("java/util/zip/Deflater", "<init>", "(I)V", Def_init_lv),
+    M("java/util/zip/Deflater", "<init>", "(Z)V", Def_init_raw),
+    M("java/util/zip/Deflater", "<init>", "(IZ)V", Def_init_lv_raw),
+    M("java/util/zip/Deflater", "setInput", "([BII)V", Def_setInput),
+    M("java/util/zip/Deflater", "setInput", "([B)V", Def_setInput_arr),
+    M("java/util/zip/Deflater", "deflate", "([BII)I", Def_deflate),
+    M("java/util/zip/Deflater", "deflate", "([B)I", Def_deflate_arr),
+    M("java/util/zip/Deflater", "finish", "()V", Def_finish),
+    M("java/util/zip/Deflater", "finished", "()Z", Def_finished),
+    M("java/util/zip/Deflater", "end", "()V", Def_end),
+    M("java/util/zip/DeflaterOutputStream", "<init>", "(Ljava/lang/Object;)V", DOS_init),
+    M("java/util/zip/DeflaterOutputStream", "write", "(I)V", DOS_write0),
+    M("java/util/zip/DeflaterOutputStream", "write", "([B)V", DOS_write_arr),
+    M("java/util/zip/DeflaterOutputStream", "write", "([BII)V", DOS_write_range),
+    M("java/util/zip/DeflaterOutputStream", "finish", "()V", DOS_finish),
+    M("java/util/zip/DeflaterOutputStream", "close", "()V", DOS_close),
+    M("java/util/zip/DeflaterOutputStream", "flush", "()V", DOS_flush),
+    M("java/util/zip/GZIPOutputStream", "<init>", "(Ljava/lang/Object;)V", GOS_init),
     /* Resources: resolve real ids/values from resources.arsc */
     M("android/content/res/Resources", "getIdentifier", "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)I", Res_getIdentifier),
     M("android/content/res/Resources", "getString", "(I)Ljava/lang/Object;", Res_getString),
@@ -18762,6 +19065,15 @@ static const struct { const char *name, *super; } k_more_classes[] = {
     { "android/util/JsonReader", "java/lang/Object" },
     { "android/util/JsonWriter", "java/lang/Object" },
     { "android/media/MediaMetadataRetriever", "java/lang/Object" },
+    { "java/io/FilterInputStream", "java/io/InputStream" },
+    { "java/io/FilterOutputStream", "java/io/OutputStream" },
+    { "java/util/zip/InflaterInputStream", "java/io/FilterInputStream" },
+    { "java/util/zip/GZIPInputStream", "java/util/zip/InflaterInputStream" },
+    { "java/util/zip/Inflater", "java/lang/Object" },
+    { "java/util/zip/Deflater", "java/lang/Object" },
+    { "java/util/zip/DeflaterOutputStream", "java/io/FilterOutputStream" },
+    { "java/util/zip/GZIPOutputStream", "java/util/zip/DeflaterOutputStream" },
+    { "java/util/zip/DataFormatException", "java/lang/Exception" },
     { "java/net/ConnectException", "java/net/SocketException" },
     { "java/io/InterruptedIOException", "java/io/IOException" },
     { "java/net/SocketTimeoutException", "java/io/InterruptedIOException" },
