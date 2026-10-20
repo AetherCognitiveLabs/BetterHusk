@@ -310,9 +310,9 @@ public final class AppRunner {
     private static void deliver(int[] ev) {
         int n = ev[0];
         for (int k = 0; k < n; k++) {
-            int phase = ev[1 + 4 * k], id = ev[2 + 4 * k];
-            float x = Float.intBitsToFloat(ev[3 + 4 * k]), y = Float.intBitsToFloat(ev[4 + 4 * k]);
             try {
+                int phase = ev[1 + 4 * k], id = ev[2 + 4 * k];
+                float x = Float.intBitsToFloat(ev[3 + 4 * k]), y = Float.intBitsToFloat(ev[4 + 4 * k]);
                 if (phase == 5) { back(); continue; }
                 if (phase == 6) { hostPause(id != 0); continue; }
                 if (phase == 7) { InputMethods.deliverPending(); continue; }
@@ -325,9 +325,11 @@ public final class AppRunner {
                     continue;
                 }
                 touch(phase, id, x, y);
-            } catch (RuntimeException e) {
+            } catch (Throwable e) {
+                /* A throw out of an app's touch dispatch must not end the main looper: it runs outside loop()'s catch,
+                 * so an escape kills the UI thread while the game keeps rendering -- every later input is then lost
+                 * (issue #139: a Unity 6 game shows its menus, and no touch ever lands). */
                 android.util.Log.e("Husk", "input threw", e);
-                throw e;
             }
         }
     }
