@@ -354,7 +354,7 @@ void tl_jni_gc(void)
     /* roots: this binary's own writable sections -- every file-scope/static C jobject */
 #if TARGET_OS_IPHONE || defined(__APPLE__)
     {
-        extern struct mach_header_64 _mh_execute_header;
+        extern const struct mach_header_64 _mh_execute_header;
         static const char *secs[] = { "__bss", "__common", "__data" };
         for (int i = 0; i < 3; i++) {
             unsigned long sz = 0;
