@@ -11024,6 +11024,276 @@ static void PM2_getPreferredActivities(tl_jcall *c) { c->ret = vi(0); }
 static void PM2_addPreferredActivity(tl_jcall *c) { (void)c; }
 static void PM2_resolveContentProviderName(tl_jcall *c) { c->ret = vl(NULL); }
 
+/* ============================================================== android.database
+ * MatrixCursor with a real store: columns by name, rows of boxed jobj cells.
+ * Enough for ContentResolver.query / SharedPreferences-ish reads / DownloadManager.
+ */
+
+typedef struct {
+    char **cols; int ncols;
+    jobj **rows; int nrows, cap;
+    int pos;
+} jcur;
+
+static jcur *cur_of(jobj *o)
+{
+    if (!o->native) {
+        jcur *x = calloc(1, sizeof(jcur));
+        x->pos = -1;
+        o->native = x;
+    }
+    return o->native;
+}
+static int cur_colidx(jcur *x, const char *n)
+{
+    for (int i = 0; i < x->ncols; i++) if (!strcmp(x->cols[i], n)) return i;
+    return -1;
+}
+static jobj *cur_cell(jcur *x, int col)
+{
+    if (col < 0 || col >= x->ncols || x->pos < 0 || x->pos >= x->nrows) return NULL;
+    jobj *r = x->rows[x->pos];
+    return col < (int)r->oarr.len ? r->oarr.v[col] : NULL;
+}
+static int64_t cur_num(jcur *x, int col)
+{
+    jobj *cell = cur_cell(x, col);
+    if (!cell) return 0;
+    jvalue v = tl_jni_call(cell, "longValue", "()J", NULL);
+    return v.j;
+}
+static void MC_init_cols(tl_jcall *c)
+{
+    jcur *x = cur_of(c->self);
+    jobj *names = c->args[0].l;
+    if (names && names->kind == TL_K_OBJ_ARRAY) {
+        x->ncols = (int)names->oarr.len;
+        x->cols = calloc(x->ncols, sizeof(char *));
+        for (int i = 0; i < x->ncols; i++) x->cols[i] = strdup(S(names->oarr.v[i]));
+    }
+}
+static void MC_addRow_arr(tl_jcall *c)
+{
+    jcur *x = cur_of(c->self);
+    jobj *cells = c->args[0].l;
+    if (!cells || cells->kind != TL_K_OBJ_ARRAY) return;
+    if (x->nrows == x->cap) { x->cap = x->cap ? x->cap * 2 : 8; x->rows = realloc(x->rows, x->cap * sizeof(jobj *)); }
+    jobj *r = tl_jni_new_obj_array(C("java/lang/Object"), (int)cells->oarr.len);
+    for (uint32_t i = 0; i < cells->oarr.len; i++) r->oarr.v[i] = tl_jni_ref(cells->oarr.v[i]);
+    x->rows[x->nrows++] = r;
+}
+static void MC_addRow_iter(tl_jcall *c)
+{
+    jcur *x = cur_of(c->self);
+    jobj *it = c->args[0].l;
+    if (!it) return;
+    jvalue jv = tl_jni_call(it, "iterator", "()Ljava/util/Iterator;", NULL);
+    if (!jv.l) return;
+    jobj *cells = tl_jni_new_obj_array(C("java/lang/Object"), x->ncols);
+    int n = 0;
+    while (n < x->ncols) {
+        jvalue h = tl_jni_call(jv.l, "hasNext", "()Z", NULL);
+        if (!h.z) break;
+        jvalue v = tl_jni_call(jv.l, "next", "()Ljava/lang/Object;", NULL);
+        cells->oarr.v[n++] = v.l;
+    }
+    if (x->nrows == x->cap) { x->cap = x->cap ? x->cap * 2 : 8; x->rows = realloc(x->rows, x->cap * sizeof(jobj *)); }
+    x->rows[x->nrows++] = cells;
+}
+
+static void Cur_getCount(tl_jcall *c)       { c->ret = vi(cur_of(c->self)->nrows); }
+static void Cur_getPosition(tl_jcall *c)    { c->ret = vi(cur_of(c->self)->pos); }
+static void Cur_moveToPosition(tl_jcall *c)
+{
+    jcur *x = cur_of(c->self);
+    int p = c->args[0].i;
+    c->ret = vz(p >= 0 && p < x->nrows && ((x->pos = p), true));
+}
+static void Cur_moveToFirst(tl_jcall *c)
+{
+    jcur *x = cur_of(c->self);
+    c->ret = vz(x->nrows > 0 && ((x->pos = 0), true));
+}
+static void Cur_moveToLast(tl_jcall *c)
+{
+    jcur *x = cur_of(c->self);
+    c->ret = vz(x->nrows > 0 && ((x->pos = x->nrows - 1), true));
+}
+static void Cur_moveToNext(tl_jcall *c)
+{
+    jcur *x = cur_of(c->self);
+    c->ret = vz(x->pos + 1 < x->nrows && ((x->pos++), true));
+}
+static void Cur_moveToPrevious(tl_jcall *c)
+{
+    jcur *x = cur_of(c->self);
+    c->ret = vz(x->pos > 0 && ((x->pos--), true));
+}
+static void Cur_move(tl_jcall *c)
+{
+    jcur *x = cur_of(c->self);
+    int p = x->pos + c->args[0].i;
+    c->ret = vz(p >= 0 && p < x->nrows && ((x->pos = p), true));
+}
+static void Cur_isBeforeFirst(tl_jcall *c)  { jcur *x = cur_of(c->self); c->ret = vz(x->nrows > 0 && x->pos < 0); }
+static void Cur_isAfterLast(tl_jcall *c)    { jcur *x = cur_of(c->self); c->ret = vz(x->nrows > 0 && x->pos >= x->nrows); }
+static void Cur_isFirst(tl_jcall *c)        { jcur *x = cur_of(c->self); c->ret = vz(x->nrows > 0 && x->pos == 0); }
+static void Cur_isLast(tl_jcall *c)         { jcur *x = cur_of(c->self); c->ret = vz(x->nrows > 0 && x->pos == x->nrows - 1); }
+static void Cur_getColumnCount(tl_jcall *c) { c->ret = vi(cur_of(c->self)->ncols); }
+static void Cur_getColumnNames(tl_jcall *c)
+{
+    jcur *x = cur_of(c->self);
+    jobj *a = tl_jni_new_obj_array(C("java/lang/String"), x->ncols);
+    for (int i = 0; i < x->ncols; i++) a->oarr.v[i] = STR(x->cols[i]);
+    c->ret = vl(a);
+}
+static void Cur_getColumnName(tl_jcall *c)
+{
+    jcur *x = cur_of(c->self);
+    int i = c->args[0].i;
+    c->ret = vl(i >= 0 && i < x->ncols ? STR(x->cols[i]) : NULL);
+}
+static void Cur_getColumnIndex(tl_jcall *c) { c->ret = vi(cur_colidx(cur_of(c->self), S(c->args[0].l))); }
+static void Cur_getColumnIndexOrThrow(tl_jcall *c)
+{
+    int i = cur_colidx(cur_of(c->self), S(c->args[0].l));
+    if (i < 0) { tl_jni_throw("java/lang/IllegalArgumentException", "column not found"); c->ret = vi(0); return; }
+    c->ret = vi(i);
+}
+static void Cur_getString(tl_jcall *c)
+{
+    jobj *cell = cur_cell(cur_of(c->self), c->args[0].i);
+    if (!cell) { c->ret = vl(NULL); return; }
+    if (cell->cls && !strcmp(cell->cls->name, "java/lang/String")) { c->ret = vl(cell); return; }
+    jvalue v = tl_jni_call(cell, "toString", "()Ljava/lang/String;", NULL);
+    c->ret = v.l ? v : vl(NULL);
+}
+static void Cur_getInt(tl_jcall *c)     { c->ret = vi((int)cur_num(cur_of(c->self), c->args[0].i)); }
+static void Cur_getLong(tl_jcall *c)    { c->ret = vj(cur_num(cur_of(c->self), c->args[0].i)); }
+static void Cur_getShort(tl_jcall *c)   { c->ret = vs((int16_t)cur_num(cur_of(c->self), c->args[0].i)); }
+static void Cur_getFloat(tl_jcall *c)   { c->ret = vf((float)cur_num(cur_of(c->self), c->args[0].i)); }
+static void Cur_getDouble(tl_jcall *c)  { c->ret = vd((double)cur_num(cur_of(c->self), c->args[0].i)); }
+static void Cur_getBlob(tl_jcall *c)    { c->ret = vl(NULL); }
+static void Cur_isNull(tl_jcall *c)     { c->ret = vz(cur_cell(cur_of(c->self), c->args[0].i) == NULL); }
+static void Cur_getType(tl_jcall *c)
+{
+    jobj *cell = cur_cell(cur_of(c->self), c->args[0].i);
+    if (!cell) { c->ret = vi(0); return; }                       /* FIELD_TYPE_NULL */
+    const char *n = cell->cls ? tl_jni_class_name(cell->cls) : "";
+    c->ret = vi(strstr(n, "String") ? 3 : strstr(n, "Integer") || strstr(n, "Long") || strstr(n, "Short") || strstr(n, "Byte") ? 1 : strstr(n, "Float") || strstr(n, "Double") ? 2 : 0);
+}
+static void Cur_close(tl_jcall *c)      { set_bool(c->self, "closed", true); }
+static void Cur_isClosed(tl_jcall *c)   { c->ret = vz(get_int(c->self, "closed")); }
+static void Cur_deactivate(tl_jcall *c) { (void)c; }
+static void Cur_requery(tl_jcall *c)    { c->ret = vz(true); }
+static void Cur_registerContentObserver(tl_jcall *c) { (void)c; }
+static void Cur_unregisterContentObserver(tl_jcall *c) { (void)c; }
+static void Cur_registerDataSetObserver(tl_jcall *c) { (void)c; }
+static void Cur_unregisterDataSetObserver(tl_jcall *c) { (void)c; }
+static void Cur_setNotificationUri(tl_jcall *c) { (void)c; }
+static void Cur_getNotificationUri(tl_jcall *c) { c->ret = vl(NULL); }
+static void Cur_getWantsAllOnMoveCalls(tl_jcall *c) { c->ret = vz(false); }
+static void Cur_setExtras(tl_jcall *c) { tl_jni_set_field(c->self, "extras", "Landroid/os/Bundle;", c->args[0]); }
+static void Cur_getExtras(tl_jcall *c)
+{
+    jobj *b = tl_jni_get_field(c->self, "extras", "Landroid/os/Bundle;").l;
+    if (!b) { b = make("android/os/Bundle"); tl_jni_set_field(c->self, "extras", "Landroid/os/Bundle;", vl(b)); }
+    c->ret = vl(b);
+}
+static void Cur_respond(tl_jcall *c) { c->ret = vl(make("android/os/Bundle")); }
+static void Cur_copyStringToBuffer(tl_jcall *c) { (void)c; }
+
+static void CR_query(tl_jcall *c)
+{
+    jobj *mc = make("android/database/MatrixCursor");
+    jobj *proj = c->args[1].l;
+    jvalue a;
+    a.l = (proj && proj->kind == TL_K_OBJ_ARRAY) ? proj : tl_jni_new_obj_array(C("java/lang/String"), 0);
+    tl_jni_call(mc, "<init>", "([Ljava/lang/String;)V", &a);
+    c->ret = vl(mc);
+}
+static void CR_insert(tl_jcall *c) { c->ret = vl(NULL); }
+static void CR_delete(tl_jcall *c) { c->ret = vi(0); }
+static void CR_update(tl_jcall *c) { c->ret = vi(0); }
+static void CR_bulkInsert(tl_jcall *c) { c->ret = vi(0); }
+static void CR_getType(tl_jcall *c) { c->ret = vl(NULL); }
+static void CR_notifyChange(tl_jcall *c) { (void)c; }
+static void CR_registerContentObserver(tl_jcall *c) { (void)c; }
+static void CR_unregisterContentObserver(tl_jcall *c) { (void)c; }
+static void CR_acquireContentProviderClient(tl_jcall *c) { c->ret = vl(NULL); }
+static void CR_call(tl_jcall *c) { c->ret = vl(make("android/os/Bundle")); }
+static void CR_applyBatch(tl_jcall *c)
+{
+    jobj *ops = c->args[0].l;
+    c->ret = vl(tl_jni_new_obj_array(C("android/content/ContentProviderResult"), 0));
+}
+static void CR_startSync(tl_jcall *c) { (void)c; }
+static void CR_cancelSync(tl_jcall *c) { (void)c; }
+static void CR_openInputStream(tl_jcall *c) { c->ret = vl(NULL); }
+static void CR_openOutputStream(tl_jcall *c) { c->ret = vl(NULL); }
+static void CR_openFile(tl_jcall *c) { c->ret = vl(NULL); }
+static void CR_openFileDescriptor(tl_jcall *c) { c->ret = vl(NULL); }
+static void CR_openAssetFileDescriptor(tl_jcall *c) { c->ret = vl(NULL); }
+static void CR_openTypedAssetFileDescriptor(tl_jcall *c) { c->ret = vl(NULL); }
+static void CR_loadThumbnail(tl_jcall *c) { c->ret = vl(NULL); }
+
+static void CV_put(tl_jcall *c)
+{
+    bm_put(bm_of(c->self), S(c->args[0].l), 'L', c->args[1]);
+}
+static void CV_get(tl_jcall *c)
+{
+    bent *e = bm_find(bm_of(c->self), S(c->args[0].l));
+    c->ret = e ? e->v : vl(NULL);
+}
+static void CV_remove(tl_jcall *c)
+{
+    bmap *m = bm_of(c->self);
+    const char *k = S(c->args[0].l);
+    for (int i = 0; i < m->n; i++)
+        if (!strcmp(m->e[i].k, k)) {
+            free(m->e[i].k);
+            memmove(&m->e[i], &m->e[i + 1], (size_t)(m->n - i - 1) * sizeof(bent));
+            m->n--;
+            return;
+        }
+}
+static void CV_clear(tl_jcall *c)
+{
+    bm_of(c->self)->n = 0;
+}
+static void CV_size(tl_jcall *c)
+{
+    c->ret = vi(bm_of(c->self)->n);
+}
+static void CV_containsKey(tl_jcall *c) { c->ret = vz(bm_find(bm_of(c->self), S(c->args[0].l)) != NULL); }
+static void CV_keySet(tl_jcall *c)
+{
+    bmap *b = c->self->native;
+    jobj *s = make("java/util/HashSet");
+    if (b) for (int i = 0; i < b->n; i++) { jvalue v = vl(STR(b->e[i].k)); tl_jni_call(s, "add", "(Ljava/lang/Object;)Z", &v); }
+    c->ret = vl(s);
+}
+static void CV_valueSet(tl_jcall *c)
+{
+    bmap *b = c->self->native;
+    jobj *s = make("java/util/HashSet");
+    if (b) for (int i = 0; i < b->n; i++) { jvalue v = b->e[i].v; tl_jni_call(s, "add", "(Ljava/lang/Object;)Z", &v); }
+    c->ret = vl(s);
+}
+static void CV_describeContents(tl_jcall *c) { c->ret = vi(0); }
+static void CV_toString(tl_jcall *c) { c->ret = vl(STR("ContentValues")); }
+static void CV_isEmpty(tl_jcall *c) { CV_size(c); c->ret = vz(c->ret.i == 0); }
+static void CV_init(tl_jcall *c) { (void)bm_of(c->self); }
+static void CV_init_copy(tl_jcall *c)
+{
+    bmap *d = bm_of(c->self);
+    jobj *src = c->args[0].l;
+    bmap *b = src ? src->native : NULL;
+    if (b) for (int i = 0; i < b->n; i++) bm_put(bm_of(c->self), b->e[i].k, b->e[i].sig, b->e[i].v);
+    (void)d;
+}
+
 /* ============================================================== registration
  * Entries whose signature is NULL act as wildcards (hle_find matches any
  * overload); entries with real signatures are needed where the impl reads
@@ -16447,6 +16717,302 @@ static const tl_jhle k_more_hle[] = {
     M("android/content/pm/PackageManager", "clearPackagePreferredActivities", NULL, PM2_clearPackagePreferredActivities),
     M("android/content/pm/PackageManager", "getPreferredActivities", NULL, PM2_getPreferredActivities),
     M("android/content/pm/PackageManager", "addPreferredActivity", NULL, PM2_addPreferredActivity),
+
+    M("android/database/MatrixCursor", "<init>", "([Ljava/lang/Object;)V", MC_init_cols),
+    M("android/database/MatrixCursor", "addRow", "([Ljava/lang/Object;)V", MC_addRow_arr),
+    M("android/database/MatrixCursor", "addRow", "(Ljava/lang/Object;)V", MC_addRow_iter),
+    M("android/database/AbstractCursor", "getCount", NULL, Cur_getCount),
+    M("android/database/AbstractCursor", "getPosition", NULL, Cur_getPosition),
+    M("android/database/AbstractCursor", "moveToPosition", NULL, Cur_moveToPosition),
+    M("android/database/AbstractCursor", "moveToFirst", NULL, Cur_moveToFirst),
+    M("android/database/AbstractCursor", "moveToLast", NULL, Cur_moveToLast),
+    M("android/database/AbstractCursor", "moveToNext", NULL, Cur_moveToNext),
+    M("android/database/AbstractCursor", "moveToPrevious", NULL, Cur_moveToPrevious),
+    M("android/database/AbstractCursor", "move", NULL, Cur_move),
+    M("android/database/AbstractCursor", "isBeforeFirst", NULL, Cur_isBeforeFirst),
+    M("android/database/AbstractCursor", "isAfterLast", NULL, Cur_isAfterLast),
+    M("android/database/AbstractCursor", "isFirst", NULL, Cur_isFirst),
+    M("android/database/AbstractCursor", "isLast", NULL, Cur_isLast),
+    M("android/database/AbstractCursor", "getColumnCount", NULL, Cur_getColumnCount),
+    M("android/database/AbstractCursor", "getColumnNames", NULL, Cur_getColumnNames),
+    M("android/database/AbstractCursor", "getColumnName", NULL, Cur_getColumnName),
+    M("android/database/AbstractCursor", "getColumnIndex", NULL, Cur_getColumnIndex),
+    M("android/database/AbstractCursor", "getColumnIndexOrThrow", NULL, Cur_getColumnIndexOrThrow),
+    M("android/database/AbstractCursor", "getString", NULL, Cur_getString),
+    M("android/database/AbstractCursor", "getInt", NULL, Cur_getInt),
+    M("android/database/AbstractCursor", "getLong", NULL, Cur_getLong),
+    M("android/database/AbstractCursor", "getShort", NULL, Cur_getShort),
+    M("android/database/AbstractCursor", "getFloat", NULL, Cur_getFloat),
+    M("android/database/AbstractCursor", "getDouble", NULL, Cur_getDouble),
+    M("android/database/AbstractCursor", "getBlob", NULL, Cur_getBlob),
+    M("android/database/AbstractCursor", "isNull", NULL, Cur_isNull),
+    M("android/database/AbstractCursor", "getType", NULL, Cur_getType),
+    M("android/database/AbstractCursor", "close", NULL, Cur_close),
+    M("android/database/AbstractCursor", "isClosed", NULL, Cur_isClosed),
+    M("android/database/AbstractCursor", "deactivate", NULL, Cur_deactivate),
+    M("android/database/AbstractCursor", "requery", NULL, Cur_requery),
+    M("android/database/AbstractCursor", "registerContentObserver", NULL, Cur_registerContentObserver),
+    M("android/database/AbstractCursor", "unregisterContentObserver", NULL, Cur_unregisterContentObserver),
+    M("android/database/AbstractCursor", "registerDataSetObserver", NULL, Cur_registerDataSetObserver),
+    M("android/database/AbstractCursor", "unregisterDataSetObserver", NULL, Cur_unregisterDataSetObserver),
+    M("android/database/AbstractCursor", "setNotificationUri", NULL, Cur_setNotificationUri),
+    M("android/database/AbstractCursor", "getNotificationUri", NULL, Cur_getNotificationUri),
+    M("android/database/AbstractCursor", "getWantsAllOnMoveCalls", NULL, Cur_getWantsAllOnMoveCalls),
+    M("android/database/AbstractCursor", "setExtras", NULL, Cur_setExtras),
+    M("android/database/AbstractCursor", "getExtras", NULL, Cur_getExtras),
+    M("android/database/AbstractCursor", "respond", NULL, Cur_respond),
+    M("android/database/AbstractCursor", "copyStringToBuffer", NULL, Cur_copyStringToBuffer),
+    M("android/database/Cursor", "getCount", NULL, Cur_getCount),
+    M("android/database/Cursor", "getPosition", NULL, Cur_getPosition),
+    M("android/database/Cursor", "moveToPosition", NULL, Cur_moveToPosition),
+    M("android/database/Cursor", "moveToFirst", NULL, Cur_moveToFirst),
+    M("android/database/Cursor", "moveToLast", NULL, Cur_moveToLast),
+    M("android/database/Cursor", "moveToNext", NULL, Cur_moveToNext),
+    M("android/database/Cursor", "moveToPrevious", NULL, Cur_moveToPrevious),
+    M("android/database/Cursor", "move", NULL, Cur_move),
+    M("android/database/Cursor", "isBeforeFirst", NULL, Cur_isBeforeFirst),
+    M("android/database/Cursor", "isAfterLast", NULL, Cur_isAfterLast),
+    M("android/database/Cursor", "isFirst", NULL, Cur_isFirst),
+    M("android/database/Cursor", "isLast", NULL, Cur_isLast),
+    M("android/database/Cursor", "getColumnCount", NULL, Cur_getColumnCount),
+    M("android/database/Cursor", "getColumnNames", NULL, Cur_getColumnNames),
+    M("android/database/Cursor", "getColumnName", NULL, Cur_getColumnName),
+    M("android/database/Cursor", "getColumnIndex", NULL, Cur_getColumnIndex),
+    M("android/database/Cursor", "getColumnIndexOrThrow", NULL, Cur_getColumnIndexOrThrow),
+    M("android/database/Cursor", "getString", NULL, Cur_getString),
+    M("android/database/Cursor", "getInt", NULL, Cur_getInt),
+    M("android/database/Cursor", "getLong", NULL, Cur_getLong),
+    M("android/database/Cursor", "getShort", NULL, Cur_getShort),
+    M("android/database/Cursor", "getFloat", NULL, Cur_getFloat),
+    M("android/database/Cursor", "getDouble", NULL, Cur_getDouble),
+    M("android/database/Cursor", "getBlob", NULL, Cur_getBlob),
+    M("android/database/Cursor", "isNull", NULL, Cur_isNull),
+    M("android/database/Cursor", "getType", NULL, Cur_getType),
+    M("android/database/Cursor", "close", NULL, Cur_close),
+    M("android/database/Cursor", "isClosed", NULL, Cur_isClosed),
+    M("android/database/Cursor", "deactivate", NULL, Cur_deactivate),
+    M("android/database/Cursor", "requery", NULL, Cur_requery),
+    M("android/database/Cursor", "registerContentObserver", NULL, Cur_registerContentObserver),
+    M("android/database/Cursor", "unregisterContentObserver", NULL, Cur_unregisterContentObserver),
+    M("android/database/Cursor", "registerDataSetObserver", NULL, Cur_registerDataSetObserver),
+    M("android/database/Cursor", "unregisterDataSetObserver", NULL, Cur_unregisterDataSetObserver),
+    M("android/database/Cursor", "setNotificationUri", NULL, Cur_setNotificationUri),
+    M("android/database/Cursor", "getNotificationUri", NULL, Cur_getNotificationUri),
+    M("android/database/Cursor", "getWantsAllOnMoveCalls", NULL, Cur_getWantsAllOnMoveCalls),
+    M("android/database/Cursor", "setExtras", NULL, Cur_setExtras),
+    M("android/database/Cursor", "getExtras", NULL, Cur_getExtras),
+    M("android/database/Cursor", "respond", NULL, Cur_respond),
+    M("android/database/Cursor", "copyStringToBuffer", NULL, Cur_copyStringToBuffer),
+    M("android/database/CursorWrapper", "getCount", NULL, Cur_getCount),
+    M("android/database/CursorWrapper", "getPosition", NULL, Cur_getPosition),
+    M("android/database/CursorWrapper", "moveToPosition", NULL, Cur_moveToPosition),
+    M("android/database/CursorWrapper", "moveToFirst", NULL, Cur_moveToFirst),
+    M("android/database/CursorWrapper", "moveToLast", NULL, Cur_moveToLast),
+    M("android/database/CursorWrapper", "moveToNext", NULL, Cur_moveToNext),
+    M("android/database/CursorWrapper", "moveToPrevious", NULL, Cur_moveToPrevious),
+    M("android/database/CursorWrapper", "move", NULL, Cur_move),
+    M("android/database/CursorWrapper", "isBeforeFirst", NULL, Cur_isBeforeFirst),
+    M("android/database/CursorWrapper", "isAfterLast", NULL, Cur_isAfterLast),
+    M("android/database/CursorWrapper", "isFirst", NULL, Cur_isFirst),
+    M("android/database/CursorWrapper", "isLast", NULL, Cur_isLast),
+    M("android/database/CursorWrapper", "getColumnCount", NULL, Cur_getColumnCount),
+    M("android/database/CursorWrapper", "getColumnNames", NULL, Cur_getColumnNames),
+    M("android/database/CursorWrapper", "getColumnName", NULL, Cur_getColumnName),
+    M("android/database/CursorWrapper", "getColumnIndex", NULL, Cur_getColumnIndex),
+    M("android/database/CursorWrapper", "getColumnIndexOrThrow", NULL, Cur_getColumnIndexOrThrow),
+    M("android/database/CursorWrapper", "getString", NULL, Cur_getString),
+    M("android/database/CursorWrapper", "getInt", NULL, Cur_getInt),
+    M("android/database/CursorWrapper", "getLong", NULL, Cur_getLong),
+    M("android/database/CursorWrapper", "getShort", NULL, Cur_getShort),
+    M("android/database/CursorWrapper", "getFloat", NULL, Cur_getFloat),
+    M("android/database/CursorWrapper", "getDouble", NULL, Cur_getDouble),
+    M("android/database/CursorWrapper", "getBlob", NULL, Cur_getBlob),
+    M("android/database/CursorWrapper", "isNull", NULL, Cur_isNull),
+    M("android/database/CursorWrapper", "getType", NULL, Cur_getType),
+    M("android/database/CursorWrapper", "close", NULL, Cur_close),
+    M("android/database/CursorWrapper", "isClosed", NULL, Cur_isClosed),
+    M("android/database/CursorWrapper", "deactivate", NULL, Cur_deactivate),
+    M("android/database/CursorWrapper", "requery", NULL, Cur_requery),
+    M("android/database/CursorWrapper", "registerContentObserver", NULL, Cur_registerContentObserver),
+    M("android/database/CursorWrapper", "unregisterContentObserver", NULL, Cur_unregisterContentObserver),
+    M("android/database/CursorWrapper", "registerDataSetObserver", NULL, Cur_registerDataSetObserver),
+    M("android/database/CursorWrapper", "unregisterDataSetObserver", NULL, Cur_unregisterDataSetObserver),
+    M("android/database/CursorWrapper", "setNotificationUri", NULL, Cur_setNotificationUri),
+    M("android/database/CursorWrapper", "getNotificationUri", NULL, Cur_getNotificationUri),
+    M("android/database/CursorWrapper", "getWantsAllOnMoveCalls", NULL, Cur_getWantsAllOnMoveCalls),
+    M("android/database/CursorWrapper", "setExtras", NULL, Cur_setExtras),
+    M("android/database/CursorWrapper", "getExtras", NULL, Cur_getExtras),
+    M("android/database/CursorWrapper", "respond", NULL, Cur_respond),
+    M("android/database/CursorWrapper", "copyStringToBuffer", NULL, Cur_copyStringToBuffer),
+    M("android/database/MatrixCursor", "getCount", NULL, Cur_getCount),
+    M("android/database/MatrixCursor", "getPosition", NULL, Cur_getPosition),
+    M("android/database/MatrixCursor", "moveToPosition", NULL, Cur_moveToPosition),
+    M("android/database/MatrixCursor", "moveToFirst", NULL, Cur_moveToFirst),
+    M("android/database/MatrixCursor", "moveToLast", NULL, Cur_moveToLast),
+    M("android/database/MatrixCursor", "moveToNext", NULL, Cur_moveToNext),
+    M("android/database/MatrixCursor", "moveToPrevious", NULL, Cur_moveToPrevious),
+    M("android/database/MatrixCursor", "move", NULL, Cur_move),
+    M("android/database/MatrixCursor", "isBeforeFirst", NULL, Cur_isBeforeFirst),
+    M("android/database/MatrixCursor", "isAfterLast", NULL, Cur_isAfterLast),
+    M("android/database/MatrixCursor", "isFirst", NULL, Cur_isFirst),
+    M("android/database/MatrixCursor", "isLast", NULL, Cur_isLast),
+    M("android/database/MatrixCursor", "getColumnCount", NULL, Cur_getColumnCount),
+    M("android/database/MatrixCursor", "getColumnNames", NULL, Cur_getColumnNames),
+    M("android/database/MatrixCursor", "getColumnName", NULL, Cur_getColumnName),
+    M("android/database/MatrixCursor", "getColumnIndex", NULL, Cur_getColumnIndex),
+    M("android/database/MatrixCursor", "getColumnIndexOrThrow", NULL, Cur_getColumnIndexOrThrow),
+    M("android/database/MatrixCursor", "getString", NULL, Cur_getString),
+    M("android/database/MatrixCursor", "getInt", NULL, Cur_getInt),
+    M("android/database/MatrixCursor", "getLong", NULL, Cur_getLong),
+    M("android/database/MatrixCursor", "getShort", NULL, Cur_getShort),
+    M("android/database/MatrixCursor", "getFloat", NULL, Cur_getFloat),
+    M("android/database/MatrixCursor", "getDouble", NULL, Cur_getDouble),
+    M("android/database/MatrixCursor", "getBlob", NULL, Cur_getBlob),
+    M("android/database/MatrixCursor", "isNull", NULL, Cur_isNull),
+    M("android/database/MatrixCursor", "getType", NULL, Cur_getType),
+    M("android/database/MatrixCursor", "close", NULL, Cur_close),
+    M("android/database/MatrixCursor", "isClosed", NULL, Cur_isClosed),
+    M("android/database/MatrixCursor", "deactivate", NULL, Cur_deactivate),
+    M("android/database/MatrixCursor", "requery", NULL, Cur_requery),
+    M("android/database/MatrixCursor", "registerContentObserver", NULL, Cur_registerContentObserver),
+    M("android/database/MatrixCursor", "unregisterContentObserver", NULL, Cur_unregisterContentObserver),
+    M("android/database/MatrixCursor", "registerDataSetObserver", NULL, Cur_registerDataSetObserver),
+    M("android/database/MatrixCursor", "unregisterDataSetObserver", NULL, Cur_unregisterDataSetObserver),
+    M("android/database/MatrixCursor", "setNotificationUri", NULL, Cur_setNotificationUri),
+    M("android/database/MatrixCursor", "getNotificationUri", NULL, Cur_getNotificationUri),
+    M("android/database/MatrixCursor", "getWantsAllOnMoveCalls", NULL, Cur_getWantsAllOnMoveCalls),
+    M("android/database/MatrixCursor", "setExtras", NULL, Cur_setExtras),
+    M("android/database/MatrixCursor", "getExtras", NULL, Cur_getExtras),
+    M("android/database/MatrixCursor", "respond", NULL, Cur_respond),
+    M("android/database/MatrixCursor", "copyStringToBuffer", NULL, Cur_copyStringToBuffer),
+    M("android/database/MergeCursor", "getCount", NULL, Cur_getCount),
+    M("android/database/MergeCursor", "getPosition", NULL, Cur_getPosition),
+    M("android/database/MergeCursor", "moveToPosition", NULL, Cur_moveToPosition),
+    M("android/database/MergeCursor", "moveToFirst", NULL, Cur_moveToFirst),
+    M("android/database/MergeCursor", "moveToLast", NULL, Cur_moveToLast),
+    M("android/database/MergeCursor", "moveToNext", NULL, Cur_moveToNext),
+    M("android/database/MergeCursor", "moveToPrevious", NULL, Cur_moveToPrevious),
+    M("android/database/MergeCursor", "move", NULL, Cur_move),
+    M("android/database/MergeCursor", "isBeforeFirst", NULL, Cur_isBeforeFirst),
+    M("android/database/MergeCursor", "isAfterLast", NULL, Cur_isAfterLast),
+    M("android/database/MergeCursor", "isFirst", NULL, Cur_isFirst),
+    M("android/database/MergeCursor", "isLast", NULL, Cur_isLast),
+    M("android/database/MergeCursor", "getColumnCount", NULL, Cur_getColumnCount),
+    M("android/database/MergeCursor", "getColumnNames", NULL, Cur_getColumnNames),
+    M("android/database/MergeCursor", "getColumnName", NULL, Cur_getColumnName),
+    M("android/database/MergeCursor", "getColumnIndex", NULL, Cur_getColumnIndex),
+    M("android/database/MergeCursor", "getColumnIndexOrThrow", NULL, Cur_getColumnIndexOrThrow),
+    M("android/database/MergeCursor", "getString", NULL, Cur_getString),
+    M("android/database/MergeCursor", "getInt", NULL, Cur_getInt),
+    M("android/database/MergeCursor", "getLong", NULL, Cur_getLong),
+    M("android/database/MergeCursor", "getShort", NULL, Cur_getShort),
+    M("android/database/MergeCursor", "getFloat", NULL, Cur_getFloat),
+    M("android/database/MergeCursor", "getDouble", NULL, Cur_getDouble),
+    M("android/database/MergeCursor", "getBlob", NULL, Cur_getBlob),
+    M("android/database/MergeCursor", "isNull", NULL, Cur_isNull),
+    M("android/database/MergeCursor", "getType", NULL, Cur_getType),
+    M("android/database/MergeCursor", "close", NULL, Cur_close),
+    M("android/database/MergeCursor", "isClosed", NULL, Cur_isClosed),
+    M("android/database/MergeCursor", "deactivate", NULL, Cur_deactivate),
+    M("android/database/MergeCursor", "requery", NULL, Cur_requery),
+    M("android/database/MergeCursor", "registerContentObserver", NULL, Cur_registerContentObserver),
+    M("android/database/MergeCursor", "unregisterContentObserver", NULL, Cur_unregisterContentObserver),
+    M("android/database/MergeCursor", "registerDataSetObserver", NULL, Cur_registerDataSetObserver),
+    M("android/database/MergeCursor", "unregisterDataSetObserver", NULL, Cur_unregisterDataSetObserver),
+    M("android/database/MergeCursor", "setNotificationUri", NULL, Cur_setNotificationUri),
+    M("android/database/MergeCursor", "getNotificationUri", NULL, Cur_getNotificationUri),
+    M("android/database/MergeCursor", "getWantsAllOnMoveCalls", NULL, Cur_getWantsAllOnMoveCalls),
+    M("android/database/MergeCursor", "setExtras", NULL, Cur_setExtras),
+    M("android/database/MergeCursor", "getExtras", NULL, Cur_getExtras),
+    M("android/database/MergeCursor", "respond", NULL, Cur_respond),
+    M("android/database/MergeCursor", "copyStringToBuffer", NULL, Cur_copyStringToBuffer),
+    M("android/database/CrossProcessCursorWrapper", "getCount", NULL, Cur_getCount),
+    M("android/database/CrossProcessCursorWrapper", "getPosition", NULL, Cur_getPosition),
+    M("android/database/CrossProcessCursorWrapper", "moveToPosition", NULL, Cur_moveToPosition),
+    M("android/database/CrossProcessCursorWrapper", "moveToFirst", NULL, Cur_moveToFirst),
+    M("android/database/CrossProcessCursorWrapper", "moveToLast", NULL, Cur_moveToLast),
+    M("android/database/CrossProcessCursorWrapper", "moveToNext", NULL, Cur_moveToNext),
+    M("android/database/CrossProcessCursorWrapper", "moveToPrevious", NULL, Cur_moveToPrevious),
+    M("android/database/CrossProcessCursorWrapper", "move", NULL, Cur_move),
+    M("android/database/CrossProcessCursorWrapper", "isBeforeFirst", NULL, Cur_isBeforeFirst),
+    M("android/database/CrossProcessCursorWrapper", "isAfterLast", NULL, Cur_isAfterLast),
+    M("android/database/CrossProcessCursorWrapper", "isFirst", NULL, Cur_isFirst),
+    M("android/database/CrossProcessCursorWrapper", "isLast", NULL, Cur_isLast),
+    M("android/database/CrossProcessCursorWrapper", "getColumnCount", NULL, Cur_getColumnCount),
+    M("android/database/CrossProcessCursorWrapper", "getColumnNames", NULL, Cur_getColumnNames),
+    M("android/database/CrossProcessCursorWrapper", "getColumnName", NULL, Cur_getColumnName),
+    M("android/database/CrossProcessCursorWrapper", "getColumnIndex", NULL, Cur_getColumnIndex),
+    M("android/database/CrossProcessCursorWrapper", "getColumnIndexOrThrow", NULL, Cur_getColumnIndexOrThrow),
+    M("android/database/CrossProcessCursorWrapper", "getString", NULL, Cur_getString),
+    M("android/database/CrossProcessCursorWrapper", "getInt", NULL, Cur_getInt),
+    M("android/database/CrossProcessCursorWrapper", "getLong", NULL, Cur_getLong),
+    M("android/database/CrossProcessCursorWrapper", "getShort", NULL, Cur_getShort),
+    M("android/database/CrossProcessCursorWrapper", "getFloat", NULL, Cur_getFloat),
+    M("android/database/CrossProcessCursorWrapper", "getDouble", NULL, Cur_getDouble),
+    M("android/database/CrossProcessCursorWrapper", "getBlob", NULL, Cur_getBlob),
+    M("android/database/CrossProcessCursorWrapper", "isNull", NULL, Cur_isNull),
+    M("android/database/CrossProcessCursorWrapper", "getType", NULL, Cur_getType),
+    M("android/database/CrossProcessCursorWrapper", "close", NULL, Cur_close),
+    M("android/database/CrossProcessCursorWrapper", "isClosed", NULL, Cur_isClosed),
+    M("android/database/CrossProcessCursorWrapper", "deactivate", NULL, Cur_deactivate),
+    M("android/database/CrossProcessCursorWrapper", "requery", NULL, Cur_requery),
+    M("android/database/CrossProcessCursorWrapper", "registerContentObserver", NULL, Cur_registerContentObserver),
+    M("android/database/CrossProcessCursorWrapper", "unregisterContentObserver", NULL, Cur_unregisterContentObserver),
+    M("android/database/CrossProcessCursorWrapper", "registerDataSetObserver", NULL, Cur_registerDataSetObserver),
+    M("android/database/CrossProcessCursorWrapper", "unregisterDataSetObserver", NULL, Cur_unregisterDataSetObserver),
+    M("android/database/CrossProcessCursorWrapper", "setNotificationUri", NULL, Cur_setNotificationUri),
+    M("android/database/CrossProcessCursorWrapper", "getNotificationUri", NULL, Cur_getNotificationUri),
+    M("android/database/CrossProcessCursorWrapper", "getWantsAllOnMoveCalls", NULL, Cur_getWantsAllOnMoveCalls),
+    M("android/database/CrossProcessCursorWrapper", "setExtras", NULL, Cur_setExtras),
+    M("android/database/CrossProcessCursorWrapper", "getExtras", NULL, Cur_getExtras),
+    M("android/database/CrossProcessCursorWrapper", "respond", NULL, Cur_respond),
+    M("android/database/CrossProcessCursorWrapper", "copyStringToBuffer", NULL, Cur_copyStringToBuffer),
+
+    M("android/content/ContentValues", "<init>", "()V", CV_init),
+    M("android/content/ContentValues", "<init>", "(Ljava/lang/Object;)V", CV_init_copy),
+    M("android/content/ContentValues", "put", "(Ljava/lang/Object;Ljava/lang/Object;)V", CV_put),
+    M("android/content/ContentValues", "get", "(Ljava/lang/Object;)Ljava/lang/Object;", CV_get),
+    M("android/content/ContentValues", "getAsString", "(Ljava/lang/Object;)Ljava/lang/Object;", CV_get),
+    M("android/content/ContentValues", "getAsInteger", "(Ljava/lang/Object;)Ljava/lang/Object;", CV_get),
+    M("android/content/ContentValues", "getAsLong", "(Ljava/lang/Object;)Ljava/lang/Object;", CV_get),
+    M("android/content/ContentValues", "getAsBoolean", "(Ljava/lang/Object;)Ljava/lang/Object;", CV_get),
+    M("android/content/ContentValues", "getAsFloat", "(Ljava/lang/Object;)Ljava/lang/Object;", CV_get),
+    M("android/content/ContentValues", "getAsDouble", "(Ljava/lang/Object;)Ljava/lang/Object;", CV_get),
+    M("android/content/ContentValues", "getAsShort", "(Ljava/lang/Object;)Ljava/lang/Object;", CV_get),
+    M("android/content/ContentValues", "getAsByte", "(Ljava/lang/Object;)Ljava/lang/Object;", CV_get),
+    M("android/content/ContentValues", "getAsByteArray", "(Ljava/lang/Object;)Ljava/lang/Object;", CV_get),
+    M("android/content/ContentValues", "remove", "(Ljava/lang/Object;)V", CV_remove),
+    M("android/content/ContentValues", "clear", NULL, CV_clear),
+    M("android/content/ContentValues", "size", NULL, CV_size),
+    M("android/content/ContentValues", "isEmpty", NULL, CV_isEmpty),
+    M("android/content/ContentValues", "containsKey", "(Ljava/lang/Object;)Z", CV_containsKey),
+    M("android/content/ContentValues", "keySet", NULL, CV_keySet),
+    M("android/content/ContentValues", "valueSet", NULL, CV_valueSet),
+    M("android/content/ContentValues", "describeContents", NULL, CV_describeContents),
+    M("android/content/ContentValues", "toString", NULL, CV_toString),
+
+    M("android/content/ContentResolver", "query", NULL, CR_query),
+    M("android/content/ContentResolver", "insert", NULL, CR_insert),
+    M("android/content/ContentResolver", "delete", NULL, CR_delete),
+    M("android/content/ContentResolver", "update", NULL, CR_update),
+    M("android/content/ContentResolver", "bulkInsert", NULL, CR_bulkInsert),
+    M("android/content/ContentResolver", "getType", NULL, CR_getType),
+    M("android/content/ContentResolver", "notifyChange", NULL, CR_notifyChange),
+    M("android/content/ContentResolver", "registerContentObserver", NULL, CR_registerContentObserver),
+    M("android/content/ContentResolver", "unregisterContentObserver", NULL, CR_unregisterContentObserver),
+    M("android/content/ContentResolver", "acquireContentProviderClient", NULL, CR_acquireContentProviderClient),
+    M("android/content/ContentResolver", "acquireUnstableContentProviderClient", NULL, CR_acquireContentProviderClient),
+    M("android/content/ContentResolver", "call", NULL, CR_call),
+    M("android/content/ContentResolver", "applyBatch", NULL, CR_applyBatch),
+    M("android/content/ContentResolver", "startSync", NULL, CR_startSync),
+    M("android/content/ContentResolver", "cancelSync", NULL, CR_cancelSync),
+    M("android/content/ContentResolver", "openInputStream", NULL, CR_openInputStream),
+    M("android/content/ContentResolver", "openOutputStream", NULL, CR_openOutputStream),
+    M("android/content/ContentResolver", "openFile", NULL, CR_openFile),
+    M("android/content/ContentResolver", "openFileDescriptor", NULL, CR_openFileDescriptor),
+    M("android/content/ContentResolver", "openAssetFileDescriptor", NULL, CR_openAssetFileDescriptor),
+    M("android/content/ContentResolver", "openTypedAssetFileDescriptor", NULL, CR_openTypedAssetFileDescriptor),
+    M("android/content/ContentResolver", "loadThumbnail", NULL, CR_loadThumbnail),
     { NULL, NULL, NULL, NULL }
 };
 
@@ -16797,6 +17363,16 @@ static const struct { const char *name, *super; } k_more_classes[] = {
     { "android/content/pm/PackageInstaller", "java/lang/Object" },
     { "android/content/pm/ResolveInfo", "java/lang/Object" },
     { "android/content/pm/ChangedPackages", "java/lang/Object" },
+
+    { "android/database/MatrixCursor", "android/database/AbstractCursor" },
+    { "android/database/AbstractCursor", "java/lang/Object" },
+    { "android/database/Cursor", "java/lang/Object" },
+    { "android/database/CursorWrapper", "java/lang/Object" },
+    { "android/database/MergeCursor", "android/database/AbstractCursor" },
+    { "android/database/CrossProcessCursorWrapper", "android/database/CursorWrapper" },
+    { "android/content/ContentValues", "java/lang/Object" },
+    { "android/content/ContentResolver", "java/lang/Object" },
+    { "android/content/ContentProviderResult", "java/lang/Object" },
 };
 
 void tl_more_install(void)
