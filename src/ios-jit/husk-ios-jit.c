@@ -311,6 +311,7 @@ static bool husk_kernel_debugged(void)
 #pragma clang diagnostic pop
 
 static bool husk_page_is_executable(void *p);
+static bool husk_may_fault_now(void);
 
 static sigjmp_buf g_self_jump;
 static volatile sig_atomic_t g_self_running;
@@ -327,6 +328,14 @@ static bool husk_self_selftest(uint8_t *rx, uint8_t *rw)
     /* movz w0, #0x5a5a ; ret */
     static const uint32_t code[2] = { 0x528B4B40u, 0xD65F03C0u };
     if (!husk_page_is_executable(rx)) return false;
+    /* The kernel already answered whether the page may execute; the call only
+     * confirms it. Under a tracer that is not our servicer the fault -- if the
+     * kernel's answer were wrong -- would be an unanswered stop, so the
+     * permission verdict stands in for the execution. */
+    if (!husk_may_fault_now()) {
+        HUSK_LOG("self: tracer attached; taking the kernel's execute verdict without the call");
+        return true;
+    }
     struct sigaction sa, ob, os, oi;
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = husk_self_fault;
@@ -513,6 +522,28 @@ static pid_t husk_tracer_pid(void)
     return (pid_t)pbi.pbi_tpid;
 }
 
+/*
+ * May this code fault right now, at all?
+ *
+ * A brk trap or a deliberate SIGSEGV only returns to our handlers when nobody
+ * is tracing us -- or when the tracer is a servicer we asked for, which exists
+ * precisely to answer those stops. Under any other tracer the fault arrives as
+ * a stop that is never answered, and the process freezes with a log that ends
+ * mid-sentence: TrollStore's enable-jit holds the process ~100 ms and services
+ * nothing, and a container app's debugger may hold it for the whole run.
+ * CS_DEBUGGED cannot tell those apart -- proc_pidinfo's pbi_tpid can: it is a
+ * real attach, not a flag.
+ */
+static bool husk_may_fault_now(void)
+{
+    if (atomic_load(&g_servicer_expected)) return true;
+    pid_t tpid = husk_tracer_pid();
+    if (tpid <= 0) return true;
+    fprintf(stderr, "[husk-jit] pid %d is tracing us and no servicer is expected; "
+                    "faulting now would freeze on an unanswered stop\n", (int)tpid);
+    return false;
+}
+
 static HuskDualMapping *husk_prewarm_retry(size_t bytes)
 {
     if (!atomic_load(&g_servicer_expected) || !husk_kernel_debugged()) return NULL;
@@ -599,6 +630,16 @@ static HuskDualMapping husk_ios_jit_allocate_real(size_t bytes)
 {
     HuskDualMapping region = { NULL, NULL, 0 };
     uint64_t n = atomic_fetch_add(&g_alloc_counter, 1) + 1;
+
+    /* A tracer that is not our servicer turns the probe's brk into an
+     * unanswered stop -- the documented TrollStore-window freeze. With a real
+     * tracer attached that nobody asked for, the trap path is simply off the
+     * table; the self route below is syscall-only and cannot freeze. */
+    if (!husk_may_fault_now()) {
+        HUSK_LOG("#%llu: not trapping while a non-servicing tracer holds the process",
+                 (unsigned long long)n);
+        return husk_self_dual_mapping(bytes);
+    }
 
     /* Cheap attach probe: brk #0x69 is answered with a constant when StikDebug
      * is live, and swallowed by our trap handler as 0 when it is not. Doing this
@@ -852,6 +893,20 @@ bool husk_ios_jit_mapjit_works(void)
         munmap(p, len);
         atomic_store(&cached, -1);
         return false;
+    }
+
+    /* A real tracer turns the execute test's fault into its own stop, not our
+     * handler's -- the probe that "cannot kill the app" freezes it instead when
+     * a debugger that services nothing is attached (a container's, TrollStore's
+     * hundred-millisecond attach). The kernel already said the page carries
+     * execute; that verdict is the answer a tracer-held process can give, and
+     * it is deliberately not cached: the same probe without a tracer may still
+     * be worth a real execution once it leaves. */
+    if (!husk_may_fault_now()) {
+        HUSK_LOG("MAP_JIT probe: kernel granted execute; not executing under a "
+                 "foreign tracer -- treating the page as executable");
+        munmap(p, len);
+        return true;
     }
 
     struct sigaction sa, prev_bus, prev_segv, prev_ill;

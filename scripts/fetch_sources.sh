@@ -32,23 +32,29 @@ for u in "$FFI_SRC" "$ICONV_SRC" "$GETTEXT_SRC" "$GLIB_SRC" "$PIXMAN_SRC" "$SLIR
     unpack "$u" || rc=1
 done
 
-if [ ! -d "$SRC/libucontext" ]; then
-    echo "[git ] libucontext"
-    git clone "$LIBUCONTEXT_REPO" "$SRC/libucontext" >/dev/null 2>&1 \
-        && git -C "$SRC/libucontext" checkout -q "$LIBUCONTEXT_COMMIT" \
-        || { echo "[FAIL] libucontext"; rc=1; }
-else
-    echo "[skip] libucontext"
-fi
+# A git clone is one TCP connection with no retry built in, and a flaky runner
+# turns that into a failed 20-minute build. The tarballs above retry three
+# times; these get the same courtesy, with the half-cloned directory dropped
+# between attempts so a dead clone cannot look like a finished one.
+clone_pinned() {
+    local repo="$1" commit="$2" dest="$3" name="$4"
+    if [ -d "$dest" ]; then echo "[skip] $name"; return 0; fi
+    local attempt
+    for attempt in 1 2 3; do
+        echo "[git ] $name (attempt $attempt)"
+        if git clone "$repo" "$dest" >/dev/null 2>&1 \
+            && git -C "$dest" checkout -q "$commit" 2>/dev/null; then
+            return 0
+        fi
+        rm -rf "$dest"
+        sleep $((attempt * 5))
+    done
+    echo "[FAIL] $name"
+    return 1
+}
 
-if [ ! -d "$SRC/Hypervisor" ]; then
-    echo "[git ] Hypervisor"
-    git clone "$HYPERVISOR_REPO" "$SRC/Hypervisor" >/dev/null 2>&1 \
-        && git -C "$SRC/Hypervisor" checkout -q "$HYPERVISOR_COMMIT" \
-        || { echo "[FAIL] Hypervisor"; rc=1; }
-else
-    echo "[skip] Hypervisor"
-fi
+clone_pinned "$LIBUCONTEXT_REPO" "$LIBUCONTEXT_COMMIT" "$SRC/libucontext" libucontext || rc=1
+clone_pinned "$HYPERVISOR_REPO" "$HYPERVISOR_COMMIT" "$SRC/Hypervisor" Hypervisor || rc=1
 
 echo "--- result rc=$rc ---"
 ls -1 "$SRC" | grep -v '^\.' 
