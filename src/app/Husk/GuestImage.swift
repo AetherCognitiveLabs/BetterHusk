@@ -1021,11 +1021,21 @@ final class GuestImage: ObservableObject {
     private func removeStaleDownloads() {
         guard fetcher == nil, task == nil else { return }
         let tmp = FileManager.default.temporaryDirectory
-        for name in ["husk-snapshot-download.gz", "husk-guest-download.qcow2"] {
-            let path = tmp.appendingPathComponent(name).path
-            guard let size = (try? FileManager.default.attributesOfItem(atPath: path))?[.size] as? NSNumber else { continue }
-            try? FileManager.default.removeItem(atPath: path)
-            HuskLog.log("guest", "removed \(name) (\(size.int64Value >> 20) MiB) left by an earlier run")
+        // A staged image is not stale: it is a download that finished and was never installed -- iOS can
+        // deliver didFinish and suspend us before finished() runs. Deleting it makes the gigabyte download
+        // again for no reason; validating and installing it costs a hash pass and saves the whole transfer.
+        let stagedImage = tmp.appendingPathComponent("husk-guest-download.qcow2")
+        if FileManager.default.fileExists(atPath: stagedImage.path) {
+            state = .installing
+            DispatchQueue.global(qos: .utility).async {
+                let digest = DigestWriter.ofFile(at: stagedImage.path)
+                Task { @MainActor in self.finished(tempURL: stagedImage, digest: digest) }
+            }
+        }
+        let snapshotStaged = tmp.appendingPathComponent("husk-snapshot-download.gz").path
+        if let size = (try? FileManager.default.attributesOfItem(atPath: snapshotStaged))?[.size] as? NSNumber {
+            try? FileManager.default.removeItem(atPath: snapshotStaged)
+            HuskLog.log("guest", "removed husk-snapshot-download.gz (\(size.int64Value >> 20) MiB) left by an earlier run")
         }
     }
 
