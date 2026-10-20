@@ -318,7 +318,7 @@ struct ContentView: View {
 
     private func start() {
         guard !started else { return }
-        guard JITBootstrap.ready else { return }
+        guard JITBootstrap.ready else { booting = false; return }
         HuskLog.log("ui", "JIT is available; starting QEMU")
         // Take the JIT region at the last moment before QEMU, as well as before
         // the download. Whichever comes first wins; the second call is a no-op.

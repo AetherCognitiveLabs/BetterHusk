@@ -795,7 +795,7 @@ final class GuestImage: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 for t in tasks {
-                    guard let found = t as? URLSessionDownloadTask else { continue }
+                    guard let found = t as? URLSessionDownloadTask, found.state != .canceling else { continue }
                     if found.taskDescription?.hasPrefix("part-") == true {
                         // Belongs to a snapshot fetcher that died with the last run: its bytes cannot rejoin the
                         // hash cleanly, so it is cancelled and fetched again.
@@ -1126,7 +1126,20 @@ final class GuestImage: ObservableObject {
     func cancel() {
         task?.cancel()
         task = nil
+        resumeData = nil
+        // A snapshot fetch in flight holds part tasks on the same session -- "cancel" means those too.
+        if fetcher != nil {
+            imageSession?.getAllTasks { tasks in
+                tasks.filter { $0.taskDescription?.hasPrefix("part-") == true }
+                     .forEach { $0.cancel() }
+            }
+            fetcher = nil
+            isFetchingSnapshot = false
+        }
+        // What is on disk decides the state -- during a snapshot fetch the image is already installed,
+        // so missing would be the wrong thing to show.
         state = .missing
+        refresh()
         HuskLog.log("guest", "download cancelled")
     }
 
