@@ -128,6 +128,14 @@ HUSK_EXPORT bool husk_ios_jit_mapjit_works(void);
 HUSK_EXPORT const char *husk_ios_jit_self_route(void);
 
 /*
+ * Mark that a trap servicer (StikDebug-style) is expected to answer our brks.
+ * Set by the side that knows which JIT method is active: a mere debugger
+ * attach is not the same thing, and trapping without a servicer stops the
+ * process instead of being handled.
+ */
+HUSK_EXPORT void husk_ios_jit_expect_servicer(void);
+
+/*
  * Log the process's phys_footprint -- the number jetsam actually kills on.
  * `tag` labels the call site in the log.
  */

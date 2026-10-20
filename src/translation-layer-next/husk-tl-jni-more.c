@@ -3470,7 +3470,121 @@ static void String_replaceFirst(tl_jcall *c)
     jobj *m = tl_jni_call(p, "matcher", "(Ljava/lang/CharSequence;)Ljava/util/regex/Matcher;", &b).l;
     c->ret = tl_jni_call(m, "replaceFirst", "(Ljava/lang/String;)Ljava/lang/String;", &c->args[1]);
 }
-static void String_format(tl_jcall *c);
+/* String.format: the common specifiers, no java/util/Formatter object behind it.
+ * %[index$][flags][width][.precision]conv -- '<' reuses the last argument, explicit
+ * indices do not move the implicit cursor. Boxes are read by class, unknown
+ * specifiers degrade to the argument's string form. */
+static int64_t fmt_arg_i(jobj *o)
+{
+    if (!o) return 0;
+    const char *cn = tl_jni_class_name(o);
+    if (!strcmp(cn, "java/lang/Double")) return (int64_t)get_dbl(o, "value");
+    if (!strcmp(cn, "java/lang/Float"))  return (int64_t)get_flt(o, "value");
+    if (!strcmp(cn, "java/lang/Long"))   return get_lng(o, "value");
+    if (o->kind == TL_K_STRING) { bool ok; int64_t v = parse_ll(S(o), 10, &ok); return ok ? v : 0; }
+    return get_int(o, "value");
+}
+static double fmt_arg_f(jobj *o)
+{
+    if (!o) return 0;
+    const char *cn = tl_jni_class_name(o);
+    if (!strcmp(cn, "java/lang/Double")) return get_dbl(o, "value");
+    if (!strcmp(cn, "java/lang/Float"))  return get_flt(o, "value");
+    if (!strcmp(cn, "java/lang/Long"))   return (double)get_lng(o, "value");
+    if (o->kind == TL_K_STRING) return strtod(S(o), NULL);
+    return (double)get_int(o, "value");
+}
+static void String_format(tl_jcall *c)
+{
+    const char *f = S(c->args[0].l);
+    jobj *av = c->args[1].l;
+    uint32_t an = (av && av->kind == TL_K_OBJ_ARRAY) ? av->oarr.len : 0;
+    jobj **ao = an ? av->oarr.v : NULL;
+    sbuf b = {0};
+    size_t ai = 0, last = 0;
+    for (const char *p = f; *p;) {
+        const char *pc = strchr(p, '%');
+        if (!pc) { sb_add(&b, p); break; }
+        sb_add_n(&b, p, (size_t)(pc - p));
+        p = pc + 1;
+        if (*p == '%') { sb_add_n(&b, "%", 1); p++; continue; }
+        if (*p == 'n') { sb_add_n(&b, "\n", 1); p++; continue; }
+        const char *q = p;
+        while (*q >= '0' && *q <= '9') q++;
+        size_t use = ai; int idxed = 0;
+        if (*q == '$' && q != p) { use = (size_t)strtoul(p, NULL, 10) - 1; p = q + 1; idxed = 1; }
+        int minus = 0, zero = 0, plus = 0, blank = 0, alt = 0, reuse = 0;
+        while (*p && strchr("-+ 0#<,", *p)) {
+            char fl = *p++;
+            if (fl == '-') minus = 1; else if (fl == '+') plus = 1; else if (fl == ' ') blank = 1;
+            else if (fl == '0') zero = 1; else if (fl == '#') alt = 1; else if (fl == '<') reuse = 1;
+            /* ',': the grouping flag is parsed but not applied */
+        }
+        int w = (int)strtol(p, (char **)&p, 10);
+        int prec = (*p == '.') ? (int)strtol(++p, (char **)&p, 10) : -1;
+        char cv = *p ? *p++ : 0;
+        if (!reuse) { last = use; if (!idxed) ai++; }
+        if (cv == 't' || cv == 'T') cv = *p ? *p++ : 0;      /* dates fall back to the arg's string */
+        jobj *o = last < an ? ao[last] : NULL;
+        char spec[48], *sp = spec, raw[1200];
+        *sp++ = '%';
+        if (plus) *sp++ = '+';
+        if (blank) *sp++ = ' ';
+        if (alt) *sp++ = '#';
+        if (prec >= 0) sp += sprintf(sp, ".%d", prec);
+        raw[0] = 0;
+        switch (cv) {
+        case 'd': strcpy(sp, "lld"); snprintf(raw, sizeof(raw), spec, (long long)fmt_arg_i(o)); break;
+        case 'x': strcpy(sp, "llx"); snprintf(raw, sizeof(raw), spec, (long long)fmt_arg_i(o)); break;
+        case 'X': strcpy(sp, "llX"); snprintf(raw, sizeof(raw), spec, (long long)fmt_arg_i(o)); break;
+        case 'o': strcpy(sp, "llo"); snprintf(raw, sizeof(raw), spec, (long long)fmt_arg_i(o)); break;
+        case 'e': strcpy(sp, "e");   snprintf(raw, sizeof(raw), spec, fmt_arg_f(o)); break;
+        case 'E': strcpy(sp, "E");   snprintf(raw, sizeof(raw), spec, fmt_arg_f(o)); break;
+        case 'f': strcpy(sp, "f");   snprintf(raw, sizeof(raw), spec, fmt_arg_f(o)); break;
+        case 'g': strcpy(sp, "g");   snprintf(raw, sizeof(raw), spec, fmt_arg_f(o)); break;
+        case 'G': strcpy(sp, "G");   snprintf(raw, sizeof(raw), spec, fmt_arg_f(o)); break;
+        case 'a': case 'A': strcpy(sp, "g"); snprintf(raw, sizeof(raw), spec, fmt_arg_f(o)); break;
+        case 'b': case 'B': {
+            int t = o ? 1 : 0;
+            if (o && !strcmp(tl_jni_class_name(o), "java/lang/Boolean")) { char v[16]; obj_str(o, v, sizeof(v)); t = !strcmp(v, "true"); }
+            snprintf(raw, sizeof(raw), "%s", t ? "true" : "false");
+            break;
+        }
+        case 'h': case 'H': {
+            jvalue r = o ? tl_jni_call(o, "hashCode", "()I", NULL) : vi(0);
+            snprintf(raw, sizeof(raw), "%x", (unsigned)r.i);
+            break;
+        }
+        case 'c': case 'C': {
+            const char *cn = o ? tl_jni_class_name(o) : "";
+            if (!strcmp(cn, "java/lang/Integer") || !strcmp(cn, "java/lang/Short") || !strcmp(cn, "java/lang/Byte"))
+                snprintf(raw, sizeof(raw), "%c", (char)fmt_arg_i(o));
+            else { char v[600]; obj_str(o, v, sizeof(v)); snprintf(raw, sizeof(raw), "%c", v[0] ? v[0] : ' '); }
+            break;
+        }
+        case 's': case 'S': default:
+            obj_str(o, raw, sizeof(raw));
+            if (prec >= 0 && (int)strlen(raw) > prec) raw[prec] = 0;
+            break;
+        }
+        if (cv >= 'A' && cv <= 'Z' && cv != 'X')
+            for (char *u = raw; *u; u++) *u = (char)toupper((unsigned char)*u);
+        size_t rl = strlen(raw);
+        if (w > 0 && rl < (size_t)w) {
+            size_t padn = (size_t)w - rl;
+            if (minus) { sb_add(&b, raw); while (padn--) sb_add_n(&b, " ", 1); }
+            else if (zero) {
+                size_t pre = (raw[0] == '-' || raw[0] == '+' || raw[0] == ' ') ? 1
+                           : (raw[0] == '0' && (raw[1] == 'x' || raw[1] == 'X')) ? 2 : 0;
+                sb_add_n(&b, raw, pre);
+                while (padn--) sb_add_n(&b, "0", 1);
+                sb_add(&b, raw + pre);
+            } else { while (padn--) sb_add_n(&b, " ", 1); sb_add(&b, raw); }
+        } else sb_add(&b, raw);
+    }
+    c->ret = vl(STR(b.p ? b.p : ""));
+    free(b.p);
+}
 
 /* ---- concurrent primitives: real cond/mutex state ---- */
 
