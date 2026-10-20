@@ -1339,7 +1339,7 @@ private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate {
         let nsError = error as NSError
         // "Cancel Download" reports through the same channel -- it is not a failure to show in red.
         guard !(nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled) else { return }
-        let resume = nsError.userInfo[NSURLSessionDownloadTaskResumeDataKey] as? Data
+        let resume = nsError.userInfo["NSURLSessionDownloadTaskResumeData"] as? Data
         Task { @MainActor in self.owner?.downloadStopped(error.localizedDescription, resumeData: resume) }
     }
 

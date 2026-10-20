@@ -45,7 +45,7 @@ struct JITCard: View {
                 Button { jit.showSetup = true } label: {
                     VStack(alignment: .leading, spacing: 1) {
                         Text("JIT is off").font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
-                        Text(jit.busy ? (jit.status?.l10n ?? String(localized: "Turning on JIT…")) : String(localized: "Games need it. \(offered == .builtIn ? "StikJIT" : offered.title) turns it on."))
+                        Text(jit.busy ? (jit.status ?? String(localized: "Turning on JIT…")) : String(localized: "Games need it. \(offered == .builtIn ? "StikJIT" : offered.title) turns it on."))
                             .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)

@@ -440,9 +440,9 @@ struct GuestControl: View {
     }
 }
 
-extension String {
+extension StringProtocol {
     /// Looks this literal up in the compiled string catalog at render time.
     /// Use for runtime `String` values shown in `Text`/`Label` — static literals
     /// localize through `LocalizedStringKey` on their own.
-    var l10n: LocalizedStringKey { LocalizedStringKey(self) }
+    var l10n: LocalizedStringKey { LocalizedStringKey(String(self)) }
 }

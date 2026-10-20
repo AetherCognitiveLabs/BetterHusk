@@ -321,7 +321,7 @@ enum JITBootstrap {
     /// shared process, and its teamIdentifier is what the sideloader stamped onto the bundle id.
     static var attachBundleID: String {
         if isInsideLiveContainer,
-           let utils = NSClassFromString("LCSharedUtils") as? NSObjectProtocol.Type {
+           let utils = NSClassFromString("LCSharedUtils") as? NSObject.Type {
             let teamSel = NSSelectorFromString("teamIdentifier")
             if utils.responds(to: teamSel),
                let team = utils.perform(teamSel)?.takeUnretainedValue() as? String, !team.isEmpty {

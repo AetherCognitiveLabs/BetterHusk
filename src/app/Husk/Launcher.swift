@@ -588,7 +588,7 @@ private struct JITNotice: View {
                     VStack(alignment: .leading, spacing: 1) {
                         Text("JIT is off").font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
                         Text(jit.busy
-                             ? (jit.status?.l10n ?? String(localized: "Turning on…"))
+                             ? (jit.status ?? String(localized: "Turning on…"))
                              : JITBootstrap.isInsideLiveContainer
                                  ? String(localized: "LiveContainer owns JIT here. Tap for options.")
                                  : String(localized: "Games need it. Tap to turn it on."))

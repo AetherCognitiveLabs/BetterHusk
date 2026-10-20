@@ -292,7 +292,7 @@ struct TLAppSettingsView: View {
             Section {
                 Picker("Open In", selection: $settings.window) {
                     ForEach(TLAppSettings.WindowMode.allCases) { m in
-                        Text(m == .auto ? String(localized: "Default (\(AppWindows.defaultWindowed ? "Window" : "Full Screen"))") : m.title.l10n).tag(m)
+                        Text(m == .auto ? String(localized: "Default (\(AppWindows.defaultWindowed ? "Window" : "Full Screen"))") : m.title).tag(m)
                     }
                 }
             } header: {

@@ -279,7 +279,7 @@ struct CompatReportSheet: View {
                     ForEach([CompatibilityStore.Status.works, .opens, .broken], id: \.self) { s in
                         Button { status = s } label: {
                             HStack {
-                                Label(s == .opens ? String(localized: "Opens, but Has Problems") : s.label.l10n, systemImage: s.symbol)
+                                Label(s == .opens ? LocalizedStringKey("Opens, but Has Problems") : s.label.l10n, systemImage: s.symbol)
                                     .foregroundStyle(.primary)
                                 Spacer()
                                 if status == s { Image(systemName: "checkmark").foregroundStyle(.tint) }
