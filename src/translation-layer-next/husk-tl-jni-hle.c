@@ -332,7 +332,11 @@ static void Activity_moveTaskToBack(tl_jcall *c)  { c->ret = vz(1); }
 static void Activity_setResult(tl_jcall *c)
 {
     tl_jni_set_field(c->self, "resultCode", "I", c->args[0]);
-    if (c->nargs > 1) tl_jni_set_field(c->self, "resultData", "Landroid/content/Intent;", c->args[1]);
+}
+static void Activity_setResult_data(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "resultCode", "I", c->args[0]);
+    tl_jni_set_field(c->self, "resultData", "Landroid/content/Intent;", c->args[1]);
 }
 static void Activity_getTitle(tl_jcall *c)        { c->ret = vl(STR(H.pkg)); }
 static void Activity_getCallingPackage(tl_jcall *c)  { c->ret = vl(NULL); }
@@ -1043,7 +1047,7 @@ static void sp_flush(jobj *sp)
             if (!e.l) break;
             jvalue k = tl_jni_call(e.l, "getKey", "()Ljava/lang/Object;", NULL);
             jvalue v = tl_jni_call(e.l, "getValue", "()Ljava/lang/Object;", NULL);
-            const char *cls = v.l && v.l->cls ? tl_jni_class_name(v.l) : "";
+            const char *cls = v.l && ((jobj *)v.l)->cls ? tl_jni_class_name(v.l) : "";
             char t = 'S';
             if (strstr(cls, "Integer")) t = 'I'; else if (strstr(cls, "Long")) t = 'J';
             else if (strstr(cls, "Boolean")) t = 'Z'; else if (strstr(cls, "Float")) t = 'F';
@@ -1064,7 +1068,7 @@ static jvalue sp_get(tl_jcall *c, char want)
     jvalue a[1] = { c->args[0] };
     jvalue v = m ? tl_jni_call(m, "get", "(Ljava/lang/Object;)Ljava/lang/Object;", a) : (jvalue){0};
     if (!v.l) return c->args[1];
-    const char *cls = v.l->cls ? tl_jni_class_name(v.l) : "";
+    const char *cls = ((jobj *)v.l)->cls ? tl_jni_class_name(v.l) : "";
     if (want == 'L') { jvalue s = tl_jni_call(v.l, "toString", "()Ljava/lang/String;", NULL); return s.l ? s : c->args[1]; }
     if (want == 'I' && strstr(cls, "Integer")) return tl_jni_get_field(v.l, "value", "I");
     if (want == 'J' && strstr(cls, "Long"))    return tl_jni_get_field(v.l, "value", "J");
@@ -1628,7 +1632,7 @@ static const tl_jhle k_hle[] = {
     M("android/app/Activity", "recreate", "()V", Context_noop),
     M("android/app/Activity", "moveTaskToBack", "(Z)Z", Activity_moveTaskToBack),
     M("android/app/Activity", "setResult", "(I)V", Activity_setResult),
-    M("android/app/Activity", "setResult", "(ILandroid/content/Intent;)V", Activity_setResult),
+    M("android/app/Activity", "setResult", "(ILandroid/content/Intent;)V", Activity_setResult_data),
     M("android/app/Activity", "getTitle", "()Ljava/lang/CharSequence;", Activity_getTitle),
     M("android/app/Activity", "setTitle", "(Ljava/lang/CharSequence;)V", Context_noop),
     M("android/app/Activity", "setTitle", "(I)V", Context_noop),

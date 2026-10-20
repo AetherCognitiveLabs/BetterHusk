@@ -793,7 +793,9 @@ int tl_tls_write(void *h, const void *buf, int n)
     if (!t || t->st == 2) return -1;
     dispatch_semaphore_t done = dispatch_semaphore_create(0);
     __block bool ok = true;
-    dispatch_data_t d = dispatch_data_create(buf, (size_t)n, t->q, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+    uint8_t *tmp = malloc((size_t)n);
+    memcpy(tmp, buf, (size_t)n);
+    dispatch_data_t d = dispatch_data_create(tmp, (size_t)n, t->q, DISPATCH_DATA_DESTRUCTOR_FREE);
     nw_connection_send(t->c, d, NW_CONNECTION_DEFAULT_MESSAGE_CONTEXT, true, ^(nw_error_t error) {
         if (error) ok = false;
         dispatch_semaphore_signal(done);
