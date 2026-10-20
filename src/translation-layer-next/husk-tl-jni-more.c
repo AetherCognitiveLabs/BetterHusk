@@ -1,0 +1,16282 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+/*
+ * The rest of the Java world: what an app that is not "just a Unity game" asks for.
+ *
+ * husk-tl-jni-hle.c implements the calls Unity makes; this file implements the wider
+ * Android surface other apps and engines reach for: strings and collections that
+ * actually store, files that actually read and write, reflection that actually
+ * invokes, Intents and Bundles that actually carry extras, JSON that actually
+ * parses, and the device services a native app queries -- bridged to the host where
+ * the host has a real answer (husk-tl-more.m) and an honest static answer where it
+ * does not.
+ *
+ * The map store layout { jobj **k, **v; int n, cap; } matches husk-tl-jni-http.c's
+ * hmap, so a HashMap built there reads back here; key equality generalizes theirs
+ * (String.equals and boxed-primitive equality in addition to strcmp).
+ */
+#define _DARWIN_C_SOURCE
+#include "husk-tl-jni.h"
+
+#include <ctype.h>
+#include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <math.h>
+#include <netdb.h>
+#include <arpa/inet.h>
+#include <pthread.h>
+#include <regex.h>
+#include <sched.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <strings.h>
+#include <sys/stat.h>
+#include <sys/statvfs.h>
+#include <sys/sysctl.h>
+#include <sys/time.h>
+#include <sys/types.h>
+#include <sys/utsname.h>
+#include <time.h>
+#ifdef __APPLE__
+#include <mach/mach.h>
+#endif
+#include <unistd.h>
+
+#include "husk-tl-bionic.h"
+#include "husk-tl-internal.h"
+#include "husk-tl-ld.h"
+#include "husk-tl-http.h"
+#include "husk-tl-jni-internal.h"
+
+/* ---- provided by the rest of the layer ---- */
+jobj *tl_hle_activity(void);
+jobj *tl_hle_assets(void);
+jobj *tl_hle_config(void);
+int   tl_hle_version_code(void);
+const char *tl_hle_manifest_meta(const char *key);
+const char *tl_hle_android_id(void);
+jobj *tl_proxy_call(jobj *proxy, const char *iface, const char *name, const char *sig, jobj **args, int nargs);
+jobj *tl_assetstream_list(const char *path);
+bool  tl_assetstream_stored(const char *name, int *fd, int64_t *off, int64_t *len);
+void  dvm_monitor_wait(jobj *o, int64_t ms, int32_t ns);
+void  dvm_monitor_notify(jobj *o, bool all);
+
+/* ---- provided by husk-tl-more.m (host bridges) ---- */
+int   tl_more_has_uikit;
+void  tl_more_haptic(int style);
+void  tl_more_vibrate(int64_t ms);
+void  tl_more_clipboard_set(const char *text);
+char *tl_more_clipboard_get(void);
+int   tl_more_clipboard_has(void);
+void  tl_more_toast(const char *text);
+int   tl_more_open_url(const char *url);
+void  tl_more_idle_timer(int keep_on);
+int   tl_more_battery_pct(void);
+int   tl_more_battery_state(void);
+int   tl_more_image_info(const char *path, int *w, int *h);
+int   tl_mp_new(void);
+void  tl_mp_source_path(int id, const char *path);
+void  tl_mp_source_fd(int id, int fd, int64_t off, int64_t len);
+void  tl_mp_source_url(int id, const char *url);
+void  tl_mp_prepare(int id, int async);
+void  tl_mp_start(int id);
+void  tl_mp_pause(int id);
+void  tl_mp_stop(int id);
+void  tl_mp_release(int id);
+void  tl_mp_seek(int id, int ms);
+int   tl_mp_pos(int id);
+int   tl_mp_dur(int id);
+int   tl_mp_playing(int id);
+void  tl_mp_looping(int id, int on);
+void  tl_mp_volume(int id, float l, float r);
+int   tl_sp_load_path(const char *path);
+int   tl_sp_load_fd(int fd, int64_t off, int64_t len);
+int   tl_sp_play(int sid, float lv, float rv, int prio, int loop, float rate);
+void  tl_sp_stop(int stream);
+void  tl_sp_pause(int stream);
+void  tl_sp_resume(int stream);
+void  tl_sp_volume(int stream, float lv, float rv);
+void  tl_sp_loop(int stream, int loop);
+void  tl_sp_rate(int stream, float rate);
+void  tl_sp_unload(int sid);
+int   tl_wv_new(void);
+void  tl_wv_load_url(int id, const char *url);
+void  tl_wv_load_html(int id, const char *html, const char *base);
+void  tl_wv_frame(int id, double x, double y, double w, double h);
+void  tl_wv_visible(int id, int vis);
+void  tl_wv_js(int id, int enabled);
+void  tl_wv_destroy(int id);
+char *tl_wv_url(int id);
+char *tl_wv_title(int id);
+int   tl_wv_can_back(int id);
+void  tl_wv_back(int id);
+void  tl_wv_reload(int id);
+void  tl_wv_stop(int id);
+void  tl_wv_eval(int id, const char *js);
+int   tl_wv_progress(int id);
+
+/* ---------------------------------------------------------------- helpers */
+
+static jvalue vl(void *p)     { jvalue v; v.j = 0; v.l = p; return v; }
+static jvalue vi(int i)       { jvalue v; v.j = 0; v.i = i; return v; }
+static jvalue vz(int z)       { jvalue v; v.j = 0; v.z = z != 0; return v; }
+static jvalue vf(float f)     { jvalue v; v.j = 0; v.f = f; return v; }
+static jvalue vd(double d)    { jvalue v; v.j = 0; v.d = d; return v; }
+static jvalue vj(int64_t j)   { jvalue v; v.j = j; return v; }
+static jvalue vb(int8_t b)    { jvalue v; v.j = 0; v.b = b; return v; }
+static jvalue vs(int16_t s)   { jvalue v; v.j = 0; v.s = s; return v; }
+static jvalue vc(uint16_t ch) { jvalue v; v.j = 0; v.c = ch; return v; }
+
+#define C(name) tl_jni_class(name)
+#define STR(s) tl_jni_new_string(s)
+static const char *S(const jobj *o) { const char *s = tl_jni_string(o); return s ? s : ""; }
+static jobj *make(const char *cls) { return tl_jni_new_object(C(cls)); }
+static void set_str(jobj *o, const char *f, const char *v) { tl_jni_set_field(o, f, "Ljava/lang/String;", vl(STR(v))); }
+static void set_int(jobj *o, const char *f, int v) { tl_jni_set_field(o, f, "I", vi(v)); }
+static void set_long(jobj *o, const char *f, int64_t v) { tl_jni_set_field(o, f, "J", vj(v)); }
+static void set_float(jobj *o, const char *f, float v) { tl_jni_set_field(o, f, "F", vf(v)); }
+static void set_bool(jobj *o, const char *f, int v) { tl_jni_set_field(o, f, "Z", vz(v)); }
+static void set_obj(jobj *o, const char *f, const char *sig, jobj *v) { tl_jni_set_field(o, f, sig, vl(v)); }
+static int   get_int(jobj *o, const char *f) { return o ? tl_jni_get_field(o, f, "I").i : 0; }
+static int64_t get_lng(jobj *o, const char *f) { return o ? tl_jni_get_field(o, f, "J").j : 0; }
+static float get_flt(jobj *o, const char *f) { return o ? tl_jni_get_field(o, f, "F").f : 0; }
+static jobj *get_str(jobj *o, const char *f) { return o ? tl_jni_get_field(o, f, "Ljava/lang/String;").l : NULL; }
+
+static void Noop(tl_jcall *c)  { (void)c; }
+static void False(tl_jcall *c) { c->ret = vz(0); }
+static void True(tl_jcall *c)  { c->ret = vz(1); }
+static void Zero(tl_jcall *c)  { c->ret = vi(0); }
+static void Minus1(tl_jcall *c){ c->ret = vi(-1); }
+static void Null(tl_jcall *c)  { c->ret = vl(NULL); }
+static void Self(tl_jcall *c)  { c->ret = vl(tl_jni_ref(c->self)); }
+static void EmptyStr(tl_jcall *c) { c->ret = vl(STR("")); }
+static void EmptyList(tl_jcall *c) { c->ret = vl(make("java/util/ArrayList")); }
+static void EmptyMap(tl_jcall *c)  { c->ret = vl(make("java/util/HashMap")); }
+static void EmptyBytes(tl_jcall *c) { c->ret = vl(tl_jni_new_prim_array('B', 0)); }
+
+static void mkdirs(const char *path)
+{
+    char tmp[1024]; snprintf(tmp, sizeof(tmp), "%s", path);
+    for (char *p = tmp + 1; *p; p++) if (*p == '/') { *p = 0; mkdir(tmp, 0755); *p = '/'; }
+    mkdir(tmp, 0755);
+}
+
+/* app config, set alongside tl_hle_configure */
+static struct {
+    char pkg[128], apk[1024], data[512], files[600], cache[600], ext_files[700], ext_cache[700], sdcard[700];
+    int width, height;
+} M2;
+void tl_more_configure(const char *pkg, const char *apk, const char *data, int w, int h)
+{
+    snprintf(M2.pkg, sizeof(M2.pkg), "%s", pkg);
+    snprintf(M2.apk, sizeof(M2.apk), "%s", apk);
+    snprintf(M2.data, sizeof(M2.data), "%s", data);
+    snprintf(M2.files, sizeof(M2.files), "%s/files", data);
+    snprintf(M2.cache, sizeof(M2.cache), "%s/cache", data);
+    snprintf(M2.ext_files, sizeof(M2.ext_files), "%s/sdcard/Android/data/%s/files", data, pkg);
+    snprintf(M2.ext_cache, sizeof(M2.ext_cache), "%s/sdcard/Android/data/%s/cache", data, pkg);
+    snprintf(M2.sdcard, sizeof(M2.sdcard), "%s/sdcard", data);
+    M2.width = w; M2.height = h;
+}
+
+static jobj *new_file(const char *path)
+{
+    jobj *f = make("java/io/File");
+    set_str(f, "path", path);
+    return f;
+}
+static const char *file_path(const jobj *f) { return S(tl_jni_get_field((jobj *)f, "path", "Ljava/lang/String;").l); }
+
+/* boxed primitives: the "value" field the loop.c boxes use */
+static const char *boxed_sig(const char *cls)
+{
+    if (!cls) return NULL;
+    if (!strcmp(cls, "java/lang/Boolean")) return "Z";
+    if (!strcmp(cls, "java/lang/Byte")) return "B";
+    if (!strcmp(cls, "java/lang/Character")) return "C";
+    if (!strcmp(cls, "java/lang/Short")) return "S";
+    if (!strcmp(cls, "java/lang/Integer")) return "I";
+    if (!strcmp(cls, "java/lang/Long")) return "J";
+    if (!strcmp(cls, "java/lang/Float")) return "F";
+    if (!strcmp(cls, "java/lang/Double")) return "D";
+    return NULL;
+}
+static jobj *boxed(const char *cls, const char *sig, jvalue v)
+{
+    jobj *o = make(cls);
+    tl_jni_set_field(o, "value", sig, v);
+    return o;
+}
+static jobj *box_int(int i)       { return boxed("java/lang/Integer", "I", vi(i)); }
+static jobj *box_long(int64_t j)  { return boxed("java/lang/Long", "J", vj(j)); }
+static jobj *box_bool(int z)      { return boxed("java/lang/Boolean", "Z", vz(z)); }
+static jobj *box_float(float f)   { return boxed("java/lang/Float", "F", vf(f)); }
+static jobj *box_double(double d) { return boxed("java/lang/Double", "D", vd(d)); }
+static jobj *box_byte(int8_t b)   { return boxed("java/lang/Byte", "B", vb(b)); }
+static jobj *box_short(int16_t s) { return boxed("java/lang/Short", "S", vs(s)); }
+static jobj *box_char(uint16_t ch){ return boxed("java/lang/Character", "C", vc(ch)); }
+
+/* unbox through the object's own xValue method, so the class picks its field */
+static jvalue unbox_as(jobj *o, char kind)
+{
+    static const struct { char k; const char *name, *sig; } m[] = {
+        { 'Z', "booleanValue", "()Z" }, { 'B', "byteValue", "()B" }, { 'C', "charValue", "()C" },
+        { 'S', "shortValue", "()S" }, { 'I', "intValue", "()I" },   { 'J', "longValue", "()J" },
+        { 'F', "floatValue", "()F" }, { 'D', "doubleValue", "()D" },
+    };
+    for (size_t i = 0; i < sizeof(m) / sizeof(m[0]); i++)
+        if (m[i].k == kind) return tl_jni_call(o, m[i].name, m[i].sig, NULL);
+    jvalue v; v.j = 0; v.l = o;
+    return v;
+}
+static jobj *box_for(char kind, jvalue v)
+{
+    switch (kind) {
+    case 'Z': return box_bool(v.z);  case 'B': return box_byte(v.b);
+    case 'C': return box_char(v.c);  case 'S': return box_short(v.s);
+    case 'I': return box_int(v.i);   case 'J': return box_long(v.j);
+    case 'F': return box_float(v.f); case 'D': return box_double(v.d);
+    default:  return v.l;
+    }
+}
+static double num_of(jobj *o)
+{
+    if (!o) return 0;
+    const char *sig = boxed_sig(tl_jni_class_name(o));
+    if (!sig) return 0;
+    jvalue v = tl_jni_get_field(o, "value", sig);
+    switch (sig[0]) {
+    case 'F': return v.f;
+    case 'D': return v.d;
+    default:  return (double)v.j;
+    }
+}
+static int64_t int_of(jobj *o)
+{
+    if (!o) return 0;
+    const char *sig = boxed_sig(tl_jni_class_name(o));
+    if (!sig) return 0;
+    jvalue v = tl_jni_get_field(o, "value", sig);
+    switch (sig[0]) {
+    case 'F': return (int64_t)v.f;
+    case 'D': return (int64_t)v.d;
+    default:  return v.j;
+    }
+}
+
+/* collection-key equality: identity, String.equals, boxed-primitive equality */
+static bool tl_more_obj_eq(jobj *a, jobj *b)
+{
+    if (a == b) return true;
+    if (!a || !b) return false;
+    if (a->kind == TL_K_STRING && b->kind == TL_K_STRING) {
+        const char *x = tl_jni_string(a), *y = tl_jni_string(b);
+        return x && y && !strcmp(x, y);
+    }
+    if (a->kind != TL_K_OBJECT || b->kind != TL_K_OBJECT) return false;
+    const char *ca = tl_jni_class_name(a), *cb = tl_jni_class_name(b);
+    if (!ca || !cb || strcmp(ca, cb)) return false;
+    const char *sig = boxed_sig(ca);
+    if (!sig) return false;
+    jvalue va = tl_jni_get_field(a, "value", sig), w = tl_jni_get_field(b, "value", sig);
+    switch (sig[0]) {
+    case 'F': return va.f == w.f;
+    case 'D': return va.d == w.d;
+    default:  return va.j == w.j;
+    }
+}
+
+/* call a method on an object or on a JNIBridge proxy, picking the right dispatch */
+static jvalue fire(jobj *o, const char *iface, const char *name, const char *sig, jvalue *args, int nargs)
+{
+    jvalue z; z.j = 0;
+    if (!o) return z;
+    if (!strcmp(tl_jni_class_name(o), "java/lang/reflect/Proxy")) {
+        jobj *a[16];
+        int n = nargs < 16 ? nargs : 16;
+        for (int i = 0; i < n; i++) a[i] = args[i].l;
+        z.l = tl_proxy_call(o, iface, name, sig, a, n);
+        return z;
+    }
+    return tl_jni_call(o, name, sig, args);
+}
+
+/* an object's string form, for %s and toString fallbacks */
+static void obj_str(jobj *o, char *out, size_t n)
+{
+    if (!o) { snprintf(out, n, "null"); return; }
+    if (o->kind == TL_K_STRING) { snprintf(out, n, "%s", S(o)); return; }
+    jvalue r = tl_jni_call(o, "toString", "()Ljava/lang/String;", NULL);
+    if (r.l && r.l != o && ((jobj *)r.l)->kind == TL_K_STRING) { snprintf(out, n, "%s", S(r.l)); return; }
+    snprintf(out, n, "%s@%x", tl_jni_class_name(o), (unsigned)(uintptr_t)o);
+}
+
+static jobj *svc_obj(const char *name)
+{
+    jvalue a; a.l = STR(name);
+    return tl_jni_call(tl_hle_activity(), "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;", &a).l;
+}
+
+/* enum constants are class statics carrying name/ordinal fields */
+static jobj *enum_const(const char *cls, const char *field, int ord)
+{
+    char sig[300]; snprintf(sig, sizeof(sig), "L%s;", cls);
+    jobj *o = tl_jni_get_static(cls, field, sig).l;
+    if (o) return o;
+    o = make(cls);
+    set_str(o, "name", field);
+    set_int(o, "ordinal", ord);
+    tl_jni_set_static(cls, field, sig, vl(o));
+    return o;
+}
+static jobj *enum_by_ordinal(const char *cls, const char *const *names, int n, int ord)
+{
+    if (ord < 0 || ord >= n) ord = 0;
+    return enum_const(cls, names[ord], ord);
+}
+
+static int64_t now_ms(void) { struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts); return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000; }
+
+/* system properties: System.setProperty/getProperty and android.os.SystemProperties
+ * share one map seeded with the device values a guest reads. */
+typedef struct { char *k, *v; } prop_ent;
+static prop_ent g_props[256];
+static int g_nprops;
+static pthread_mutex_t g_prop_mu = PTHREAD_MUTEX_INITIALIZER;
+static const char *prop_get(const char *k)
+{
+    const char *v = NULL;
+    pthread_mutex_lock(&g_prop_mu);
+    for (int i = 0; i < g_nprops; i++) if (!strcmp(g_props[i].k, k)) { v = g_props[i].v; break; }
+    pthread_mutex_unlock(&g_prop_mu);
+    return v;
+}
+static void prop_put(const char *k, const char *v)
+{
+    if (!k) return;
+    pthread_mutex_lock(&g_prop_mu);
+    for (int i = 0; i < g_nprops; i++) if (!strcmp(g_props[i].k, k)) {
+        free(g_props[i].v); g_props[i].v = v ? strdup(v) : NULL;
+        pthread_mutex_unlock(&g_prop_mu); return;
+    }
+    if (g_nprops < 256) { g_props[g_nprops].k = strdup(k); g_props[g_nprops].v = v ? strdup(v) : NULL; g_nprops++; }
+    pthread_mutex_unlock(&g_prop_mu);
+}
+
+/* ============================================================== java.lang */
+
+/* String: the full method surface. Index APIs work in UTF-8 byte space but report
+ * character counts via the utf8 helpers, which is exact for the ASCII-dominant
+ * strings apps manipulate and close for everything else. */
+
+static int utf8_nchars(const char *s, int bytes)
+{
+    int n = 0;
+    for (int i = 0; s[i] && i < bytes; i++) if ((s[i] & 0xC0) != 0x80) n++;
+    return n;
+}
+static int utf8_byteof(const char *s, int charidx)
+{
+    int n = 0, i = 0;
+    while (s[i]) { if (n == charidx) return i; if ((s[i] & 0xC0) != 0x80) n++; i++; }
+    return i;
+}
+static uint32_t utf8_dec(const char *s, int i)
+{
+    unsigned char c = (unsigned char)s[i];
+    if (c < 0x80) return c;
+    if ((c & 0xE0) == 0xC0) return ((c & 0x1F) << 6) | (s[i + 1] & 0x3F);
+    if ((c & 0xF0) == 0xE0) return ((c & 0x0F) << 12) | ((s[i + 1] & 0x3F) << 6) | (s[i + 2] & 0x3F);
+    if ((c & 0xF8) == 0xF0) return ((c & 0x07) << 18) | ((s[i + 1] & 0x3F) << 12) | ((s[i + 2] & 0x3F) << 6) | (s[i + 3] & 0x3F);
+    return c;
+}
+
+static void String_charAt(tl_jcall *c)      { const char *s = S(c->self); c->ret = vc((uint16_t)utf8_dec(s, utf8_byteof(s, c->args[0].i))); }
+static void String_codePointAt(tl_jcall *c) { const char *s = S(c->self); c->ret = vi((int)utf8_dec(s, utf8_byteof(s, c->args[0].i))); }
+static void String_substring(tl_jcall *c)   { const char *s = S(c->self); c->ret = vl(STR(s + utf8_byteof(s, c->args[0].i))); }
+static void String_substring2(tl_jcall *c)
+{
+    const char *s = S(c->self);
+    int a = utf8_byteof(s, c->args[0].i), b = utf8_byteof(s, c->args[1].i);
+    if (b < a) b = a;
+    char *t = malloc((size_t)(b - a) + 1); memcpy(t, s + a, (size_t)(b - a)); t[b - a] = 0;
+    c->ret = vl(STR(t)); free(t);
+}
+static void String_subSequence(tl_jcall *c) { String_substring2(c); }
+static void String_concat(tl_jcall *c)
+{
+    char buf[4096]; snprintf(buf, sizeof(buf), "%s%s", S(c->self), S(c->args[0].l));
+    c->ret = vl(STR(buf));
+}
+static void String_indexOf_i(tl_jcall *c)
+{
+    const char *s = S(c->self), *p = strchr(s, c->args[0].i);
+    c->ret = vi(p ? utf8_nchars(s, (int)(p - s)) : -1);
+}
+static void String_indexOf_i2(tl_jcall *c)
+{
+    const char *s = S(c->self); int from = utf8_byteof(s, c->args[1].i);
+    const char *p = strchr(s + from, c->args[0].i);
+    c->ret = vi(p ? utf8_nchars(s, (int)(p - s)) : -1);
+}
+static void String_indexOf_s(tl_jcall *c)
+{
+    const char *s = S(c->self), *p = strstr(s, S(c->args[0].l));
+    c->ret = vi(p ? utf8_nchars(s, (int)(p - s)) : -1);
+}
+static void String_indexOf_s2(tl_jcall *c)
+{
+    const char *s = S(c->self); int from = utf8_byteof(s, c->args[1].i);
+    const char *p = strstr(s + from, S(c->args[0].l));
+    c->ret = vi(p ? utf8_nchars(s, (int)(p - s)) : -1);
+}
+static void String_lastIndexOf_i(tl_jcall *c)
+{
+    const char *s = S(c->self), *p = strrchr(s, c->args[0].i);
+    c->ret = vi(p ? utf8_nchars(s, (int)(p - s)) : -1);
+}
+static void String_lastIndexOf_s(tl_jcall *c)
+{
+    const char *s = S(c->self), *needle = S(c->args[0].l), *p = NULL;
+    for (const char *q = strstr(s, needle); q; q = strstr(q + 1, needle)) p = q;
+    c->ret = vi(p ? utf8_nchars(s, (int)(p - s)) : -1);
+}
+static void String_startsWith(tl_jcall *c) { const char *p = S(c->args[0].l); c->ret = vz(strncmp(S(c->self), p, strlen(p)) == 0); }
+static void String_endsWith(tl_jcall *c)
+{
+    const char *s = S(c->self), *t = S(c->args[0].l);
+    size_t sl = strlen(s), tl = strlen(t);
+    c->ret = vz(tl <= sl && !strcmp(s + sl - tl, t));
+}
+static void String_contains(tl_jcall *c) { c->ret = vz(strstr(S(c->self), S(c->args[0].l)) != NULL); }
+static void String_toLowerCase(tl_jcall *c)
+{
+    char *t = strdup(S(c->self));
+    for (char *p = t; *p; p++) if (*p >= 'A' && *p <= 'Z') *p += 32;
+    c->ret = vl(STR(t)); free(t);
+}
+static void String_toUpperCase(tl_jcall *c)
+{
+    char *t = strdup(S(c->self));
+    for (char *p = t; *p; p++) if (*p >= 'a' && *p <= 'z') *p -= 32;
+    c->ret = vl(STR(t)); free(t);
+}
+static void String_trim(tl_jcall *c)
+{
+    const char *s = S(c->self);
+    while (*s && (unsigned char)*s <= ' ') s++;
+    const char *e = s + strlen(s);
+    while (e > s && (unsigned char)e[-1] <= ' ') e--;
+    char *t = malloc((size_t)(e - s) + 1); memcpy(t, s, (size_t)(e - s)); t[e - s] = 0;
+    c->ret = vl(STR(t)); free(t);
+}
+static void String_strip(tl_jcall *c) { String_trim(c); }
+static void String_isBlank(tl_jcall *c)
+{
+    for (const char *s = S(c->self); *s; s++) if (!isspace((unsigned char)*s)) { c->ret = vz(0); return; }
+    c->ret = vz(1);
+}
+static void String_equalsIgnoreCase(tl_jcall *c)  { c->ret = vz(strcasecmp(S(c->self), S(c->args[0].l)) == 0); }
+static void String_compareTo(tl_jcall *c)         { c->ret = vi(strcmp(S(c->self), S(c->args[0].l))); }
+static void String_compareToIgnoreCase(tl_jcall *c){ c->ret = vi(strcasecmp(S(c->self), S(c->args[0].l))); }
+static void String_contentEquals(tl_jcall *c)
+{
+    jobj *o = c->args[0].l;
+    if (o && o->kind == TL_K_STRING) { c->ret = vz(!strcmp(S(c->self), S(o))); return; }
+    jvalue r = o ? tl_jni_call(o, "toString", "()Ljava/lang/String;", NULL) : (jvalue){0};
+    c->ret = vz(r.l && !strcmp(S(c->self), S(r.l)));
+}
+static void String_replace_cc(tl_jcall *c)
+{
+    char old = (char)c->args[0].c, rep = (char)c->args[1].c;
+    char *t = strdup(S(c->self));
+    for (char *p = t; *p; p++) if (*p == old) *p = rep;
+    c->ret = vl(STR(t)); free(t);
+}
+static void String_replace_seq(tl_jcall *c)
+{
+    const char *s = S(c->self), *old = S(c->args[0].l), *rep = S(c->args[1].l);
+    size_t sl = strlen(s), ol = strlen(old), rl = strlen(rep), cap = sl + rl + 64;
+    char *t = malloc(cap); size_t k = 0;
+    for (size_t i = 0; i < sl; ) {
+        if (ol && i + ol <= sl && !memcmp(s + i, old, ol)) {
+            if (k + rl + 1 > cap) { cap = (cap + rl) * 2; t = realloc(t, cap); }
+            memcpy(t + k, rep, rl); k += rl; i += ol;
+        } else {
+            if (k + 2 > cap) { cap *= 2; t = realloc(t, cap); }
+            t[k++] = s[i++];
+        }
+    }
+    t[k] = 0; c->ret = vl(STR(t)); free(t);
+}
+static void String_replaceFirst(tl_jcall *c);
+static void String_replaceAll(tl_jcall *c);
+static void String_matches(tl_jcall *c);
+static void String_split(tl_jcall *c)
+{
+    /* a literal pattern splits as text; anything with regex syntax goes through Pattern.split */
+    const char *s = S(c->self), *pat = S(c->args[0].l);
+    jobj *items[256]; int n = 0;
+    bool meta = !pat[0];
+    for (const char *p = pat; *p && !meta; p++) if (strchr("^$.[]\|(){}*+?", *p)) meta = true;
+    if (meta) {
+        jvalue a; a.l = STR(pat);
+        jobj *p = tl_jni_call(tl_jni_class_object("java/util/regex/Pattern"), "compile", "(Ljava/lang/String;)Ljava/util/regex/Pattern;", &a).l;
+        if (!p) { c->ret = vl(tl_jni_new_obj_array(C("java/lang/String"), 0)); return; }
+        jvalue b; b.l = c->self;
+        c->ret = tl_jni_call(p, "split", "(Ljava/lang/CharSequence;)[Ljava/lang/String;", &b);
+        return;
+    }
+    size_t pl = strlen(pat);
+    const char *q = s;
+    for (const char *p = strstr(q, pat); p && n < 255; p = strstr(q, pat)) {
+        char *t = malloc((size_t)(p - q) + 1); memcpy(t, q, (size_t)(p - q)); t[p - q] = 0;
+        items[n++] = STR(t); free(t);
+        q = p + pl;
+    }
+    items[n++] = STR(q);
+    jobj *arr = tl_jni_new_obj_array(C("java/lang/String"), (uint32_t)n);
+    for (int i = 0; i < n; i++) arr->oarr.v[i] = items[i];
+    c->ret = vl(arr);
+}
+static void String_toCharArray(tl_jcall *c)
+{
+    const char *s = S(c->self);
+    int n = utf8_nchars(s, (int)strlen(s));
+    jobj *a = tl_jni_new_prim_array('C', (uint32_t)n);
+    for (int i = 0; i < n; i++) ((uint16_t *)a->arr.data)[i] = (uint16_t)utf8_dec(s, utf8_byteof(s, i));
+    c->ret = vl(a);
+}
+static void String_getChars(tl_jcall *c)
+{
+    const char *s = S(c->self);
+    int a = c->args[0].i, b = c->args[1].i;
+    jobj *dst = c->args[2].l; int off = c->args[3].i;
+    if (!dst || dst->kind != TL_K_PRIM_ARRAY) return;
+    for (int i = a; i < b && off + i - a < (int)dst->arr.len; i++)
+        ((uint16_t *)dst->arr.data)[off + i - a] = (uint16_t)utf8_dec(s, utf8_byteof(s, i));
+}
+static void String_valueOf_o(tl_jcall *c)
+{
+    jobj *o = c->args[0].l;
+    if (!o) { c->ret = vl(STR("null")); return; }
+    if (o->kind == TL_K_STRING) { c->ret = vl(tl_jni_ref(o)); return; }
+    char buf[600]; obj_str(o, buf, sizeof(buf));
+    c->ret = vl(STR(buf));
+}
+static void String_valueOf_i(tl_jcall *c) { char b[24]; snprintf(b, sizeof(b), "%d", c->args[0].i); c->ret = vl(STR(b)); }
+static void String_valueOf_j(tl_jcall *c) { char b[32]; snprintf(b, sizeof(b), "%lld", (long long)c->args[0].j); c->ret = vl(STR(b)); }
+static void String_valueOf_z(tl_jcall *c) { c->ret = vl(STR(c->args[0].z ? "true" : "false")); }
+static void String_valueOf_f(tl_jcall *c) { char b[40]; snprintf(b, sizeof(b), "%g", (double)c->args[0].f); c->ret = vl(STR(b)); }
+static void String_valueOf_d(tl_jcall *c) { char b[40]; snprintf(b, sizeof(b), "%g", c->args[0].d); c->ret = vl(STR(b)); }
+static void String_valueOf_c(tl_jcall *c) { char b[8]; snprintf(b, sizeof(b), "%c", (char)c->args[0].c); c->ret = vl(STR(b)); }
+static void String_valueOf_chars(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (!a || a->kind != TL_K_PRIM_ARRAY) { c->ret = vl(STR("")); return; }
+    char *t = malloc(a->arr.len + 1);
+    for (uint32_t i = 0; i < a->arr.len; i++) t[i] = (char)((uint16_t *)a->arr.data)[i];
+    t[a->arr.len] = 0; c->ret = vl(STR(t)); free(t);
+}
+static void String_valueOf_chars_range(tl_jcall *c)
+{
+    jobj *a = c->args[0].l; int off = c->args[1].i, n = c->args[2].i;
+    if (!a || a->kind != TL_K_PRIM_ARRAY) { c->ret = vl(STR("")); return; }
+    if (off < 0) off = 0; if (off + n > (int)a->arr.len) n = (int)a->arr.len - off;
+    char *t = malloc((size_t)n + 1);
+    for (int i = 0; i < n; i++) t[i] = (char)((uint16_t *)a->arr.data)[off + i];
+    t[n] = 0; c->ret = vl(STR(t)); free(t);
+}
+static void String_init_chars_range(tl_jcall *c) { String_valueOf_chars_range(c); }
+static void String_init_sb(tl_jcall *c) { c->ret = tl_jni_call(c->args[0].l, "toString", "()Ljava/lang/String;", NULL); }
+static void String_intern(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void String_regionMatches(tl_jcall *c)
+{
+    const char *s = S(c->self), *t = S(c->args[1].l);
+    int a = utf8_byteof(s, c->args[0].i), b = utf8_byteof(t, c->args[2].i), len = c->args[3].i;
+    c->ret = vz(strncmp(s + a, t + b, (size_t)len) == 0);
+}
+static void String_regionMatches_ic(tl_jcall *c)
+{
+    const char *s = S(c->self), *t = S(c->args[2].l);
+    int a = utf8_byteof(s, c->args[1].i), b = utf8_byteof(t, c->args[3].i), len = c->args[4].i;
+    c->ret = vz(strncasecmp(s + a, t + b, (size_t)len) == 0);
+}
+static void String_repeat(tl_jcall *c)
+{
+    const char *s = S(c->self); int n = c->args[0].i < 0 ? 0 : c->args[0].i;
+    size_t sl = strlen(s); char *t = malloc(sl * (size_t)n + 1); t[0] = 0;
+    for (int i = 0; i < n; i++) strcat(t, s);
+    c->ret = vl(STR(t)); free(t);
+}
+static void String_join(tl_jcall *c)
+{
+    const char *delim = S(c->args[0].l);
+    jobj *arr = c->args[1].l;
+    char buf[8192]; buf[0] = 0; size_t k = 0;
+    if (arr && arr->kind == TL_K_OBJ_ARRAY) {
+        for (uint32_t i = 0; i < arr->oarr.len && k + 256 < sizeof(buf); i++) {
+            if (i) { strcpy(buf + k, delim); k += strlen(delim); }
+            char part[300]; obj_str(arr->oarr.v[i], part, sizeof(part));
+            strcpy(buf + k, part); k += strlen(part);
+        }
+    }
+    c->ret = vl(STR(buf));
+}
+static void String_offsetByCodePoints(tl_jcall *c) { c->ret = c->args[0]; }
+static void String_codePointCount(tl_jcall *c)
+{
+    const char *s = S(c->self);
+    c->ret = vi(utf8_nchars(s, utf8_byteof(s, c->args[1].i)) - utf8_nchars(s, utf8_byteof(s, c->args[0].i)));
+}
+
+/* ---- StringBuilder/StringBuffer: the real mutator surface ---- */
+
+typedef struct { char *p; size_t n, cap; } sbuf;
+static sbuf *sb_of(jobj *o) { if (!o->native) o->native = calloc(1, sizeof(sbuf)); return o->native; }
+static void sb_add_n(sbuf *b, const char *s, size_t n)
+{
+    if (b->n + n + 1 > b->cap) { b->cap = (b->n + n + 32) * 2; b->p = realloc(b->p, b->cap); }
+    memcpy(b->p + b->n, s, n); b->n += n; b->p[b->n] = 0;
+}
+static void sb_add(sbuf *b, const char *s) { sb_add_n(b, s, strlen(s)); }
+static void sb_insert(sbuf *b, size_t at, const char *s)
+{
+    size_t n = strlen(s); if (at > b->n) at = b->n;
+    if (b->n + n + 1 > b->cap) { b->cap = (b->n + n + 32) * 2; b->p = realloc(b->p, b->cap); }
+    memmove(b->p + at + n, b->p + at, b->n - at + 1);
+    memcpy(b->p + at, s, n); b->n += n;
+}
+static void SB_append_cs(tl_jcall *c)
+{
+    char buf[600]; obj_str(c->args[0].l, buf, sizeof(buf));
+    sb_add(sb_of(c->self), buf); c->ret = vl(tl_jni_ref(c->self));
+}
+static void SB_append_chars(tl_jcall *c)
+{
+    sbuf *b = sb_of(c->self); jobj *a = c->args[0].l;
+    if (a && a->kind == TL_K_PRIM_ARRAY)
+        for (uint32_t i = 0; i < a->arr.len; i++) { char t[8]; uint32_t u = ((uint16_t *)a->arr.data)[i]; snprintf(t, 8, "%c", (char)(u < 128 ? u : '?')); sb_add(b, t); }
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void SB_append_chars_range(tl_jcall *c)
+{
+    sbuf *b = sb_of(c->self); jobj *a = c->args[0].l; int off = c->args[1].i, len = c->args[2].i;
+    if (a && a->kind == TL_K_PRIM_ARRAY)
+        for (int i = off; i < off + len && i < (int)a->arr.len; i++) { char t[8]; uint32_t u = ((uint16_t *)a->arr.data)[i]; snprintf(t, 8, "%c", (char)(u < 128 ? u : '?')); sb_add(b, t); }
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void SB_append_seq_range(tl_jcall *c)
+{
+    jobj *o = c->args[0].l; char buf[600]; obj_str(o, buf, sizeof(buf));
+    int a = c->args[1].i, e = c->args[2].i;
+    if (a < 0) a = 0; if (e > (int)strlen(buf)) e = (int)strlen(buf); if (e < a) e = a;
+    char t[600]; memcpy(t, buf + a, (size_t)(e - a)); t[e - a] = 0;
+    sb_add(sb_of(c->self), t); c->ret = vl(tl_jni_ref(c->self));
+}
+static void SB_charAt(tl_jcall *c)
+{
+    sbuf *b = sb_of(c->self);
+    c->ret = vc((uint16_t)((b->p && c->args[0].i >= 0 && (size_t)c->args[0].i < b->n) ? (uint8_t)b->p[c->args[0].i] : 0));
+}
+static void SB_codePointAt(tl_jcall *c)
+{
+    sbuf *b = sb_of(c->self);
+    c->ret = vi((b->p && c->args[0].i >= 0 && (size_t)c->args[0].i < b->n) ? (uint8_t)b->p[c->args[0].i] : 0);
+}
+static void SB_substring(tl_jcall *c)
+{
+    sbuf *b = sb_of(c->self); const char *s = b->p ? b->p : "";
+    int a = c->args[0].i < 0 ? 0 : c->args[0].i;
+    c->ret = vl(STR((size_t)a > b->n ? s + b->n : s + a));
+}
+static void SB_substring2(tl_jcall *c)
+{
+    sbuf *b = sb_of(c->self); const char *s = b->p ? b->p : "";
+    int a = c->args[0].i, e = c->args[1].i;
+    if (a < 0) a = 0; if ((size_t)e > b->n) e = (int)b->n; if (e < a) e = a;
+    char *t = malloc((size_t)(e - a) + 1); memcpy(t, s + a, (size_t)(e - a)); t[e - a] = 0;
+    c->ret = vl(STR(t)); free(t);
+}
+static void SB_indexOf(tl_jcall *c)
+{
+    sbuf *b = sb_of(c->self);
+    const char *p = b->p ? strstr(b->p, S(c->args[0].l)) : NULL;
+    c->ret = vi(p ? (int)(p - b->p) : -1);
+}
+static void SB_indexOf2(tl_jcall *c)
+{
+    sbuf *b = sb_of(c->self);
+    const char *p = (b->p && c->args[1].i >= 0 && (size_t)c->args[1].i < b->n) ? strstr(b->p + c->args[1].i, S(c->args[0].l)) : NULL;
+    c->ret = vi(p ? (int)(p - b->p) : -1);
+}
+static void SB_lastIndexOf(tl_jcall *c)
+{
+    sbuf *b = sb_of(c->self); const char *p = NULL;
+    if (b->p) for (const char *q = strstr(b->p, S(c->args[0].l)); q; q = strstr(q + 1, S(c->args[0].l))) p = q;
+    c->ret = vi(p ? (int)(p - b->p) : -1);
+}
+static void SB_insert(tl_jcall *c)
+{
+    int at = c->args[0].i;
+    char buf[600]; obj_str(c->args[1].l, buf, sizeof(buf));
+    sb_insert(sb_of(c->self), (size_t)(at < 0 ? 0 : at), buf);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void SB_insert_num(tl_jcall *c)
+{
+    /* numeric insert overloads format like their append counterparts */
+    int at = c->args[0].i;
+    char t[64]; snprintf(t, sizeof(t), "%lld", (long long)c->args[1].j);
+    sb_insert(sb_of(c->self), (size_t)(at < 0 ? 0 : at), t);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void SB_insert_dbl(tl_jcall *c)
+{
+    int at = c->args[0].i;
+    char t[64]; snprintf(t, sizeof(t), "%g", c->args[1].d);
+    sb_insert(sb_of(c->self), (size_t)(at < 0 ? 0 : at), t);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void SB_insert_bool(tl_jcall *c)
+{
+    int at = c->args[0].i;
+    sb_insert(sb_of(c->self), (size_t)(at < 0 ? 0 : at), c->args[1].z ? "true" : "false");
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void SB_insert_char(tl_jcall *c)
+{
+    int at = c->args[0].i; char t[8]; snprintf(t, sizeof(t), "%c", (char)c->args[1].c);
+    sb_insert(sb_of(c->self), (size_t)(at < 0 ? 0 : at), t);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void SB_delete(tl_jcall *c)
+{
+    sbuf *b = sb_of(c->self); int a = c->args[0].i, e = c->args[1].i;
+    if (a < 0 || !b->p) { c->ret = vl(tl_jni_ref(c->self)); return; }
+    if ((size_t)e > b->n) e = (int)b->n;
+    if (a < e) { memmove(b->p + a, b->p + e, b->n - (size_t)e); b->n -= (size_t)(e - a); b->p[b->n] = 0; }
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void SB_deleteCharAt(tl_jcall *c)
+{
+    sbuf *b = sb_of(c->self); int a = c->args[0].i;
+    if (b->p && a >= 0 && (size_t)a < b->n) { memmove(b->p + a, b->p + a + 1, b->n - (size_t)a); b->n--; }
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void SB_setCharAt(tl_jcall *c)
+{
+    sbuf *b = sb_of(c->self);
+    if (b->p && c->args[0].i >= 0 && (size_t)c->args[0].i < b->n) b->p[c->args[0].i] = (char)c->args[1].c;
+}
+static void SB_replace(tl_jcall *c)
+{
+    sbuf *b = sb_of(c->self); int a = c->args[0].i, e = c->args[1].i;
+    const char *r = S(c->args[2].l);
+    if (a < 0) a = 0; if ((size_t)e > b->n) e = (int)b->n; if (e < a) e = a;
+    sbuf nb = {0}; sb_add_n(&nb, b->p ? b->p : "", (size_t)a); sb_add(&nb, r);
+    if (b->p) sb_add(&nb, b->p + e);
+    free(b->p); *b = nb;
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void SB_reverse(tl_jcall *c)
+{
+    sbuf *b = sb_of(c->self);
+    if (b->p && b->n) for (size_t i = 0, j = b->n - 1; i < j; i++, j--) { char t = b->p[i]; b->p[i] = b->p[j]; b->p[j] = t; }
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void SB_capacity(tl_jcall *c) { sbuf *b = sb_of(c->self); c->ret = vi((int)(b->cap ? b->cap - 1 : 16)); }
+static void SB_ensure(tl_jcall *c)
+{
+    sbuf *b = sb_of(c->self);
+    if ((size_t)c->args[0].i + 1 > b->cap) { b->cap = (size_t)c->args[0].i + 32; b->p = realloc(b->p, b->cap); }
+}
+static void SB_getChars(tl_jcall *c)
+{
+    sbuf *b = sb_of(c->self); int a = c->args[0].i, e = c->args[1].i;
+    jobj *dst = c->args[2].l; int off = c->args[3].i;
+    if (b->p && dst) for (int i = a; i < e && off + i - a < (int)dst->arr.len; i++) ((uint16_t *)dst->arr.data)[off + i - a] = (uint8_t)b->p[i];
+}
+static void SB_trimToSize(tl_jcall *c) { sbuf *b = sb_of(c->self); if (b->p) { b->cap = b->n + 1; b->p = realloc(b->p, b->cap); } }
+static void SB_appendCodePoint(tl_jcall *c)
+{
+    sbuf *b = sb_of(c->self); uint32_t u = (uint32_t)c->args[0].i; char t[8]; int k = 0;
+    if (u < 0x80) t[k++] = (char)u;
+    else if (u < 0x800) { t[k++] = (char)(0xC0 | (u >> 6)); t[k++] = (char)(0x80 | (u & 0x3F)); }
+    else if (u < 0x10000) { t[k++] = (char)(0xE0 | (u >> 12)); t[k++] = (char)(0x80 | ((u >> 6) & 0x3F)); t[k++] = (char)(0x80 | (u & 0x3F)); }
+    else { t[k++] = (char)(0xF0 | (u >> 18)); t[k++] = (char)(0x80 | ((u >> 12) & 0x3F)); t[k++] = (char)(0x80 | ((u >> 6) & 0x3F)); t[k++] = (char)(0x80 | (u & 0x3F)); }
+    t[k] = 0; sb_add(b, t); c->ret = vl(tl_jni_ref(c->self));
+}
+static void SB_setLength(tl_jcall *c)
+{
+    sbuf *b = sb_of(c->self); int n = c->args[0].i;
+    if (n < 0) n = 0;
+    if ((size_t)n + 1 > b->cap) { b->cap = (size_t)n + 32; b->p = realloc(b->p, b->cap); }
+    if (b->p) { if ((size_t)n > b->n) memset(b->p + b->n, 0, (size_t)n - b->n); b->n = (size_t)n; b->p[b->n] = 0; }
+}
+static void SB_toString(tl_jcall *c) { sbuf *b = sb_of(c->self); c->ret = vl(STR(b->p ? b->p : "")); }
+static void SB_offsetByCodePoints(tl_jcall *c) { c->ret = c->args[0]; }
+
+/* ---- Throwable family: real message/cause/stack fields ---- */
+
+static void Thr_init(tl_jcall *c)    { (void)c; }
+static void Thr_init_s(tl_jcall *c)  { set_str(c->self, "detailMessage", S(c->args[0].l)); }
+static void Thr_init_st(tl_jcall *c) { set_str(c->self, "detailMessage", S(c->args[0].l)); tl_jni_set_field(c->self, "cause", "Ljava/lang/Throwable;", c->args[1]); }
+static void Thr_init_t(tl_jcall *c)  { tl_jni_set_field(c->self, "cause", "Ljava/lang/Throwable;", c->args[0]); }
+static void Thr_getMessage(tl_jcall *c)          { c->ret = tl_jni_get_field(c->self, "detailMessage", "Ljava/lang/String;"); }
+static void Thr_getLocalizedMessage(tl_jcall *c) { Thr_getMessage(c); }
+static void Thr_getCause(tl_jcall *c)            { c->ret = tl_jni_get_field(c->self, "cause", "Ljava/lang/Throwable;"); }
+static void Thr_initCause(tl_jcall *c)           { tl_jni_set_field(c->self, "cause", "Ljava/lang/Throwable;", c->args[0]); c->ret = vl(tl_jni_ref(c->self)); }
+static void Thr_toString(tl_jcall *c)
+{
+    const char *m = S(tl_jni_get_field(c->self, "detailMessage", "Ljava/lang/String;").l);
+    char buf[600]; snprintf(buf, sizeof(buf), "%s%s%s", tl_jni_class_name(c->self), m[0] ? ": " : "", m);
+    c->ret = vl(STR(buf));
+}
+static void Thr_printStackTrace(tl_jcall *c)
+{
+    const char *m = S(tl_jni_get_field(c->self, "detailMessage", "Ljava/lang/String;").l);
+    tl_log_line("exception: %s%s%s", tl_jni_class_name(c->self), m[0] ? ": " : "", m);
+}
+static void Thr_printStackTrace_ps(tl_jcall *c)
+{
+    const char *m = S(tl_jni_get_field(c->self, "detailMessage", "Ljava/lang/String;").l);
+    char buf[600]; snprintf(buf, sizeof(buf), "%s%s%s", tl_jni_class_name(c->self), m[0] ? ": " : "", m);
+    jvalue a; a.l = STR(buf);
+    tl_jni_call(c->args[0].l, "println", "(Ljava/lang/String;)V", &a);
+}
+static void Thr_getStackTrace(tl_jcall *c)
+{
+    jvalue t = tl_jni_get_field(c->self, "stackTrace", "[Ljava/lang/StackTraceElement;");
+    if (t.l) { c->ret = t; return; }
+    jobj *arr = tl_jni_new_obj_array(C("java/lang/StackTraceElement"), 1);
+    jobj *el = make("java/lang/StackTraceElement");
+    set_str(el, "declaringClass", tl_jni_class_name(c->self));
+    set_str(el, "methodName", "?"); set_str(el, "fileName", "?"); set_int(el, "lineNumber", -1);
+    arr->oarr.v[0] = el;
+    tl_jni_set_field(c->self, "stackTrace", "[Ljava/lang/StackTraceElement;", vl(arr));
+    c->ret = vl(arr);
+}
+static void Thr_setStackTrace(tl_jcall *c)    { tl_jni_set_field(c->self, "stackTrace", "[Ljava/lang/StackTraceElement;", c->args[0]); }
+static void Thr_fillInStackTrace(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void Thr_addSuppressed(tl_jcall *c)    { (void)c; }
+static void Thr_getSuppressed(tl_jcall *c)    { c->ret = vl(tl_jni_new_obj_array(C("java/lang/Throwable"), 0)); }
+
+static void STE_init(tl_jcall *c)
+{
+    set_str(c->self, "declaringClass", S(c->args[0].l)); set_str(c->self, "methodName", S(c->args[1].l));
+    set_str(c->self, "fileName", S(c->args[2].l)); set_int(c->self, "lineNumber", c->args[3].i);
+}
+static void STE_getClassName(tl_jcall *c)  { c->ret = tl_jni_get_field(c->self, "declaringClass", "Ljava/lang/String;"); }
+static void STE_getMethodName(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "methodName", "Ljava/lang/String;"); }
+static void STE_getFileName(tl_jcall *c)   { c->ret = tl_jni_get_field(c->self, "fileName", "Ljava/lang/String;"); }
+static void STE_getLineNumber(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "lineNumber", "I"); }
+static void STE_isNativeMethod(tl_jcall *c){ c->ret = vz(get_int(c->self, "lineNumber") == -2); }
+static void STE_toString(tl_jcall *c)
+{
+    char buf[600]; snprintf(buf, sizeof(buf), "%s.%s(%s:%d)",
+        S(tl_jni_get_field(c->self, "declaringClass", "Ljava/lang/String;").l),
+        S(tl_jni_get_field(c->self, "methodName", "Ljava/lang/String;").l),
+        S(tl_jni_get_field(c->self, "fileName", "Ljava/lang/String;").l),
+        get_int(c->self, "lineNumber"));
+    c->ret = vl(STR(buf));
+}
+
+/* ---- Enum ---- */
+
+static void Enum_name(tl_jcall *c)    { c->ret = tl_jni_get_field(c->self, "name", "Ljava/lang/String;"); }
+static void Enum_ordinal(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "ordinal", "I"); }
+static void Enum_toString(tl_jcall *c)
+{
+    jvalue n = tl_jni_get_field(c->self, "name", "Ljava/lang/String;");
+    c->ret = vl(n.l ? n.l : STR(tl_jni_class_name(c->self)));
+}
+static void Enum_equals(tl_jcall *c)   { c->ret = vz(c->self == c->args[0].l); }
+static void Enum_hashCode(tl_jcall *c) { c->ret = vi((int)((uintptr_t)c->self >> 4)); }
+static void Enum_compareTo(tl_jcall *c){ c->ret = vi(get_int(c->self, "ordinal") - get_int(c->args[0].l, "ordinal")); }
+static void Enum_getDeclaringClass(tl_jcall *c) { c->ret = vl(c->self->cls ? c->self->cls->mirror : NULL); }
+static void Enum_valueOf(tl_jcall *c)
+{
+    jobj *cls = c->args[0].l; const char *name = S(c->args[1].l);
+    const char *cn = (cls && cls->kind == TL_K_CLASS) ? cls->klass.jc->name : "";
+    char sig[300]; snprintf(sig, sizeof(sig), "L%s;", cn);
+    jvalue v = tl_jni_get_static(cn, name, sig);
+    if (!v.l) { char msg[300]; snprintf(msg, sizeof(msg), "No enum constant %s.%s", cn, name); tl_jni_throw("java/lang/IllegalArgumentException", msg); }
+    c->ret = v;
+}
+static void Enum_clone(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+
+/* ---- Runtime / Process ---- */
+
+static void Runtime_getRuntime(tl_jcall *c) { static jobj *r; if (!r) r = make("java/lang/Runtime"); c->ret = vl(r); }
+static void Runtime_availableProcessors(tl_jcall *c) { c->ret = vi((int)sysconf(_SC_NPROCESSORS_ONLN)); }
+static void Runtime_freeMemory(tl_jcall *c)  { c->ret = vj(64ll << 20); }
+static void Runtime_totalMemory(tl_jcall *c) { c->ret = vj(256ll << 20); }
+static void Runtime_maxMemory(tl_jcall *c)   { c->ret = vj(1024ll << 20); }
+static void Runtime_gc(tl_jcall *c)          { (void)c; tl_jni_gc(); }
+static void Runtime_runFinalization(tl_jcall *c) { (void)c; }
+static void Runtime_exit(tl_jcall *c)  { tl_log_line("app: Runtime.exit(%d) ignored (app lifecycle belongs to the host)", c->args[0].i); }
+static void Runtime_halt(tl_jcall *c)  { Runtime_exit(c); }
+static void Runtime_load(tl_jcall *c)
+{
+    jvalue a = c->args[0];
+    tl_jni_call(tl_jni_class_object("java/lang/System"), "load", "(Ljava/lang/String;)V", &a);
+}
+static void Runtime_loadLibrary(tl_jcall *c)
+{
+    jvalue a = c->args[0];
+    tl_jni_call(tl_jni_class_object("java/lang/System"), "loadLibrary", "(Ljava/lang/String;)V", &a);
+}
+static void Runtime_exec(tl_jcall *c)  { tl_jni_throw("java/io/IOException", "exec is not available to a sandboxed app"); }
+static void Runtime_addShutdownHook(tl_jcall *c)    { (void)c; }
+static void Runtime_removeShutdownHook(tl_jcall *c) { c->ret = vz(0); }
+static void Runtime_version(tl_jcall *c) { c->ret = vl(make("java/lang/Runtime$Version")); }
+static void Runtime_traceInstructions(tl_jcall *c) { (void)c; }
+static void Runtime_traceMethodCalls(tl_jcall *c)  { (void)c; }
+
+static void Proc_destroy(tl_jcall *c)    { (void)c; }
+static void Proc_destroyForcibly(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void Proc_waitFor(tl_jcall *c)    { c->ret = vi(0); }
+static void Proc_waitForTo(tl_jcall *c)  { c->ret = vz(1); }
+static void Proc_exitValue(tl_jcall *c)  { c->ret = vi(0); }
+static void Proc_isAlive(tl_jcall *c)    { c->ret = vz(0); }
+static void Proc_pid(tl_jcall *c)        { c->ret = vj(getpid()); }
+static void Proc_inputStream(tl_jcall *c)
+{
+    jobj *s = make("java/io/ByteArrayInputStream");
+    tl_jni_set_field(s, "buf", "[B", vl(tl_jni_new_prim_array('B', 0)));
+    c->ret = vl(s);
+}
+static void Proc_errorStream(tl_jcall *c)  { Proc_inputStream(c); }
+static void Proc_outputStream(tl_jcall *c) { c->ret = vl(make("java/io/ByteArrayOutputStream")); }
+static void Proc_descendants(tl_jcall *c)  { c->ret = vl(NULL); }
+static void Proc_children(tl_jcall *c)     { c->ret = vl(NULL); }
+static void Proc_info(tl_jcall *c)         { c->ret = vl(NULL); }
+static void Proc_toHandle(tl_jcall *c)     { c->ret = vl(make("java/lang/ProcessHandle")); }
+static void Proc_onExit(tl_jcall *c)       { c->ret = vl(make("java/util/concurrent/CompletableFuture")); }
+static void Proc_supportsNormalTermination(tl_jcall *c) { c->ret = vz(1); }
+static void ProcBuilder_init(tl_jcall *c)  { (void)c; }
+static void ProcBuilder_start(tl_jcall *c) { tl_jni_throw("java/io/IOException", "exec is not available to a sandboxed app"); }
+static void ProcBuilder_command(tl_jcall *c) { c->ret = vl(make("java/util/ArrayList")); }
+static void ProcBuilder_env(tl_jcall *c)     { c->ret = vl(make("java/util/HashMap")); }
+static void ProcBuilder_self(tl_jcall *c)    { c->ret = vl(tl_jni_ref(c->self)); }
+
+/* ---- Thread: real pthreads running the target Runnable ---- */
+
+typedef struct { jobj *self; } thread_ctx;
+static void *thread_entry(void *arg)
+{
+    thread_ctx *tc = arg;
+    jobj *self = tc->self;
+    free(tc);
+    pthread_setname_np("JavaThread");
+    jobj *target = tl_jni_get_field(self, "target", "Ljava/lang/Runnable;").l;
+    if (target) fire(target, "java/lang/Runnable", "run", "()V", NULL, 0);
+    else fire(self, "java/lang/Thread", "run", "()V", NULL, 0);
+    set_bool(self, "finished", 1);
+    set_bool(self, "started", 0);
+    tl_jni_unref(self);
+    return NULL;
+}
+static void Thread_init(tl_jcall *c)    { set_int(c->self, "priority", 5); }
+static void Thread_init_r(tl_jcall *c)  { tl_jni_set_field(c->self, "target", "Ljava/lang/Runnable;", c->args[0]); set_int(c->self, "priority", 5); }
+static void Thread_init_s(tl_jcall *c)  { set_str(c->self, "name", S(c->args[0].l)); set_int(c->self, "priority", 5); }
+static void Thread_init_rs(tl_jcall *c) { tl_jni_set_field(c->self, "target", "Ljava/lang/Runnable;", c->args[0]); set_str(c->self, "name", S(c->args[1].l)); set_int(c->self, "priority", 5); }
+static void Thread_start(tl_jcall *c)
+{
+    if (get_int(c->self, "started")) { tl_jni_throw("java/lang/IllegalThreadStateException", "thread already started"); return; }
+    set_bool(c->self, "started", 1);
+    thread_ctx *tc = calloc(1, sizeof(*tc));
+    tc->self = tl_jni_ref(c->self);
+    pthread_t t;
+    pthread_attr_t a; pthread_attr_init(&a);
+    pthread_attr_setstacksize(&a, 1u << 20);
+    pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED);
+    if (pthread_create(&t, &a, thread_entry, tc) != 0) {
+        set_bool(c->self, "started", 0);
+        tl_jni_unref(tc->self);
+        free(tc);
+    } else {
+        static _Atomic int next_id = 3;
+        set_long(c->self, "tid", next_id++);
+    }
+    pthread_attr_destroy(&a);
+}
+static void Thread_run(tl_jcall *c)
+{
+    jobj *t = tl_jni_get_field(c->self, "target", "Ljava/lang/Runnable;").l;
+    if (t) fire(t, "java/lang/Runnable", "run", "()V", NULL, 0);
+}
+static void Thread_currentThread(tl_jcall *c)
+{
+    static __thread jobj *cur;
+    if (!cur) {
+        cur = make("java/lang/Thread");
+        char name[64]; pthread_getname_np(pthread_self(), name, sizeof(name));
+        set_str(cur, "name", name[0] ? name : "main");
+        set_int(cur, "priority", 5);
+        set_long(cur, "tid", 1);
+    }
+    c->ret = vl(cur);
+}
+static void Thread_getName(tl_jcall *c)
+{
+    jvalue n = tl_jni_get_field(c->self, "name", "Ljava/lang/String;");
+    c->ret = vl(n.l ? n.l : STR("Thread"));
+}
+static void Thread_setName(tl_jcall *c)   { set_str(c->self, "name", S(c->args[0].l)); }
+static void Thread_getId(tl_jcall *c)     { c->ret = tl_jni_get_field(c->self, "tid", "J"); }
+static void Thread_isAlive(tl_jcall *c)   { c->ret = vz(get_int(c->self, "started") && !get_int(c->self, "finished")); }
+static void Thread_isDaemon(tl_jcall *c)  { c->ret = vz(get_int(c->self, "daemon")); }
+static void Thread_setDaemon(tl_jcall *c) { set_bool(c->self, "daemon", c->args[0].z); }
+static void Thread_getPriority(tl_jcall *c){ c->ret = vi(get_int(c->self, "priority") ? get_int(c->self, "priority") : 5); }
+static void Thread_setPriority(tl_jcall *c){ set_int(c->self, "priority", c->args[0].i); }
+static void Thread_getState(tl_jcall *c)
+{
+    static const char *const names[] = { "NEW", "RUNNABLE", "BLOCKED", "WAITING", "TIMED_WAITING", "TERMINATED" };
+    int st = get_int(c->self, "finished") ? 5 : get_int(c->self, "started") ? 1 : 0;
+    c->ret = vl(enum_by_ordinal("java/lang/Thread$State", names, 6, st));
+}
+static void Thread_isInterrupted(tl_jcall *c) { c->ret = vz(get_int(c->self, "interrupted")); }
+static void Thread_interrupt(tl_jcall *c)     { set_bool(c->self, "interrupted", 1); }
+static void Thread_interrupted(tl_jcall *c)   { c->ret = vz(0); }
+static void Thread_sleep(tl_jcall *c)
+{
+    int64_t ms = c->args[0].j; if (ms < 0) ms = 0; if (ms > 60000) ms = 60000;
+    usleep((useconds_t)ms * 1000);
+}
+static void Thread_yield(tl_jcall *c) { (void)c; sched_yield(); }
+static void Thread_join(tl_jcall *c)
+{
+    for (int i = 0; i < 30000 && !get_int(c->self, "finished") && get_int(c->self, "started"); i++) usleep(10000);
+}
+static void Thread_join_ms(tl_jcall *c)
+{
+    int64_t lim = c->args[0].j > 0 ? c->args[0].j : 30000;
+    for (int64_t t = 0; t < lim && !get_int(c->self, "finished") && get_int(c->self, "started"); t += 10) usleep(10000);
+}
+static void Thread_getContextClassLoader(tl_jcall *c) { c->ret = vl(make("dalvik/system/PathClassLoader")); }
+static void Thread_setContextClassLoader(tl_jcall *c) { tl_jni_set_field(c->self, "contextClassLoader", "Ljava/lang/ClassLoader;", c->args[0]); }
+static void Thread_getUncaughtExceptionHandler(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "uncaughtHandler", "Ljava/lang/Thread$UncaughtExceptionHandler;"); }
+static void Thread_setUncaughtExceptionHandler(tl_jcall *c) { tl_jni_set_field(c->self, "uncaughtHandler", "Ljava/lang/Thread$UncaughtExceptionHandler;", c->args[0]); }
+static void Thread_getDefaultUncaughtExceptionHandler(tl_jcall *c) { c->ret = vl(NULL); }
+static void Thread_setDefaultUncaughtExceptionHandler(tl_jcall *c) { tl_jni_set_static("java/lang/Thread", "defaultHandler", "Ljava/lang/Thread$UncaughtExceptionHandler;", c->args[0]); }
+static void Thread_holdsLock(tl_jcall *c) { c->ret = vz(0); }
+static void Thread_getThreadGroup(tl_jcall *c)
+{
+    static jobj *g;
+    if (!g) { g = make("java/lang/ThreadGroup"); set_str(g, "name", "main"); }
+    c->ret = vl(g);
+}
+static void Thread_dumpStack(tl_jcall *c) { tl_log_line("thread: dumpStack called"); }
+static void Thread_activeCount(tl_jcall *c) { c->ret = vi(1); }
+static void ThreadGroup_getName(tl_jcall *c)  { c->ret = tl_jni_get_field(c->self, "name", "Ljava/lang/String;"); }
+static void ThreadGroup_getParent(tl_jcall *c){ c->ret = vl(NULL); }
+static void ThreadGroup_activeCount(tl_jcall *c){ c->ret = vi(0); }
+static void ThreadGroup_toString(tl_jcall *c)
+{
+    char b[200]; snprintf(b, sizeof(b), "java.lang.ThreadGroup[name=%s]", S(tl_jni_get_field(c->self, "name", "Ljava/lang/String;").l));
+    c->ret = vl(STR(b));
+}
+
+/* ---- Object monitor ops (wait/notify over the object's monitor) ---- */
+
+static void Object_wait0(tl_jcall *c)     { dvm_monitor_wait(c->self, 0, 0); }
+static void Object_wait1(tl_jcall *c)     { dvm_monitor_wait(c->self, c->args[0].j, 0); }
+static void Object_wait2(tl_jcall *c)     { dvm_monitor_wait(c->self, c->args[0].j, c->args[1].i); }
+static void Object_notify(tl_jcall *c)    { dvm_monitor_notify(c->self, false); }
+static void Object_notifyAll(tl_jcall *c) { dvm_monitor_notify(c->self, true); }
+
+/* ---- System extras ---- */
+
+static void System_arraycopy(tl_jcall *c)
+{
+    jobj *src = c->args[0].l, *dst = c->args[2].l;
+    int sp = c->args[1].i, dp = c->args[3].i, n = c->args[4].i;
+    if (!src || !dst || sp < 0 || dp < 0 || n < 0) { tl_jni_throw("java/lang/IndexOutOfBoundsException", "arraycopy"); return; }
+    if (src->kind == TL_K_PRIM_ARRAY && dst->kind == TL_K_PRIM_ARRAY) {
+        if ((uint32_t)(sp + n) > src->arr.len || (uint32_t)(dp + n) > dst->arr.len || src->arr.esz != dst->arr.esz) {
+            tl_jni_throw("java/lang/ArrayIndexOutOfBoundsException", ""); return;
+        }
+        memmove((char *)dst->arr.data + (size_t)dp * dst->arr.esz, (const char *)src->arr.data + (size_t)sp * src->arr.esz, (size_t)n * src->arr.esz);
+    } else if (src->kind == TL_K_OBJ_ARRAY && dst->kind == TL_K_OBJ_ARRAY) {
+        if ((uint32_t)(sp + n) > src->oarr.len || (uint32_t)(dp + n) > dst->oarr.len) { tl_jni_throw("java/lang/ArrayIndexOutOfBoundsException", ""); return; }
+        for (int i = 0; i < n; i++) dst->oarr.v[dp + i] = src->oarr.v[sp + i];
+    } else tl_jni_throw("java/lang/ArrayStoreException", "not arrays");
+}
+static void System_identityHashCode(tl_jcall *c) { c->ret = vi((int)((uintptr_t)c->args[0].l >> 4)); }
+static void System_getenv(tl_jcall *c)
+{
+    const char *v = getenv(S(c->args[0].l));
+    c->ret = vl(v ? STR(v) : NULL);
+}
+static void System_getenv_all(tl_jcall *c) { c->ret = vl(make("java/util/HashMap")); }
+static void System_mapLibraryName(tl_jcall *c) { char b[200]; snprintf(b, sizeof(b), "lib%s.so", S(c->args[0].l)); c->ret = vl(STR(b)); }
+static void System_gc(tl_jcall *c)  { (void)c; tl_jni_gc(); }
+static void System_runFinalization(tl_jcall *c) { (void)c; }
+static void System_lineSeparator(tl_jcall *c) { c->ret = vl(STR("\n")); }
+static void System_setProperty(tl_jcall *c)
+{
+    prop_put(S(c->args[0].l), S(c->args[1].l));
+    c->ret = vl(c->args[1].l ? tl_jni_ref(c->args[1].l) : NULL);
+}
+static void System_clearProperty(tl_jcall *c) { prop_put(S(c->args[0].l), NULL); c->ret = vl(NULL); }
+static void System_exit(tl_jcall *c) { tl_log_line("app: System.exit(%d) ignored (app lifecycle belongs to the host)", c->args[0].i); }
+static void System_getProperties(tl_jcall *c) { c->ret = vl(make("java/util/Properties")); }
+static void System_inheritedChannel(tl_jcall *c) { c->ret = vl(NULL); }
+static void SysProps_get(tl_jcall *c)    { c->ret = vl(STR(prop_get(S(c->args[0].l)) ? prop_get(S(c->args[0].l)) : "")); }
+static void SysProps_get_d(tl_jcall *c)  { const char *v = prop_get(S(c->args[0].l)); c->ret = vl(v ? STR(v) : c->args[1].l); }
+static void SysProps_getInt(tl_jcall *c) { const char *v = prop_get(S(c->args[0].l)); c->ret = vi(v ? atoi(v) : c->args[1].i); }
+static void SysProps_getLong(tl_jcall *c){ const char *v = prop_get(S(c->args[0].l)); c->ret = vj(v ? atoll(v) : c->args[1].j); }
+static void SysProps_getBool(tl_jcall *c){ const char *v = prop_get(S(c->args[0].l)); c->ret = vz(v ? !strcmp(v, "true") || !strcmp(v, "1") : c->args[1].z); }
+static void SysProps_set(tl_jcall *c)    { prop_put(S(c->args[0].l), S(c->args[1].l)); c->ret = vl(STR(S(c->args[1].l))); }
+
+/* ---- Number boxes: the cross-type xValue family, parse/compare/toString ---- */
+
+static void Num_intValue(tl_jcall *c)    { c->ret = vi((int)int_of(c->self)); }
+static void Num_longValue(tl_jcall *c)   { c->ret = vj(int_of(c->self)); }
+static void Num_shortValue(tl_jcall *c)  { c->ret = vs((int16_t)int_of(c->self)); }
+static void Num_byteValue(tl_jcall *c)   { c->ret = vb((int8_t)int_of(c->self)); }
+static void Num_floatValue(tl_jcall *c)  { c->ret = vf((float)num_of(c->self)); }
+static void Num_doubleValue(tl_jcall *c) { c->ret = vd(num_of(c->self)); }
+static void Box_toString(tl_jcall *c)
+{
+    const char *sig = boxed_sig(tl_jni_class_name(c->self));
+    char b[64]; b[0] = 0;
+    if (sig) switch (sig[0]) {
+    case 'Z': snprintf(b, sizeof(b), "%s", tl_jni_get_field(c->self, "value", sig).z ? "true" : "false"); break;
+    case 'C': snprintf(b, sizeof(b), "%c", (char)tl_jni_get_field(c->self, "value", sig).c); break;
+    case 'F': snprintf(b, sizeof(b), "%g", (double)tl_jni_get_field(c->self, "value", sig).f); break;
+    case 'D': snprintf(b, sizeof(b), "%g", tl_jni_get_field(c->self, "value", sig).d); break;
+    default:  snprintf(b, sizeof(b), "%lld", (long long)tl_jni_get_field(c->self, "value", sig).j); break;
+    }
+    c->ret = vl(STR(b));
+}
+static void Box_toString_radix(tl_jcall *c)
+{
+    char b[80]; snprintf(b, sizeof(b), "%llx", (unsigned long long)int_of(c->self));
+    /* radix conversion done properly below via parse helper */
+    int radix = c->args[0].i; int64_t v = int_of(c->self); bool neg = v < 0; uint64_t u = neg ? (uint64_t)(-v) : (uint64_t)v;
+    char tmp[80]; int k = 0;
+    if (radix < 2 || radix > 36) radix = 10;
+    do { int d = (int)(u % (uint64_t)radix); tmp[k++] = (char)(d < 10 ? '0' + d : 'a' + d - 10); u /= (uint64_t)radix; } while (u);
+    if (neg) tmp[k++] = '-';
+    tmp[k] = 0;
+    for (int i = 0; i < k / 2; i++) { char t = tmp[i]; tmp[i] = tmp[k - 1 - i]; tmp[k - 1 - i] = t; }
+    (void)b;
+    c->ret = vl(STR(tmp));
+}
+static void Box_equals(tl_jcall *c)   { c->ret = vz(tl_more_obj_eq(c->self, c->args[0].l)); }
+static void Box_hashCode(tl_jcall *c)
+{
+    const char *sig = boxed_sig(tl_jni_class_name(c->self));
+    if (!sig) { c->ret = vi(0); return; }
+    jvalue v = tl_jni_get_field(c->self, "value", sig);
+    switch (sig[0]) {
+    case 'Z': c->ret = vi(v.z ? 1231 : 1237); break;
+    case 'C': c->ret = vi(v.c); break;
+    case 'F': c->ret = vi((int)(v.f * 1000)); break;
+    case 'D': { int64_t x; memcpy(&x, &v.d, 8); c->ret = vi((int)(x ^ (x >> 32))); break; }
+    case 'J': c->ret = vi((int)(v.j ^ (v.j >> 32))); break;
+    default:  c->ret = vi(v.i); break;
+    }
+}
+static void Box_compareTo(tl_jcall *c)
+{
+    double a = num_of(c->self), b = num_of(c->args[0].l);
+    c->ret = vi(a < b ? -1 : a > b ? 1 : 0);
+}
+static int64_t parse_ll(const char *s, int radix, bool *ok)
+{
+    if (!s) { *ok = false; return 0; }
+    while (isspace((unsigned char)*s)) s++;
+    bool neg = false;
+    if (*s == '-') { neg = true; s++; } else if (*s == '+') s++;
+    if (!*s) { *ok = false; return 0; }
+    uint64_t v = 0;
+    for (; *s; s++) {
+        int d = isdigit((unsigned char)*s) ? *s - '0' : isalpha((unsigned char)*s) ? tolower((unsigned char)*s) - 'a' + 10 : -1;
+        if (d < 0 || d >= radix) { *ok = false; return 0; }
+        v = v * (uint64_t)radix + (uint64_t)d;
+    }
+    *ok = true;
+    return neg ? -(int64_t)v : (int64_t)v;
+}
+static void Int_parseInt(tl_jcall *c)   { bool ok; int64_t v = parse_ll(S(c->args[0].l), 10, &ok); if (!ok) tl_jni_throw("java/lang/NumberFormatException", S(c->args[0].l)); c->ret = vi((int)v); }
+static void Int_parseInt_r(tl_jcall *c) { bool ok; int64_t v = parse_ll(S(c->args[0].l), c->args[1].i, &ok); if (!ok) tl_jni_throw("java/lang/NumberFormatException", S(c->args[0].l)); c->ret = vi((int)v); }
+static void Long_parseLong(tl_jcall *c)   { bool ok; int64_t v = parse_ll(S(c->args[0].l), 10, &ok); if (!ok) tl_jni_throw("java/lang/NumberFormatException", S(c->args[0].l)); c->ret = vj(v); }
+static void Long_parseLong_r(tl_jcall *c) { bool ok; int64_t v = parse_ll(S(c->args[0].l), c->args[1].i, &ok); if (!ok) tl_jni_throw("java/lang/NumberFormatException", S(c->args[0].l)); c->ret = vj(v); }
+static void Short_parseShort(tl_jcall *c) { bool ok; int64_t v = parse_ll(S(c->args[0].l), 10, &ok); if (!ok) tl_jni_throw("java/lang/NumberFormatException", S(c->args[0].l)); c->ret = vs((int16_t)v); }
+static void Byte_parseByte(tl_jcall *c)   { bool ok; int64_t v = parse_ll(S(c->args[0].l), 10, &ok); if (!ok) tl_jni_throw("java/lang/NumberFormatException", S(c->args[0].l)); c->ret = vb((int8_t)v); }
+static void Double_parseDouble(tl_jcall *c)
+{
+    const char *s = S(c->args[0].l); char *e;
+    double v = strtod(s, &e);
+    if (e == s) tl_jni_throw("java/lang/NumberFormatException", s);
+    c->ret = vd(v);
+}
+static void Float_parseFloat(tl_jcall *c)
+{
+    const char *s = S(c->args[0].l); char *e;
+    float v = strtof(s, &e);
+    if (e == s) tl_jni_throw("java/lang/NumberFormatException", s);
+    c->ret = vf(v);
+}
+static void Bool_parseBoolean(tl_jcall *c) { c->ret = vz(!strcasecmp(S(c->args[0].l), "true")); }
+static void Int_valueOf_s(tl_jcall *c)   { bool ok; int64_t v = parse_ll(S(c->args[0].l), 10, &ok); c->ret = vl(ok ? box_int((int)v) : box_int(0)); }
+static void Long_valueOf_s(tl_jcall *c)  { bool ok; int64_t v = parse_ll(S(c->args[0].l), 10, &ok); c->ret = vl(ok ? box_long(v) : box_long(0)); }
+static void Double_valueOf_s(tl_jcall *c){ char *e; double v = strtod(S(c->args[0].l), &e); c->ret = vl(box_double(v)); }
+static void Float_valueOf_s(tl_jcall *c) { char *e; float v = strtof(S(c->args[0].l), &e); c->ret = vl(box_float(v)); }
+static void Bool_valueOf_s(tl_jcall *c)  { c->ret = vl(box_bool(!strcasecmp(S(c->args[0].l), "true"))); }
+static void Byte_valueOf_s(tl_jcall *c)  { bool ok; int64_t v = parse_ll(S(c->args[0].l), 10, &ok); c->ret = vl(box_byte((int8_t)v)); }
+static void Short_valueOf_s(tl_jcall *c) { bool ok; int64_t v = parse_ll(S(c->args[0].l), 10, &ok); c->ret = vl(box_short((int16_t)v)); }
+static void Int_decode(tl_jcall *c)
+{
+    const char *s = S(c->args[0].l); int radix = 10;
+    if (!strncmp(s, "0x", 2) || !strncmp(s, "0X", 2)) { radix = 16; s += 2; }
+    else if (!strncmp(s, "#", 1)) { radix = 16; s += 1; }
+    else if (s[0] == '0' && s[1]) { radix = 8; s += 1; }
+    bool ok; int64_t v = parse_ll(s, radix, &ok);
+    if (!ok) tl_jni_throw("java/lang/NumberFormatException", s);
+    c->ret = vl(box_int((int)v));
+}
+static void Int_toHexString(tl_jcall *c)   { char b[24]; snprintf(b, sizeof(b), "%x", c->args[0].i); c->ret = vl(STR(b)); }
+static void Int_toOctalString(tl_jcall *c) { char b[24]; snprintf(b, sizeof(b), "%o", c->args[0].i); c->ret = vl(STR(b)); }
+static void Int_toBinaryString(tl_jcall *c)
+{
+    char b[40]; int k = 0; uint32_t v = (uint32_t)c->args[0].i;
+    do { b[k++] = (v & 1) ? '1' : '0'; v >>= 1; } while (v);
+    b[k] = 0;
+    for (int i = 0; i < k / 2; i++) { char t = b[i]; b[i] = b[k - 1 - i]; b[k - 1 - i] = t; }
+    c->ret = vl(STR(b));
+}
+static void Long_toHexString(tl_jcall *c)   { char b[32]; snprintf(b, sizeof(b), "%llx", (unsigned long long)c->args[0].j); c->ret = vl(STR(b)); }
+static void Long_toOctalString(tl_jcall *c) { char b[32]; snprintf(b, sizeof(b), "%llo", (unsigned long long)c->args[0].j); c->ret = vl(STR(b)); }
+static void Long_toBinaryString(tl_jcall *c)
+{
+    char b[80]; int k = 0; uint64_t v = (uint64_t)c->args[0].j;
+    do { b[k++] = (v & 1) ? '1' : '0'; v >>= 1; } while (v);
+    b[k] = 0;
+    for (int i = 0; i < k / 2; i++) { char t = b[i]; b[i] = b[k - 1 - i]; b[k - 1 - i] = t; }
+    c->ret = vl(STR(b));
+}
+static void Int_toString_radix(tl_jcall *c)
+{
+    int radix = c->args[1].i; int64_t v = c->args[0].i; bool neg = v < 0; uint64_t u = neg ? (uint64_t)(-v) : (uint64_t)v;
+    if (radix < 2 || radix > 36) radix = 10;
+    char tmp[80]; int k = 0;
+    do { int d = (int)(u % (uint64_t)radix); tmp[k++] = (char)(d < 10 ? '0' + d : 'a' + d - 10); u /= (uint64_t)radix; } while (u);
+    if (neg) tmp[k++] = '-';
+    tmp[k] = 0;
+    for (int i = 0; i < k / 2; i++) { char t = tmp[i]; tmp[i] = tmp[k - 1 - i]; tmp[k - 1 - i] = t; }
+    c->ret = vl(STR(tmp));
+}
+static void Long_toString_radix(tl_jcall *c)
+{
+    int radix = c->args[1].i; int64_t v = c->args[0].j; bool neg = v < 0; uint64_t u = neg ? (uint64_t)(-v) : (uint64_t)v;
+    if (radix < 2 || radix > 36) radix = 10;
+    char tmp[80]; int k = 0;
+    do { int d = (int)(u % (uint64_t)radix); tmp[k++] = (char)(d < 10 ? '0' + d : 'a' + d - 10); u /= (uint64_t)radix; } while (u);
+    if (neg) tmp[k++] = '-';
+    tmp[k] = 0;
+    for (int i = 0; i < k / 2; i++) { char t = tmp[i]; tmp[i] = tmp[k - 1 - i]; tmp[k - 1 - i] = t; }
+    c->ret = vl(STR(tmp));
+}
+static void Int_toString_i(tl_jcall *c)   { char b[24]; snprintf(b, sizeof(b), "%d", c->args[0].i); c->ret = vl(STR(b)); }
+static void Long_toString_j(tl_jcall *c)  { char b[32]; snprintf(b, sizeof(b), "%lld", (long long)c->args[0].j); c->ret = vl(STR(b)); }
+static void Double_toString_d(tl_jcall *c)
+{
+    char b[48];
+    double v = c->args[0].d;
+    if (isnan(v)) snprintf(b, sizeof(b), "NaN");
+    else if (isinf(v)) snprintf(b, sizeof(b), "%sInfinity", v < 0 ? "-" : "");
+    else snprintf(b, sizeof(b), "%g", v);
+    c->ret = vl(STR(b));
+}
+static void Float_toString_f(tl_jcall *c)
+{
+    char b[48]; double v = c->args[0].f;
+    if (isnan(v)) snprintf(b, sizeof(b), "NaN");
+    else if (isinf(v)) snprintf(b, sizeof(b), "%sInfinity", v < 0 ? "-" : "");
+    else snprintf(b, sizeof(b), "%g", v);
+    c->ret = vl(STR(b));
+}
+static void Bool_toString_z(tl_jcall *c)  { c->ret = vl(STR(c->args[0].z ? "true" : "false")); }
+static void Char_toString_c(tl_jcall *c)  { char b[8]; snprintf(b, sizeof(b), "%c", (char)c->args[0].c); c->ret = vl(STR(b)); }
+static void Int_compare(tl_jcall *c)  { c->ret = vi(c->args[0].i < c->args[1].i ? -1 : c->args[0].i > c->args[1].i ? 1 : 0); }
+static void Long_compare(tl_jcall *c) { c->ret = vi(c->args[0].j < c->args[1].j ? -1 : c->args[0].j > c->args[1].j ? 1 : 0); }
+static void Double_compare(tl_jcall *c) { c->ret = vi(c->args[0].d < c->args[1].d ? -1 : c->args[0].d > c->args[1].d ? 1 : 0); }
+static void Float_compare(tl_jcall *c)  { c->ret = vi(c->args[0].f < c->args[1].f ? -1 : c->args[0].f > c->args[1].f ? 1 : 0); }
+static void Int_signum(tl_jcall *c)   { c->ret = vi(c->args[0].i < 0 ? -1 : c->args[0].i > 0 ? 1 : 0); }
+static void Long_signum(tl_jcall *c)  { c->ret = vi(c->args[0].j < 0 ? -1 : c->args[0].j > 0 ? 1 : 0); }
+static void Int_reverse(tl_jcall *c)  { uint32_t v = (uint32_t)c->args[0].i; v = __builtin_bitreverse32(v); c->ret = vi((int)v); }
+static void Long_reverse(tl_jcall *c) { uint64_t v = (uint64_t)c->args[0].j; v = __builtin_bitreverse64(v); c->ret = vj((int64_t)v); }
+static void Int_highestOneBit(tl_jcall *c) { uint32_t v = (uint32_t)c->args[0].i; c->ret = vi(v ? (int)(1u << (31 - __builtin_clz(v))) : 0); }
+static void Int_lowestOneBit(tl_jcall *c)  { int32_t v = c->args[0].i; c->ret = vi(v ? v & -v : 0); }
+static void Int_bitCount(tl_jcall *c)  { c->ret = vi(__builtin_popcount((uint32_t)c->args[0].i)); }
+static void Long_bitCount(tl_jcall *c) { c->ret = vi(__builtin_popcountll((uint64_t)c->args[0].j)); }
+static void Int_numberOfLeadingZeros(tl_jcall *c)  { uint32_t v = (uint32_t)c->args[0].i; c->ret = vi(v ? __builtin_clz(v) : 32); }
+static void Int_numberOfTrailingZeros(tl_jcall *c) { uint32_t v = (uint32_t)c->args[0].i; c->ret = vi(v ? __builtin_ctz(v) : 32); }
+static void Long_numberOfLeadingZeros(tl_jcall *c)  { uint64_t v = (uint64_t)c->args[0].j; c->ret = vi(v ? __builtin_clzll(v) : 64); }
+static void Long_numberOfTrailingZeros(tl_jcall *c) { uint64_t v = (uint64_t)c->args[0].j; c->ret = vi(v ? __builtin_ctzll(v) : 64); }
+static void Int_rotateLeft(tl_jcall *c)  { uint32_t v = (uint32_t)c->args[0].i; int d = c->args[1].i & 31; c->ret = vi((int)((v << d) | (v >> (32 - d)))); }
+static void Int_rotateRight(tl_jcall *c) { uint32_t v = (uint32_t)c->args[0].i; int d = c->args[1].i & 31; c->ret = vi((int)((v >> d) | (v << (32 - d)))); }
+static void Int_hashCode_s(tl_jcall *c)  { c->ret = c->args[0]; }
+static void Long_hashCode_s(tl_jcall *c) { c->ret = vi((int)(c->args[0].j ^ (c->args[0].j >> 32))); }
+static void Int_getInteger(tl_jcall *c) { const char *v = prop_get(S(c->args[0].l)); c->ret = vl(v ? box_int(atoi(v)) : NULL); }
+static void Long_getLong(tl_jcall *c)   { const char *v = prop_get(S(c->args[0].l)); c->ret = vl(v ? box_long(atoll(v)) : NULL); }
+static void Bool_getBoolean(tl_jcall *c){ const char *v = prop_get(S(c->args[0].l)); c->ret = vz(v && !strcasecmp(v, "true")); }
+static void Char_valueOf_c(tl_jcall *c) { c->ret = vl(box_char(c->args[0].c)); }
+static void Char_charValue(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "value", "C"); }
+static void Char_isDigit(tl_jcall *c)      { c->ret = vz(isdigit((unsigned char)c->args[0].c)); }
+static void Char_isLetter(tl_jcall *c)     { c->ret = vz(isalpha((unsigned char)c->args[0].c)); }
+static void Char_isLetterOrDigit(tl_jcall *c){ c->ret = vz(isalnum((unsigned char)c->args[0].c)); }
+static void Char_isWhitespace(tl_jcall *c) { c->ret = vz(isspace((unsigned char)c->args[0].c)); }
+static void Char_isSpaceChar(tl_jcall *c)  { c->ret = vz(c->args[0].c == ' '); }
+static void Char_isUpperCase(tl_jcall *c)  { c->ret = vz(isupper((unsigned char)c->args[0].c)); }
+static void Char_isLowerCase(tl_jcall *c)  { c->ret = vz(islower((unsigned char)c->args[0].c)); }
+static void Char_toUpperCase(tl_jcall *c)  { c->ret = vc((uint16_t)toupper((unsigned char)c->args[0].c)); }
+static void Char_toLowerCase(tl_jcall *c)  { c->ret = vc((uint16_t)tolower((unsigned char)c->args[0].c)); }
+static void Char_digit(tl_jcall *c)
+{
+    int v = c->args[0].c, r = c->args[1].i;
+    int d = isdigit((unsigned char)v) ? v - '0' : isalpha((unsigned char)v) ? tolower((unsigned char)v) - 'a' + 10 : -1;
+    c->ret = vi(d >= 0 && d < r ? d : -1);
+}
+static void Char_forDigit(tl_jcall *c) { int d = c->args[0].i; c->ret = vc((uint16_t)(d < 10 ? '0' + d : 'a' + d - 10)); }
+static void Char_compare(tl_jcall *c)    { c->ret = vi((int)c->args[0].c - (int)c->args[1].c); }
+static void Char_isISOControl(tl_jcall *c){ c->ret = vz(iscntrl((unsigned char)c->args[0].c)); }
+static void Char_isDefined(tl_jcall *c)   { c->ret = vz(1); }
+static void Char_isHighSurrogate(tl_jcall *c){ c->ret = vz(c->args[0].c >= 0xD800 && c->args[0].c <= 0xDBFF); }
+static void Char_isLowSurrogate(tl_jcall *c) { c->ret = vz(c->args[0].c >= 0xDC00 && c->args[0].c <= 0xDFFF); }
+static void Char_isSurrogate(tl_jcall *c)    { c->ret = vz(c->args[0].c >= 0xD800 && c->args[0].c <= 0xDFFF); }
+static void Char_getNumericValue(tl_jcall *c)
+{
+    int v = c->args[0].c;
+    c->ret = vi(isdigit((unsigned char)v) ? v - '0' : -1);
+}
+static void Char_toChars(tl_jcall *c)
+{
+    jobj *dst = c->args[1].l; int off = c->args[2].i;
+    if (dst && dst->kind == TL_K_PRIM_ARRAY && off < (int)dst->arr.len) ((uint16_t *)dst->arr.data)[off] = (uint16_t)c->args[0].i;
+    c->ret = vi(1);
+}
+static void Char_charCount(tl_jcall *c) { c->ret = vi(c->args[0].i < 0x10000 ? 1 : 2); }
+static void Char_codePointToString(tl_jcall *c)
+{
+    uint32_t u = (uint32_t)c->args[0].i; char t[8]; int k = 0;
+    if (u < 0x80) t[k++] = (char)u;
+    else if (u < 0x800) { t[k++] = (char)(0xC0 | (u >> 6)); t[k++] = (char)(0x80 | (u & 0x3F)); }
+    else if (u < 0x10000) { t[k++] = (char)(0xE0 | (u >> 12)); t[k++] = (char)(0x80 | ((u >> 6) & 0x3F)); t[k++] = (char)(0x80 | (u & 0x3F)); }
+    else { t[k++] = (char)(0xF0 | (u >> 18)); t[k++] = (char)(0x80 | ((u >> 12) & 0x3F)); t[k++] = (char)(0x80 | ((u >> 6) & 0x3F)); t[k++] = (char)(0x80 | (u & 0x3F)); }
+    t[k] = 0; c->ret = vl(STR(t));
+}
+static void Void_type(tl_jcall *c) { c->ret = vl(NULL); }
+
+/* java.lang.Math already lives in bionic's own table; StrictMath delegates */
+static void SM_sin(tl_jcall *c)  { c->ret = vd(sin(c->args[0].d)); }
+static void SM_cos(tl_jcall *c)  { c->ret = vd(cos(c->args[0].d)); }
+static void SM_tan(tl_jcall *c)  { c->ret = vd(tan(c->args[0].d)); }
+static void SM_sqrt(tl_jcall *c) { c->ret = vd(sqrt(c->args[0].d)); }
+static void SM_abs_i(tl_jcall *c){ c->ret = vi(c->args[0].i < 0 ? -c->args[0].i : c->args[0].i); }
+static void SM_abs_j(tl_jcall *c){ c->ret = vj(c->args[0].j < 0 ? -c->args[0].j : c->args[0].j); }
+static void SM_abs_f(tl_jcall *c){ c->ret = vf(fabsf(c->args[0].f)); }
+static void SM_abs_d(tl_jcall *c){ c->ret = vd(fabs(c->args[0].d)); }
+static void SM_max_i(tl_jcall *c){ c->ret = vi(c->args[0].i > c->args[1].i ? c->args[0].i : c->args[1].i); }
+static void SM_min_i(tl_jcall *c){ c->ret = vi(c->args[0].i < c->args[1].i ? c->args[0].i : c->args[1].i); }
+static void SM_max_j(tl_jcall *c){ c->ret = vj(c->args[0].j > c->args[1].j ? c->args[0].j : c->args[1].j); }
+static void SM_min_j(tl_jcall *c){ c->ret = vj(c->args[0].j < c->args[1].j ? c->args[0].j : c->args[1].j); }
+static void SM_max_f(tl_jcall *c){ c->ret = vf(fmaxf(c->args[0].f, c->args[1].f)); }
+static void SM_min_f(tl_jcall *c){ c->ret = vf(fminf(c->args[0].f, c->args[1].f)); }
+static void SM_max_d(tl_jcall *c){ c->ret = vd(fmax(c->args[0].d, c->args[1].d)); }
+static void SM_min_d(tl_jcall *c){ c->ret = vd(fmin(c->args[0].d, c->args[1].d)); }
+static void SM_pow(tl_jcall *c)  { c->ret = vd(pow(c->args[0].d, c->args[1].d)); }
+static void SM_exp(tl_jcall *c)  { c->ret = vd(exp(c->args[0].d)); }
+static void SM_log(tl_jcall *c)  { c->ret = vd(log(c->args[0].d)); }
+static void SM_log10(tl_jcall *c){ c->ret = vd(log10(c->args[0].d)); }
+static void SM_floor(tl_jcall *c){ c->ret = vd(floor(c->args[0].d)); }
+static void SM_ceil(tl_jcall *c) { c->ret = vd(ceil(c->args[0].d)); }
+static void SM_round_f(tl_jcall *c){ c->ret = vi((int)lroundf(c->args[0].f)); }
+static void SM_round_d(tl_jcall *c){ c->ret = vj((int64_t)llround(c->args[0].d)); }
+static void SM_random(tl_jcall *c){ c->ret = vd(arc4random() / 4294967296.0); }
+static void SM_asin(tl_jcall *c) { c->ret = vd(asin(c->args[0].d)); }
+static void SM_acos(tl_jcall *c) { c->ret = vd(acos(c->args[0].d)); }
+static void SM_atan(tl_jcall *c) { c->ret = vd(atan(c->args[0].d)); }
+static void SM_atan2(tl_jcall *c){ c->ret = vd(atan2(c->args[0].d, c->args[1].d)); }
+static void SM_hypot(tl_jcall *c){ c->ret = vd(hypot(c->args[0].d, c->args[1].d)); }
+static void SM_cbrt(tl_jcall *c) { c->ret = vd(cbrt(c->args[0].d)); }
+static void SM_sinh(tl_jcall *c) { c->ret = vd(sinh(c->args[0].d)); }
+static void SM_cosh(tl_jcall *c) { c->ret = vd(cosh(c->args[0].d)); }
+static void SM_tanh(tl_jcall *c) { c->ret = vd(tanh(c->args[0].d)); }
+static void SM_expm1(tl_jcall *c){ c->ret = vd(expm1(c->args[0].d)); }
+static void SM_log1p(tl_jcall *c){ c->ret = vd(log1p(c->args[0].d)); }
+static void SM_signum_d(tl_jcall *c){ c->ret = vd(c->args[0].d < 0 ? -1.0 : c->args[0].d > 0 ? 1.0 : c->args[0].d); }
+static void SM_signum_f(tl_jcall *c){ c->ret = vf(c->args[0].f < 0 ? -1.0f : c->args[0].f > 0 ? 1.0f : c->args[0].f); }
+static void SM_toDegrees(tl_jcall *c){ c->ret = vd(c->args[0].d * 180.0 / M_PI); }
+static void SM_toRadians(tl_jcall *c){ c->ret = vd(c->args[0].d * M_PI / 180.0); }
+static void SM_IEEEremainder(tl_jcall *c){ c->ret = vd(remainder(c->args[0].d, c->args[1].d)); }
+static void SM_ulp_d(tl_jcall *c) { c->ret = vd(nextafter(c->args[0].d, INFINITY) - c->args[0].d); }
+static void SM_copySign_d(tl_jcall *c){ c->ret = vd(copysign(c->args[0].d, c->args[1].d)); }
+static void SM_copySign_f(tl_jcall *c){ c->ret = vf(copysignf(c->args[0].f, c->args[1].f)); }
+static void SM_scalb_d(tl_jcall *c){ c->ret = vd(ldexp(c->args[0].d, c->args[1].i)); }
+static void SM_nextAfter_d(tl_jcall *c){ c->ret = vd(nextafter(c->args[0].d, c->args[1].d)); }
+static void SM_nextUp_d(tl_jcall *c){ c->ret = vd(nextafter(c->args[0].d, INFINITY)); }
+static void SM_nextDown_d(tl_jcall *c){ c->ret = vd(nextafter(c->args[0].d, -INFINITY)); }
+static void SM_floorDiv_i(tl_jcall *c){ c->ret = vi(c->args[0].i / c->args[1].i); }
+static void SM_floorMod_i(tl_jcall *c){ c->ret = vi(c->args[0].i % c->args[1].i); }
+static void SM_rint(tl_jcall *c) { c->ret = vd(rint(c->args[0].d)); }
+
+/* ============================================================== java.util */
+
+/* Lists and sets share a growable jobj vector; maps share the hmap layout the
+ * HTTP layer already uses so a HashMap handed between the two reads the same. */
+
+typedef struct { jobj **v; int n, cap; } jvec;
+typedef struct { jobj **k, **v; int n, cap; } jmap;
+
+static jvec *vec_of(jobj *o) { if (!o->native) o->native = calloc(1, sizeof(jvec)); return o->native; }
+static void vec_push(jvec *b, jobj *o)
+{
+    if (b->n + 1 > b->cap) { b->cap = (b->cap + 8) * 2; b->v = realloc(b->v, sizeof(jobj *) * (size_t)b->cap); }
+    b->v[b->n++] = o;
+}
+static int vec_index(jvec *b, jobj *o)
+{
+    for (int i = 0; i < b->n; i++) if (tl_more_obj_eq(b->v[i], o)) return i;
+    return -1;
+}
+static void vec_insert(jvec *b, int at, jobj *o)
+{
+    if (at < 0 || at > b->n) at = b->n;
+    if (b->n + 1 > b->cap) { b->cap = (b->cap + 8) * 2; b->v = realloc(b->v, sizeof(jobj *) * (size_t)b->cap); }
+    memmove(b->v + at + 1, b->v + at, sizeof(jobj *) * (size_t)(b->n - at));
+    b->v[at] = o; b->n++;
+}
+static jobj *vec_remove(jvec *b, int at)
+{
+    if (at < 0 || at >= b->n) return NULL;
+    jobj *r = b->v[at];
+    memmove(b->v + at, b->v + at + 1, sizeof(jobj *) * (size_t)(b->n - at - 1));
+    b->n--;
+    return r;
+}
+
+static jmap *map_of(jobj *o) { if (!o->native) o->native = calloc(1, sizeof(jmap)); return o->native; }
+static int map_find(jmap *m, jobj *key)
+{
+    for (int i = 0; i < m->n; i++) if (tl_more_obj_eq(m->k[i], key)) return i;
+    return -1;
+}
+static void map_put(jmap *m, jobj *k, jobj *v)
+{
+    int i = map_find(m, k);
+    if (i >= 0) { m->v[i] = v; return; }
+    if (m->n + 1 > m->cap) { m->cap = (m->cap + 8) * 2; m->k = realloc(m->k, sizeof(jobj *) * (size_t)m->cap); m->v = realloc(m->v, sizeof(jobj *) * (size_t)m->cap); }
+    m->k[m->n] = k; m->v[m->n] = v; m->n++;
+}
+static jobj *map_get(jmap *m, jobj *k) { int i = map_find(m, k); return i >= 0 ? m->v[i] : NULL; }
+static bool map_remove(jmap *m, jobj *k)
+{
+    int i = map_find(m, k);
+    if (i < 0) return false;
+    memmove(m->k + i, m->k + i + 1, sizeof(jobj *) * (size_t)(m->n - i - 1));
+    memmove(m->v + i, m->v + i + 1, sizeof(jobj *) * (size_t)(m->n - i - 1));
+    m->n--;
+    return true;
+}
+
+/* ---- List family ---- */
+
+static void List_init(tl_jcall *c)   { vec_of(c->self); }
+static void List_init_cap(tl_jcall *c){ vec_of(c->self); }
+static void List_init_coll(tl_jcall *c)
+{
+    jvec *b = vec_of(c->self);
+    jvalue it = tl_jni_call(c->args[0].l, "iterator", "()Ljava/util/Iterator;", NULL);
+    if (!it.l) return;
+    for (;;) {
+        jvalue hn = tl_jni_call(it.l, "hasNext", "()Z", NULL);
+        if (!hn.z) break;
+        jvalue nx = tl_jni_call(it.l, "next", "()Ljava/lang/Object;", NULL);
+        vec_push(b, nx.l);
+    }
+}
+static void List_add(tl_jcall *c)     { vec_push(vec_of(c->self), c->args[0].l); c->ret = vz(1); }
+static void List_add_at(tl_jcall *c)  { vec_insert(vec_of(c->self), c->args[0].i, c->args[1].l); }
+static void List_addAt_ret(tl_jcall *c) { vec_insert(vec_of(c->self), c->args[0].i, c->args[1].l); c->ret = vz(1); }
+static void List_get(tl_jcall *c)
+{
+    jvec *b = vec_of(c->self);
+    if (c->args[0].i < 0 || c->args[0].i >= b->n) { tl_jni_throw("java/lang/IndexOutOfBoundsException", ""); return; }
+    c->ret = vl(b->v[c->args[0].i]);
+}
+static void List_set(tl_jcall *c)
+{
+    jvec *b = vec_of(c->self);
+    if (c->args[0].i < 0 || c->args[0].i >= b->n) { tl_jni_throw("java/lang/IndexOutOfBoundsException", ""); return; }
+    c->ret = vl(b->v[c->args[0].i]);
+    b->v[c->args[0].i] = c->args[1].l;
+}
+static void List_remove_at(tl_jcall *c)
+{
+    jobj *r = vec_remove(vec_of(c->self), c->args[0].i);
+    c->ret = vl(r);
+}
+static void List_remove_o(tl_jcall *c)
+{
+    jvec *b = vec_of(c->self); int i = vec_index(b, c->args[0].l);
+    c->ret = vz(i >= 0 && (vec_remove(b, i), true));
+}
+static void List_removeAll(tl_jcall *c)
+{
+    jvec *b = vec_of(c->self);
+    jobj *coll = c->args[0].l;
+    int removed = 0;
+    for (int i = b->n - 1; i >= 0; i--) {
+        jvalue ct = tl_jni_call(coll, "contains", "(Ljava/lang/Object;)Z", &(jvalue){ .l = b->v[i] });
+        if (ct.z) { vec_remove(b, i); removed = 1; }
+    }
+    c->ret = vz(removed);
+}
+static void List_retainAll(tl_jcall *c)
+{
+    jvec *b = vec_of(c->self);
+    jobj *coll = c->args[0].l;
+    int removed = 0;
+    for (int i = b->n - 1; i >= 0; i--) {
+        jvalue ct = tl_jni_call(coll, "contains", "(Ljava/lang/Object;)Z", &(jvalue){ .l = b->v[i] });
+        if (!ct.z) { vec_remove(b, i); removed = 1; }
+    }
+    c->ret = vz(removed);
+}
+static void List_addAll(tl_jcall *c)
+{
+    jvec *b = vec_of(c->self);
+    jvalue it = tl_jni_call(c->args[0].l, "iterator", "()Ljava/util/Iterator;", NULL);
+    int added = 0;
+    if (it.l) for (;;) {
+        jvalue hn = tl_jni_call(it.l, "hasNext", "()Z", NULL);
+        if (!hn.z) break;
+        jvalue nx = tl_jni_call(it.l, "next", "()Ljava/lang/Object;", NULL);
+        vec_push(b, nx.l); added = 1;
+    }
+    c->ret = vz(added);
+}
+static void List_addAll_at(tl_jcall *c)
+{
+    jvec *b = vec_of(c->self); int at = c->args[0].i;
+    jvalue it = tl_jni_call(c->args[1].l, "iterator", "()Ljava/util/Iterator;", NULL);
+    int added = 0;
+    if (it.l) for (;;) {
+        jvalue hn = tl_jni_call(it.l, "hasNext", "()Z", NULL);
+        if (!hn.z) break;
+        jvalue nx = tl_jni_call(it.l, "next", "()Ljava/lang/Object;", NULL);
+        vec_insert(b, at++, nx.l); added = 1;
+    }
+    c->ret = vz(added);
+}
+static void List_clear(tl_jcall *c)     { vec_of(c->self)->n = 0; }
+static void List_size(tl_jcall *c)      { c->ret = vi(vec_of(c->self)->n); }
+static void List_isEmpty(tl_jcall *c)   { c->ret = vz(vec_of(c->self)->n == 0); }
+static void List_contains(tl_jcall *c)  { c->ret = vz(vec_index(vec_of(c->self), c->args[0].l) >= 0); }
+static void List_indexOf(tl_jcall *c)   { c->ret = vi(vec_index(vec_of(c->self), c->args[0].l)); }
+static void List_lastIndexOf(tl_jcall *c)
+{
+    jvec *b = vec_of(c->self);
+    for (int i = b->n - 1; i >= 0; i--) if (tl_more_obj_eq(b->v[i], c->args[0].l)) { c->ret = vi(i); return; }
+    c->ret = vi(-1);
+}
+static void List_containsAll(tl_jcall *c)
+{
+    jvalue it = tl_jni_call(c->args[0].l, "iterator", "()Ljava/util/Iterator;", NULL);
+    if (it.l) for (;;) {
+        jvalue hn = tl_jni_call(it.l, "hasNext", "()Z", NULL);
+        if (!hn.z) break;
+        jvalue nx = tl_jni_call(it.l, "next", "()Ljava/lang/Object;", NULL);
+        if (vec_index(vec_of(c->self), nx.l) < 0) { c->ret = vz(0); return; }
+    }
+    c->ret = vz(1);
+}
+static void List_iterator(tl_jcall *c)
+{
+    jvec *b = vec_of(c->self);
+    c->ret = vl(tl_jni_new_list_iterator(b->v, (uint32_t)b->n));
+}
+static void List_listIterator(tl_jcall *c) { List_iterator(c); }
+static void List_toArray(tl_jcall *c)
+{
+    jvec *b = vec_of(c->self);
+    jobj *arr = tl_jni_new_obj_array(C("java/lang/Object"), (uint32_t)b->n);
+    for (int i = 0; i < b->n; i++) arr->oarr.v[i] = b->v[i];
+    c->ret = vl(arr);
+}
+static void List_toArray_t(tl_jcall *c)
+{
+    jvec *b = vec_of(c->self);
+    jobj *dst = c->args[0].l;
+    jobj *arr = dst;
+    if (!arr || arr->kind != TL_K_OBJ_ARRAY || (int)arr->oarr.len < b->n)
+        arr = tl_jni_new_obj_array(C("java/lang/Object"), (uint32_t)b->n);
+    for (int i = 0; i < b->n; i++) arr->oarr.v[i] = b->v[i];
+    if (arr == dst && arr->oarr.len > (uint32_t)b->n) arr->oarr.v[b->n] = NULL;
+    c->ret = vl(arr);
+}
+static void List_subList(tl_jcall *c)
+{
+    jvec *b = vec_of(c->self);
+    int a = c->args[0].i, e = c->args[1].i;
+    if (a < 0) a = 0; if (e > b->n) e = b->n; if (e < a) e = a;
+    jobj *sub = make("java/util/ArrayList");
+    jvec *sb = vec_of(sub);
+    for (int i = a; i < e; i++) vec_push(sb, b->v[i]);
+    c->ret = vl(sub);
+}
+static void List_equals(tl_jcall *c)
+{
+    jobj *o = c->args[0].l;
+    if (o == c->self) { c->ret = vz(1); return; }
+    if (!o || o->kind != TL_K_OBJECT) { c->ret = vz(0); return; }
+    jvalue sz = tl_jni_call(o, "size", "()I", NULL);
+    jvec *b = vec_of(c->self);
+    if (sz.i != b->n) { c->ret = vz(0); return; }
+    for (int i = 0; i < b->n; i++) {
+        jvalue el = tl_jni_call(o, "get", "(I)Ljava/lang/Object;", &(jvalue){ .i = i });
+        if (!tl_more_obj_eq(b->v[i], el.l)) { c->ret = vz(0); return; }
+    }
+    c->ret = vz(1);
+}
+static void List_hashCode(tl_jcall *c) { c->ret = vi(vec_of(c->self)->n); }
+static void List_toString(tl_jcall *c)
+{
+    jvec *b = vec_of(c->self);
+    sbuf sb = {0}; sb_add(&sb, "[");
+    for (int i = 0; i < b->n; i++) {
+        if (i) sb_add(&sb, ", ");
+        char t[300]; obj_str(b->v[i], t, sizeof(t));
+        sb_add(&sb, t);
+    }
+    sb_add(&sb, "]");
+    c->ret = vl(STR(sb.p ? sb.p : "[]")); free(sb.p);
+}
+static void List_forEach(tl_jcall *c)
+{
+    jvec *b = vec_of(c->self);
+    jobj *cons = c->args[0].l;
+    for (int i = 0; i < b->n; i++) {
+        jvalue a; a.l = b->v[i];
+        fire(cons, "java/util/function/Consumer", "accept", "(Ljava/lang/Object;)V", &a, 1);
+    }
+}
+
+/* ---- Deque/Queue extras on the same vector ---- */
+
+static void DQ_addFirst(tl_jcall *c)  { vec_insert(vec_of(c->self), 0, c->args[0].l); }
+static void DQ_addLast(tl_jcall *c)   { vec_push(vec_of(c->self), c->args[0].l); }
+static void DQ_offerFirst(tl_jcall *c){ vec_insert(vec_of(c->self), 0, c->args[0].l); c->ret = vz(1); }
+static void DQ_offerLast(tl_jcall *c) { vec_push(vec_of(c->self), c->args[0].l); c->ret = vz(1); }
+static void DQ_offer(tl_jcall *c)     { vec_push(vec_of(c->self), c->args[0].l); c->ret = vz(1); }
+static void DQ_poll(tl_jcall *c)      { c->ret = vl(vec_remove(vec_of(c->self), 0)); }
+static void DQ_pollFirst(tl_jcall *c) { DQ_poll(c); }
+static void DQ_pollLast(tl_jcall *c)  { c->ret = vl(vec_remove(vec_of(c->self), vec_of(c->self)->n - 1)); }
+static void DQ_removeFirst(tl_jcall *c)
+{
+    jobj *r = vec_remove(vec_of(c->self), 0);
+    if (!r) tl_jni_throw("java/util/NoSuchElementException", "");
+    c->ret = vl(r);
+}
+static void DQ_removeLast(tl_jcall *c)
+{
+    jobj *r = vec_remove(vec_of(c->self), vec_of(c->self)->n - 1);
+    if (!r) tl_jni_throw("java/util/NoSuchElementException", "");
+    c->ret = vl(r);
+}
+static void DQ_peek(tl_jcall *c)      { jvec *b = vec_of(c->self); c->ret = vl(b->n ? b->v[0] : NULL); }
+static void DQ_peekFirst(tl_jcall *c) { DQ_peek(c); }
+static void DQ_peekLast(tl_jcall *c)  { jvec *b = vec_of(c->self); c->ret = vl(b->n ? b->v[b->n - 1] : NULL); }
+static void DQ_element(tl_jcall *c)
+{
+    jvec *b = vec_of(c->self);
+    if (!b->n) tl_jni_throw("java/util/NoSuchElementException", "");
+    c->ret = vl(b->n ? b->v[0] : NULL);
+}
+static void DQ_getFirst(tl_jcall *c)  { DQ_element(c); }
+static void DQ_getLast(tl_jcall *c)
+{
+    jvec *b = vec_of(c->self);
+    if (!b->n) tl_jni_throw("java/util/NoSuchElementException", "");
+    c->ret = vl(b->n ? b->v[b->n - 1] : NULL);
+}
+static void DQ_pop(tl_jcall *c)       { DQ_removeFirst(c); }
+static void DQ_push(tl_jcall *c)      { vec_insert(vec_of(c->self), 0, c->args[0].l); }
+static void DQ_remove(tl_jcall *c)    { DQ_removeFirst(c); }
+static void DQ_descIterator(tl_jcall *c)
+{
+    jvec *b = vec_of(c->self);
+    jobj *rev[256]; int n = 0;
+    for (int i = b->n - 1; i >= 0 && n < 256; i--) rev[n++] = b->v[i];
+    c->ret = vl(tl_jni_new_list_iterator(rev, (uint32_t)n));
+}
+
+/* ---- Map family ---- */
+
+static void Map_init(tl_jcall *c) { map_of(c->self); }
+static void Map_init_m(tl_jcall *c)
+{
+    jmap *m = map_of(c->self);
+    jobj *src = c->args[0].l;
+    jvalue es = tl_jni_call(src, "entrySet", "()Ljava/util/Set;", NULL);
+    if (!es.l) return;
+    jvalue it = tl_jni_call(es.l, "iterator", "()Ljava/util/Iterator;", NULL);
+    if (!it.l) return;
+    for (;;) {
+        jvalue hn = tl_jni_call(it.l, "hasNext", "()Z", NULL);
+        if (!hn.z) break;
+        jobj *e = tl_jni_call(it.l, "next", "()Ljava/lang/Object;", NULL).l;
+        jvalue k = tl_jni_call(e, "getKey", "()Ljava/lang/Object;", NULL);
+        jvalue v = tl_jni_call(e, "getValue", "()Ljava/lang/Object;", NULL);
+        map_put(m, k.l, v.l);
+    }
+}
+static void Map_put(tl_jcall *c)
+{
+    jmap *m = map_of(c->self);
+    int i = map_find(m, c->args[0].l);
+    c->ret = vl(i >= 0 ? m->v[i] : NULL);
+    map_put(m, c->args[0].l, c->args[1].l);
+}
+static void Map_putIfAbsent(tl_jcall *c)
+{
+    jmap *m = map_of(c->self);
+    int i = map_find(m, c->args[0].l);
+    if (i >= 0) { c->ret = vl(m->v[i]); return; }
+    map_put(m, c->args[0].l, c->args[1].l);
+    c->ret = vl(NULL);
+}
+static void Map_get(tl_jcall *c)  { c->ret = vl(map_get(map_of(c->self), c->args[0].l)); }
+static void Map_getOrDefault(tl_jcall *c)
+{
+    jobj *v = map_get(map_of(c->self), c->args[0].l);
+    c->ret = vl(v ? v : c->args[1].l);
+}
+static void Map_containsKey(tl_jcall *c)   { c->ret = vz(map_find(map_of(c->self), c->args[0].l) >= 0); }
+static void Map_containsValue(tl_jcall *c)
+{
+    jmap *m = map_of(c->self);
+    for (int i = 0; i < m->n; i++) if (tl_more_obj_eq(m->v[i], c->args[0].l)) { c->ret = vz(1); return; }
+    c->ret = vz(0);
+}
+static void Map_remove(tl_jcall *c)
+{
+    jmap *m = map_of(c->self); int i = map_find(m, c->args[0].l);
+    c->ret = vl(i >= 0 ? m->v[i] : NULL);
+    if (i >= 0) map_remove(m, c->args[0].l);
+}
+static void Map_remove_kv(tl_jcall *c)
+{
+    jmap *m = map_of(c->self); int i = map_find(m, c->args[0].l);
+    c->ret = vz(i >= 0 && tl_more_obj_eq(m->v[i], c->args[1].l) && (map_remove(m, c->args[0].l), true));
+}
+static void Map_replace(tl_jcall *c)
+{
+    jmap *m = map_of(c->self); int i = map_find(m, c->args[0].l);
+    c->ret = vl(i >= 0 ? m->v[i] : NULL);
+    if (i >= 0) m->v[i] = c->args[1].l;
+}
+static void Map_replace_kv(tl_jcall *c)
+{
+    jmap *m = map_of(c->self); int i = map_find(m, c->args[0].l);
+    c->ret = vz(i >= 0 && tl_more_obj_eq(m->v[i], c->args[1].l) && ((m->v[i] = c->args[2].l), true));
+}
+static void Map_size(tl_jcall *c)    { c->ret = vi(map_of(c->self)->n); }
+static void Map_isEmpty(tl_jcall *c) { c->ret = vz(map_of(c->self)->n == 0); }
+static void Map_clear(tl_jcall *c)   { map_of(c->self)->n = 0; }
+static void Map_putAll(tl_jcall *c)
+{
+    jmap *m = map_of(c->self);
+    jvalue es = tl_jni_call(c->args[0].l, "entrySet", "()Ljava/util/Set;", NULL);
+    if (!es.l) return;
+    jvalue it = tl_jni_call(es.l, "iterator", "()Ljava/util/Iterator;", NULL);
+    if (!it.l) return;
+    for (;;) {
+        jvalue hn = tl_jni_call(it.l, "hasNext", "()Z", NULL);
+        if (!hn.z) break;
+        jobj *e = tl_jni_call(it.l, "next", "()Ljava/lang/Object;", NULL).l;
+        jvalue k = tl_jni_call(e, "getKey", "()Ljava/lang/Object;", NULL);
+        jvalue v = tl_jni_call(e, "getValue", "()Ljava/lang/Object;", NULL);
+        map_put(m, k.l, v.l);
+    }
+}
+static jobj *new_map_entry(jobj *m_obj, jobj *k, jobj *v)
+{
+    jobj *e = make("java/util/Map$Entry");
+    tl_jni_set_field(e, "key", "Ljava/lang/Object;", vl(k));
+    tl_jni_set_field(e, "value", "Ljava/lang/Object;", vl(v));
+    tl_jni_set_field(e, "map", "Ljava/util/Map;", vl(m_obj));
+    return e;
+}
+static void Map_entrySet(tl_jcall *c)
+{
+    jmap *m = map_of(c->self);
+    jobj *set = make("java/util/HashSet");
+    jvec *sv = vec_of(set);
+    for (int i = 0; i < m->n; i++) vec_push(sv, new_map_entry(c->self, m->k[i], m->v[i]));
+    c->ret = vl(set);
+}
+static void Map_keySet(tl_jcall *c)
+{
+    jmap *m = map_of(c->self);
+    jobj *set = make("java/util/HashSet");
+    jvec *sv = vec_of(set);
+    for (int i = 0; i < m->n; i++) vec_push(sv, m->k[i]);
+    c->ret = vl(set);
+}
+static void Map_values(tl_jcall *c)
+{
+    jmap *m = map_of(c->self);
+    jobj *list = make("java/util/ArrayList");
+    jvec *lv = vec_of(list);
+    for (int i = 0; i < m->n; i++) vec_push(lv, m->v[i]);
+    c->ret = vl(list);
+}
+static void Map_forEach(tl_jcall *c)
+{
+    jmap *m = map_of(c->self);
+    jobj *cons = c->args[0].l;
+    for (int i = 0; i < m->n; i++) {
+        jvalue a[2] = { { .l = m->k[i] }, { .l = m->v[i] } };
+        fire(cons, "java/util/function/BiConsumer", "accept", "(Ljava/lang/Object;Ljava/lang/Object;)V", a, 2);
+    }
+}
+static void Map_toString(tl_jcall *c)
+{
+    jmap *m = map_of(c->self);
+    sbuf sb = {0}; sb_add(&sb, "{");
+    for (int i = 0; i < m->n; i++) {
+        if (i) sb_add(&sb, ", ");
+        char t[300]; obj_str(m->k[i], t, sizeof(t)); sb_add(&sb, t);
+        sb_add(&sb, "=");
+        obj_str(m->v[i], t, sizeof(t)); sb_add(&sb, t);
+    }
+    sb_add(&sb, "}");
+    c->ret = vl(STR(sb.p ? sb.p : "{}")); free(sb.p);
+}
+static void Map_equals(tl_jcall *c)
+{
+    jobj *o = c->args[0].l;
+    if (o == c->self) { c->ret = vz(1); return; }
+    jmap *m = map_of(c->self);
+    jvalue sz = tl_jni_call(o, "size", "()I", NULL);
+    if (sz.i != m->n) { c->ret = vz(0); return; }
+    for (int i = 0; i < m->n; i++) {
+        jvalue ov = tl_jni_call(o, "get", "(Ljava/lang/Object;)Ljava/lang/Object;", &(jvalue){ .l = m->k[i] });
+        if (!tl_more_obj_eq(m->v[i], ov.l)) { c->ret = vz(0); return; }
+    }
+    c->ret = vz(1);
+}
+static void Map_hashCode(tl_jcall *c) { c->ret = vi(map_of(c->self)->n); }
+static void Map_of(tl_jcall *c)         { c->ret = vl(make("java/util/HashMap")); }
+static void Map_of1(tl_jcall *c)
+{
+    jobj *m = make("java/util/HashMap");
+    map_put(map_of(m), c->args[0].l, c->args[1].l);
+    c->ret = vl(m);
+}
+static void Map_computeIfAbsent(tl_jcall *c)
+{
+    jmap *m = map_of(c->self);
+    jobj *v = map_get(m, c->args[0].l);
+    if (!v) {
+        jvalue a; a.l = c->args[0].l;
+        v = fire(c->args[1].l, "java/util/function/Function", "apply", "(Ljava/lang/Object;)Ljava/lang/Object;", &a, 1).l;
+        if (v) map_put(m, c->args[0].l, v);
+    }
+    c->ret = vl(v);
+}
+static void Map_merge(tl_jcall *c)
+{
+    jmap *m = map_of(c->self);
+    jobj *v = map_get(m, c->args[0].l);
+    if (!v) { map_put(m, c->args[0].l, c->args[1].l); c->ret = vl(c->args[1].l); return; }
+    jvalue a[2] = { { .l = v }, { .l = c->args[1].l } };
+    jobj *nv = fire(c->args[2].l, "java/util/function/BiFunction", "apply", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", a, 2).l;
+    if (nv) map_put(m, c->args[0].l, nv); else map_remove(m, c->args[0].l);
+    c->ret = vl(nv);
+}
+
+/* Map.Entry accessors — getValue reads back through the owning map so setValue
+ * and entries made by entrySet() agree. */
+static void ME_getKey(tl_jcall *c)   { c->ret = tl_jni_get_field(c->self, "key", "Ljava/lang/Object;"); }
+static void ME_getValue(tl_jcall *c)
+{
+    jobj *m = tl_jni_get_field(c->self, "map", "Ljava/util/Map;").l;
+    jobj *k = tl_jni_get_field(c->self, "key", "Ljava/lang/Object;").l;
+    c->ret = vl(m && m->native ? map_get(map_of(m), k) : tl_jni_get_field(c->self, "value", "Ljava/lang/Object;").l);
+}
+static void ME_setValue(tl_jcall *c)
+{
+    jobj *m = tl_jni_get_field(c->self, "map", "Ljava/util/Map;").l;
+    jobj *k = tl_jni_get_field(c->self, "key", "Ljava/lang/Object;").l;
+    jvalue old = tl_jni_get_field(c->self, "value", "Ljava/lang/Object;");
+    if (m && m->native) map_put(map_of(m), k, c->args[0].l);
+    tl_jni_set_field(c->self, "value", "Ljava/lang/Object;", c->args[0]);
+    c->ret = old;
+}
+static void ME_equals(tl_jcall *c)   { c->ret = vz(tl_more_obj_eq(tl_jni_get_field(c->self, "key", "Ljava/lang/Object;").l, tl_jni_get_field(c->args[0].l, "key", "Ljava/lang/Object;").l)); }
+static void ME_hashCode(tl_jcall *c) { c->ret = vi((int)((uintptr_t)tl_jni_get_field(c->self, "key", "Ljava/lang/Object;").l >> 4)); }
+static void ME_toString(tl_jcall *c)
+{
+    char a[300], b[300];
+    obj_str(tl_jni_get_field(c->self, "key", "Ljava/lang/Object;").l, a, sizeof(a));
+    obj_str(tl_jni_get_field(c->self, "value", "Ljava/lang/Object;").l, b, sizeof(b));
+    char buf[640]; snprintf(buf, sizeof(buf), "%s=%s", a, b);
+    c->ret = vl(STR(buf));
+}
+static void ME_comparingByKey(tl_jcall *c)   { c->ret = vl(make("java/util/Comparator")); }
+static void ME_comparingByValue(tl_jcall *c) { c->ret = vl(make("java/util/Comparator")); }
+
+/* ---- Set family: a vector with dedup-on-add ---- */
+
+static void Set_add(tl_jcall *c)
+{
+    jvec *b = vec_of(c->self);
+    if (vec_index(b, c->args[0].l) >= 0) { c->ret = vz(0); return; }
+    vec_push(b, c->args[0].l); c->ret = vz(1);
+}
+static void Set_remove(tl_jcall *c)
+{
+    jvec *b = vec_of(c->self); int i = vec_index(b, c->args[0].l);
+    c->ret = vz(i >= 0 && (vec_remove(b, i), true));
+}
+static void Set_of(tl_jcall *c)  { c->ret = vl(make("java/util/HashSet")); }
+static void Set_of1(tl_jcall *c)
+{
+    jobj *s = make("java/util/HashSet");
+    vec_push(vec_of(s), c->args[0].l);
+    c->ret = vl(s);
+}
+
+/* ---- Iterator protocol helpers ---- */
+
+static void It_forEachRemaining(tl_jcall *c)
+{
+    jobj *cons = c->args[0].l;
+    for (;;) {
+        jvalue hn = tl_jni_call(c->self, "hasNext", "()Z", NULL);
+        if (!hn.z) break;
+        jvalue nx = tl_jni_call(c->self, "next", "()Ljava/lang/Object;", NULL);
+        jvalue a; a.l = nx.l;
+        fire(cons, "java/util/function/Consumer", "accept", "(Ljava/lang/Object;)V", &a, 1);
+    }
+}
+static void It_remove(tl_jcall *c) { (void)c; }
+static void Spliterator_estSize(tl_jcall *c) { c->ret = vj(0); }
+
+/* ---- Optional ---- */
+
+static void Opt_of(tl_jcall *c)
+{
+    if (!c->args[0].l) { tl_jni_throw("java/lang/NullPointerException", "Optional.of null"); return; }
+    jobj *o = make("java/util/Optional");
+    tl_jni_set_field(o, "value", "Ljava/lang/Object;", c->args[0]);
+    c->ret = vl(o);
+}
+static void Opt_ofNullable(tl_jcall *c)
+{
+    jobj *o = make("java/util/Optional");
+    if (c->args[0].l) tl_jni_set_field(o, "value", "Ljava/lang/Object;", c->args[0]);
+    c->ret = vl(o);
+}
+static void Opt_empty(tl_jcall *c)  { c->ret = vl(make("java/util/Optional")); }
+static void Opt_isPresent(tl_jcall *c) { c->ret = vz(tl_jni_get_field(c->self, "value", "Ljava/lang/Object;").l != NULL); }
+static void Opt_isEmpty(tl_jcall *c)   { c->ret = vz(tl_jni_get_field(c->self, "value", "Ljava/lang/Object;").l == NULL); }
+static void Opt_get(tl_jcall *c)
+{
+    jvalue v = tl_jni_get_field(c->self, "value", "Ljava/lang/Object;");
+    if (!v.l) tl_jni_throw("java/util/NoSuchElementException", "No value present");
+    c->ret = v;
+}
+static void Opt_orElse(tl_jcall *c)
+{
+    jvalue v = tl_jni_get_field(c->self, "value", "Ljava/lang/Object;");
+    c->ret = vl(v.l ? v.l : c->args[0].l);
+}
+static void Opt_orElseGet(tl_jcall *c)
+{
+    jvalue v = tl_jni_get_field(c->self, "value", "Ljava/lang/Object;");
+    if (v.l) { c->ret = v; return; }
+    c->ret = fire(c->args[0].l, "java/util/function/Supplier", "get", "()Ljava/lang/Object;", NULL, 0);
+}
+static void Opt_orElseThrow(tl_jcall *c)
+{
+    jvalue v = tl_jni_get_field(c->self, "value", "Ljava/lang/Object;");
+    if (!v.l) tl_jni_throw("java/util/NoSuchElementException", "No value present");
+    c->ret = v;
+}
+static void Opt_ifPresent(tl_jcall *c)
+{
+    jvalue v = tl_jni_get_field(c->self, "value", "Ljava/lang/Object;");
+    if (v.l) { jvalue a; a.l = v.l; fire(c->args[0].l, "java/util/function/Consumer", "accept", "(Ljava/lang/Object;)V", &a, 1); }
+}
+static void Opt_map(tl_jcall *c)
+{
+    jvalue v = tl_jni_get_field(c->self, "value", "Ljava/lang/Object;");
+    jobj *o = make("java/util/Optional");
+    if (v.l) {
+        jvalue a; a.l = v.l;
+        jvalue r = fire(c->args[0].l, "java/util/function/Function", "apply", "(Ljava/lang/Object;)Ljava/lang/Object;", &a, 1);
+        if (r.l) tl_jni_set_field(o, "value", "Ljava/lang/Object;", r);
+    }
+    c->ret = vl(o);
+}
+static void Opt_filter(tl_jcall *c)
+{
+    jvalue v = tl_jni_get_field(c->self, "value", "Ljava/lang/Object;");
+    if (v.l) {
+        jvalue a; a.l = v.l;
+        jvalue r = fire(c->args[0].l, "java/util/function/Predicate", "test", "(Ljava/lang/Object;)Z", &a, 1);
+        c->ret = vl(r.z ? tl_jni_ref(c->self) : make("java/util/Optional"));
+        return;
+    }
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void Opt_equals(tl_jcall *c)
+{
+    c->ret = vz(tl_more_obj_eq(tl_jni_get_field(c->self, "value", "Ljava/lang/Object;").l, tl_jni_get_field(c->args[0].l, "value", "Ljava/lang/Object;").l));
+}
+static void Opt_hashCode(tl_jcall *c) { c->ret = vi((int)((uintptr_t)tl_jni_get_field(c->self, "value", "Ljava/lang/Object;").l >> 4)); }
+static void Opt_toString(tl_jcall *c)
+{
+    jvalue v = tl_jni_get_field(c->self, "value", "Ljava/lang/Object;");
+    char buf[300];
+    if (v.l) { char t[200]; obj_str(v.l, t, sizeof(t)); snprintf(buf, sizeof(buf), "Optional[%s]", t); }
+    else snprintf(buf, sizeof(buf), "Optional.empty");
+    c->ret = vl(STR(buf));
+}
+static void Opt_stream(tl_jcall *c) { c->ret = vl(make("java/util/stream/Stream")); }
+
+/* ---- java.util.Collections / Arrays helpers ---- */
+
+static int cmp_obj(jobj *a, jobj *b, jobj *comparator)
+{
+    if (comparator) {
+        jvalue args[2] = { { .l = a }, { .l = b } };
+        return fire(comparator, "java/util/Comparator", "compare", "(Ljava/lang/Object;Ljava/lang/Object;)I", args, 2).i;
+    }
+    jvalue r = fire(a, "java/lang/Comparable", "compareTo", "(Ljava/lang/Object;)I", &(jvalue){ .l = b }, 1);
+    if (r.i || tl_jni_pending()) return r.i;
+    /* fall back on the natural orders we know */
+    const char *ca = tl_jni_class_name(a);
+    const char *sig = boxed_sig(ca);
+    if (sig) { double d = num_of(a) - num_of(b); return d < 0 ? -1 : d > 0 ? 1 : 0; }
+    if (a && a->kind == TL_K_STRING && b && b->kind == TL_K_STRING) return strcmp(S(a), S(b));
+    return 0;
+}
+static void Colls_sort_impl(jobj *list, jobj *comparator)
+{
+    jvec *b = vec_of(list);
+    for (int i = 1; i < b->n; i++) {
+        jobj *x = b->v[i]; int j = i - 1;
+        while (j >= 0 && cmp_obj(b->v[j], x, comparator) > 0) { b->v[j + 1] = b->v[j]; j--; }
+        b->v[j + 1] = x;
+    }
+}
+static void Colls_sort1(tl_jcall *c) { Colls_sort_impl(c->args[0].l, NULL); }
+static void Colls_sort2(tl_jcall *c) { Colls_sort_impl(c->args[0].l, c->args[1].l); }
+static void Colls_reverse(tl_jcall *c)
+{
+    jvec *b = vec_of(c->args[0].l);
+    for (int i = 0, j = b->n - 1; i < j; i++, j--) { jobj *t = b->v[i]; b->v[i] = b->v[j]; b->v[j] = t; }
+}
+static void Colls_shuffle(tl_jcall *c)
+{
+    jvec *b = vec_of(c->args[0].l);
+    for (int i = b->n - 1; i > 0; i--) { int j = (int)(arc4random_uniform((uint32_t)i + 1)); jobj *t = b->v[i]; b->v[i] = b->v[j]; b->v[j] = t; }
+}
+static void Colls_emptyList(tl_jcall *c) { c->ret = vl(make("java/util/ArrayList")); }
+static void Colls_emptySet(tl_jcall *c)  { c->ret = vl(make("java/util/HashSet")); }
+static void Colls_emptyMap(tl_jcall *c)  { c->ret = vl(make("java/util/HashMap")); }
+static void Colls_emptyIterator(tl_jcall *c) { c->ret = vl(tl_jni_new_list_iterator(NULL, 0)); }
+static void Colls_singletonList(tl_jcall *c)
+{
+    jobj *l = make("java/util/ArrayList"); vec_push(vec_of(l), c->args[0].l); c->ret = vl(l);
+}
+static void Colls_singleton(tl_jcall *c)
+{
+    jobj *s = make("java/util/HashSet"); vec_push(vec_of(s), c->args[0].l); c->ret = vl(s);
+}
+static void Colls_singletonMap(tl_jcall *c)
+{
+    jobj *m = make("java/util/HashMap"); map_put(map_of(m), c->args[0].l, c->args[1].l); c->ret = vl(m);
+}
+static void Colls_nCopies(tl_jcall *c)
+{
+    jobj *l = make("java/util/ArrayList"); jvec *b = vec_of(l);
+    for (int i = 0; i < c->args[0].i && i < 65536; i++) vec_push(b, c->args[1].l);
+    c->ret = vl(l);
+}
+static void Colls_unmodifiable(tl_jcall *c) { c->ret = vl(c->args[0].l ? tl_jni_ref(c->args[0].l) : NULL); }
+static void Colls_synchronized(tl_jcall *c) { c->ret = vl(c->args[0].l ? tl_jni_ref(c->args[0].l) : NULL); }
+static void Colls_checked(tl_jcall *c)      { c->ret = vl(c->args[0].l ? tl_jni_ref(c->args[0].l) : NULL); }
+static void Colls_min(tl_jcall *c)
+{
+    jvec *b = vec_of(c->args[0].l);
+    if (!b->n) { c->ret = vl(NULL); return; }
+    jobj *m = b->v[0];
+    for (int i = 1; i < b->n; i++) if (cmp_obj(b->v[i], m, NULL) < 0) m = b->v[i];
+    c->ret = vl(m);
+}
+static void Colls_max(tl_jcall *c)
+{
+    jvec *b = vec_of(c->args[0].l);
+    if (!b->n) { c->ret = vl(NULL); return; }
+    jobj *m = b->v[0];
+    for (int i = 1; i < b->n; i++) if (cmp_obj(b->v[i], m, NULL) > 0) m = b->v[i];
+    c->ret = vl(m);
+}
+static void Colls_frequency(tl_jcall *c)
+{
+    jvec *b = vec_of(c->args[0].l); int n = 0;
+    for (int i = 0; i < b->n; i++) if (tl_more_obj_eq(b->v[i], c->args[1].l)) n++;
+    c->ret = vi(n);
+}
+static void Colls_fill(tl_jcall *c)
+{
+    jvec *b = vec_of(c->args[0].l);
+    for (int i = 0; i < b->n; i++) b->v[i] = c->args[1].l;
+}
+static void Colls_copy(tl_jcall *c)
+{
+    jvec *d = vec_of(c->args[0].l), *s = vec_of(c->args[1].l);
+    for (int i = 0; i < s->n && i < d->n; i++) d->v[i] = s->v[i];
+}
+static void Colls_swap(tl_jcall *c)
+{
+    jvec *b = vec_of(c->args[0].l); int i = c->args[1].i, j = c->args[2].i;
+    if (i >= 0 && i < b->n && j >= 0 && j < b->n) { jobj *t = b->v[i]; b->v[i] = b->v[j]; b->v[j] = t; }
+}
+static void Colls_binarySearch(tl_jcall *c)
+{
+    jvec *b = vec_of(c->args[0].l);
+    int lo = 0, hi = b->n - 1, r = -1;
+    while (lo <= hi) {
+        int mid = (lo + hi) / 2, cmp = cmp_obj(b->v[mid], c->args[1].l, NULL);
+        if (cmp == 0) { r = mid; break; } else if (cmp < 0) lo = mid + 1; else hi = mid - 1;
+    }
+    c->ret = vi(r >= 0 ? r : -lo - 1);
+}
+static void Colls_indexOfSubList(tl_jcall *c)
+{
+    jvec *a = vec_of(c->args[0].l), *b = vec_of(c->args[1].l);
+    for (int i = 0; i + b->n <= a->n; i++) {
+        int j; for (j = 0; j < b->n; j++) if (!tl_more_obj_eq(a->v[i + j], b->v[j])) break;
+        if (j == b->n) { c->ret = vi(i); return; }
+    }
+    c->ret = vi(-1);
+}
+static void Colls_addAll(tl_jcall *c)
+{
+    jvec *b = vec_of(c->args[0].l);
+    jobj *arr = c->args[1].l;
+    int added = 0;
+    if (arr && arr->kind == TL_K_OBJ_ARRAY) for (uint32_t i = 0; i < arr->oarr.len; i++) { vec_push(b, arr->oarr.v[i]); added = 1; }
+    c->ret = vz(added);
+}
+static void Colls_disjoint(tl_jcall *c)
+{
+    jvec *a = vec_of(c->args[0].l), *b = vec_of(c->args[1].l);
+    for (int i = 0; i < a->n; i++) if (vec_index(b, a->v[i]) >= 0) { c->ret = vz(0); return; }
+    c->ret = vz(1);
+}
+static void Colls_replaceAll(tl_jcall *c)
+{
+    jvec *b = vec_of(c->args[0].l); int ch = 0;
+    for (int i = 0; i < b->n; i++) if (tl_more_obj_eq(b->v[i], c->args[1].l)) { b->v[i] = c->args[2].l; ch = 1; }
+    c->ret = vz(ch);
+}
+static void Colls_rotate(tl_jcall *c)
+{
+    jvec *b = vec_of(c->args[0].l); int d = c->args[1].i;
+    if (b->n <= 1) return;
+    d = ((d % b->n) + b->n) % b->n;
+    jobj **t = malloc(sizeof(jobj *) * (size_t)b->n);
+    for (int i = 0; i < b->n; i++) t[(i + d) % b->n] = b->v[i];
+    memcpy(b->v, t, sizeof(jobj *) * (size_t)b->n);
+    free(t);
+}
+/* Colls_enumeration: iterator-backed impl further down. */
+static void Colls_list(tl_jcall *c)
+{
+    jobj *l = make("java/util/ArrayList"); jvec *b = vec_of(l);
+    jobj *e = c->args[0].l;
+    jvec *ev = e && e->kind == TL_K_OBJECT ? vec_of(e) : NULL;
+    if (ev) for (int i = 0; i < ev->n; i++) vec_push(b, ev->v[i]);
+    c->ret = vl(l);
+}
+
+/* ---- java.util.Arrays ---- */
+
+static void Arr_sort(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (!a || a->kind != TL_K_PRIM_ARRAY) { if (a && a->kind == TL_K_OBJ_ARRAY) { /* object sort below */ } else return; }
+    if (a->kind == TL_K_OBJ_ARRAY) {
+        for (uint32_t i = 1; i < a->oarr.len; i++) {
+            jobj *x = a->oarr.v[i]; int j = (int)i - 1;
+            while (j >= 0 && cmp_obj(a->oarr.v[j], x, NULL) > 0) { a->oarr.v[j + 1] = a->oarr.v[j]; j--; }
+            a->oarr.v[j + 1] = x;
+        }
+        return;
+    }
+    switch (a->arr.etype) {
+    case 'I': { int32_t *p = a->arr.data; for (uint32_t i = 1; i < a->arr.len; i++) { int32_t x = p[i]; int j = (int)i - 1; while (j >= 0 && p[j] > x) { p[j + 1] = p[j]; j--; } p[j + 1] = x; } break; }
+    case 'J': { int64_t *p = a->arr.data; for (uint32_t i = 1; i < a->arr.len; i++) { int64_t x = p[i]; int j = (int)i - 1; while (j >= 0 && p[j] > x) { p[j + 1] = p[j]; j--; } p[j + 1] = x; } break; }
+    case 'B': { int8_t *p = a->arr.data; for (uint32_t i = 1; i < a->arr.len; i++) { int8_t x = p[i]; int j = (int)i - 1; while (j >= 0 && p[j] > x) { p[j + 1] = p[j]; j--; } p[j + 1] = x; } break; }
+    case 'S': { int16_t *p = a->arr.data; for (uint32_t i = 1; i < a->arr.len; i++) { int16_t x = p[i]; int j = (int)i - 1; while (j >= 0 && p[j] > x) { p[j + 1] = p[j]; j--; } p[j + 1] = x; } break; }
+    case 'C': { uint16_t *p = a->arr.data; for (uint32_t i = 1; i < a->arr.len; i++) { uint16_t x = p[i]; int j = (int)i - 1; while (j >= 0 && p[j] > x) { p[j + 1] = p[j]; j--; } p[j + 1] = x; } break; }
+    case 'F': { float *p = a->arr.data; for (uint32_t i = 1; i < a->arr.len; i++) { float x = p[i]; int j = (int)i - 1; while (j >= 0 && p[j] > x) { p[j + 1] = p[j]; j--; } p[j + 1] = x; } break; }
+    case 'D': { double *p = a->arr.data; for (uint32_t i = 1; i < a->arr.len; i++) { double x = p[i]; int j = (int)i - 1; while (j >= 0 && p[j] > x) { p[j + 1] = p[j]; j--; } p[j + 1] = x; } break; }
+    }
+}
+static void Arr_binarySearch(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (!a || a->kind != TL_K_PRIM_ARRAY) { c->ret = vi(-1); return; }
+    int64_t key = c->args[1].j;
+    int lo = 0, hi = (int)a->arr.len - 1, r = -1;
+    while (lo <= hi) {
+        int mid = (lo + hi) / 2; int64_t v = 0;
+        switch (a->arr.etype) {
+        case 'I': v = ((int32_t *)a->arr.data)[mid]; break;
+        case 'J': v = ((int64_t *)a->arr.data)[mid]; break;
+        case 'B': v = ((int8_t *)a->arr.data)[mid]; break;
+        case 'S': v = ((int16_t *)a->arr.data)[mid]; break;
+        case 'C': v = ((uint16_t *)a->arr.data)[mid]; break;
+        }
+        if (v == key) { r = mid; break; } else if (v < key) lo = mid + 1; else hi = mid - 1;
+    }
+    c->ret = vi(r >= 0 ? r : -lo - 1);
+}
+static void Arr_copyOf(tl_jcall *c)
+{
+    jobj *a = c->args[0].l; int n = c->args[1].i;
+    if (!a) { c->ret = vl(NULL); return; }
+    if (a->kind == TL_K_PRIM_ARRAY) {
+        jobj *r = tl_jni_new_prim_array(a->arr.etype, (uint32_t)n);
+        memcpy(r->arr.data, a->arr.data, (size_t)((int)a->arr.len < n ? a->arr.len : n) * a->arr.esz);
+        c->ret = vl(r);
+    } else if (a->kind == TL_K_OBJ_ARRAY) {
+        jobj *r = tl_jni_new_obj_array(a->cls, (uint32_t)n);
+        for (int i = 0; i < n && i < (int)a->oarr.len; i++) r->oarr.v[i] = a->oarr.v[i];
+        c->ret = vl(r);
+    } else c->ret = vl(NULL);
+}
+static void Arr_copyOfRange(tl_jcall *c)
+{
+    jobj *a = c->args[0].l; int from = c->args[1].i, to = c->args[2].i;
+    if (!a || from < 0 || to < from) { c->ret = vl(NULL); return; }
+    int n = to - from;
+    if (a->kind == TL_K_PRIM_ARRAY) {
+        jobj *r = tl_jni_new_prim_array(a->arr.etype, (uint32_t)n);
+        if (from < (int)a->arr.len) memcpy(r->arr.data, (char *)a->arr.data + (size_t)from * a->arr.esz, (size_t)((int)a->arr.len - from < n ? a->arr.len - from : n) * a->arr.esz);
+        c->ret = vl(r);
+    } else if (a->kind == TL_K_OBJ_ARRAY) {
+        jobj *r = tl_jni_new_obj_array(a->cls, (uint32_t)n);
+        for (int i = 0; i < n && from + i < (int)a->oarr.len; i++) r->oarr.v[i] = a->oarr.v[from + i];
+        c->ret = vl(r);
+    } else c->ret = vl(NULL);
+}
+static void Arr_fill(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (!a) return;
+    if (a->kind == TL_K_PRIM_ARRAY) {
+        int64_t v = c->args[1].j;
+        for (uint32_t i = 0; i < a->arr.len; i++) switch (a->arr.etype) {
+        case 'I': ((int32_t *)a->arr.data)[i] = (int32_t)v; break;
+        case 'J': ((int64_t *)a->arr.data)[i] = v; break;
+        case 'B': ((int8_t *)a->arr.data)[i] = (int8_t)v; break;
+        case 'S': ((int16_t *)a->arr.data)[i] = (int16_t)v; break;
+        case 'C': ((uint16_t *)a->arr.data)[i] = (uint16_t)v; break;
+        case 'Z': ((uint8_t *)a->arr.data)[i] = (uint8_t)v; break;
+        case 'F': ((float *)a->arr.data)[i] = c->args[1].f; break;
+        case 'D': ((double *)a->arr.data)[i] = c->args[1].d; break;
+        }
+    } else if (a->kind == TL_K_OBJ_ARRAY)
+        for (uint32_t i = 0; i < a->oarr.len; i++) a->oarr.v[i] = c->args[1].l;
+}
+static void Arr_equals(tl_jcall *c)
+{
+    jobj *a = c->args[0].l, *b = c->args[1].l;
+    if (a == b) { c->ret = vz(1); return; }
+    if (!a || !b || a->kind != b->kind) { c->ret = vz(0); return; }
+    if (a->kind == TL_K_PRIM_ARRAY) {
+        c->ret = vz(a->arr.len == b->arr.len && a->arr.esz == b->arr.esz && !memcmp(a->arr.data, b->arr.data, a->arr.len * a->arr.esz));
+    } else {
+        if (a->oarr.len != b->oarr.len) { c->ret = vz(0); return; }
+        for (uint32_t i = 0; i < a->oarr.len; i++) if (!tl_more_obj_eq(a->oarr.v[i], b->oarr.v[i])) { c->ret = vz(0); return; }
+        c->ret = vz(1);
+    }
+}
+static void Arr_hashCode(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (!a) { c->ret = vi(0); return; }
+    int h = 1;
+    if (a->kind == TL_K_PRIM_ARRAY)
+        for (uint32_t i = 0; i < a->arr.len; i++) h = 31 * h + (int)((int8_t *)a->arr.data)[i];
+    else
+        for (uint32_t i = 0; i < a->oarr.len; i++) h = 31 * h + (int)((uintptr_t)a->oarr.v[i] >> 4);
+    c->ret = vi(h);
+}
+static void Arr_asList(tl_jcall *c)
+{
+    jobj *l = make("java/util/ArrayList"); jvec *b = vec_of(l);
+    jobj *a = c->args[0].l;
+    if (a && a->kind == TL_K_OBJ_ARRAY) for (uint32_t i = 0; i < a->oarr.len; i++) vec_push(b, a->oarr.v[i]);
+    c->ret = vl(l);
+}
+static void Arr_toString(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    sbuf sb = {0}; sb_add(&sb, "[");
+    if (a && a->kind == TL_K_PRIM_ARRAY)
+        for (uint32_t i = 0; i < a->arr.len; i++) {
+            if (i) sb_add(&sb, ", ");
+            char t[32]; int64_t v = 0;
+            switch (a->arr.etype) {
+            case 'I': v = ((int32_t *)a->arr.data)[i]; break;
+            case 'J': v = ((int64_t *)a->arr.data)[i]; break;
+            case 'B': v = ((int8_t *)a->arr.data)[i]; break;
+            case 'S': v = ((int16_t *)a->arr.data)[i]; break;
+            case 'C': v = ((uint16_t *)a->arr.data)[i]; break;
+            case 'Z': v = ((uint8_t *)a->arr.data)[i]; break;
+            case 'F': snprintf(t, sizeof(t), "%g", (double)((float *)a->arr.data)[i]); sb_add(&sb, t); continue;
+            case 'D': snprintf(t, sizeof(t), "%g", ((double *)a->arr.data)[i]); sb_add(&sb, t); continue;
+            }
+            snprintf(t, sizeof(t), "%lld", (long long)v); sb_add(&sb, t);
+        }
+    else if (a && a->kind == TL_K_OBJ_ARRAY)
+        for (uint32_t i = 0; i < a->oarr.len; i++) {
+            if (i) sb_add(&sb, ", ");
+            char t[200]; obj_str(a->oarr.v[i], t, sizeof(t)); sb_add(&sb, t);
+        }
+    sb_add(&sb, "]");
+    c->ret = vl(STR(sb.p ? sb.p : "[]")); free(sb.p);
+}
+static void Arr_deepToString(tl_jcall *c) { Arr_toString(c); }
+static void Arr_stream(tl_jcall *c) { c->ret = vl(make("java/util/stream/Stream")); }
+static void Arr_parallelSort(tl_jcall *c) { Arr_sort(c); }
+
+/* Enumeration impls live further down (iterator-backed). */
+
+/* ---- Random / SecureRandom / UUID ---- */
+
+static uint64_t rnd_next(jobj *o, int bits)
+{
+    uint64_t s = (uint64_t)get_lng(o, "_seed");
+    if (!s) s = 0x9e3779b97f4a7c15ull ^ (uint64_t)(uintptr_t)o;
+    s ^= s << 13; s ^= s >> 7; s ^= s << 17;
+    set_long(o, "_seed", (int64_t)s);
+    return s >> (64 - bits);
+}
+static void Rnd_init(tl_jcall *c)   { set_long(c->self, "_seed", (int64_t)(arc4random() | 1)); }
+static void Rnd_init_seed(tl_jcall *c) { set_long(c->self, "_seed", c->args[0].j ? c->args[0].j : 1); }
+static void Rnd_setSeed(tl_jcall *c)   { set_long(c->self, "_seed", c->args[0].j ? c->args[0].j : 1); }
+static void Rnd_next(tl_jcall *c)   { c->ret = vi((int)rnd_next(c->self, c->args[0].i > 0 && c->args[0].i <= 32 ? c->args[0].i : 32)); }
+static void Rnd_nextInt(tl_jcall *c) { c->ret = vi((int)rnd_next(c->self, 32)); }
+static void Rnd_nextIntBound(tl_jcall *c)
+{
+    int b = c->args[0].i;
+    c->ret = vi(b > 0 ? (int)(rnd_next(c->self, 31) % (uint64_t)b) : (int)rnd_next(c->self, 32));
+}
+static void Rnd_nextLong(tl_jcall *c)   { c->ret = vj((int64_t)rnd_next(c->self, 63)); }
+static void Rnd_nextFloat(tl_jcall *c)  { c->ret = vf((float)rnd_next(c->self, 24) / (float)(1 << 24)); }
+static void Rnd_nextDouble(tl_jcall *c) { c->ret = vd((double)rnd_next(c->self, 53) / (double)(1ull << 53)); }
+static void Rnd_nextBoolean(tl_jcall *c){ c->ret = vz(rnd_next(c->self, 1)); }
+static void Rnd_nextBytes(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (a && a->kind == TL_K_PRIM_ARRAY) for (uint32_t i = 0; i < a->arr.len; i++) ((int8_t *)a->arr.data)[i] = (int8_t)rnd_next(c->self, 8);
+}
+static void Rnd_nextGaussian(tl_jcall *c)
+{
+    double u1 = (double)rnd_next(c->self, 53) / (double)(1ull << 53);
+    double u2 = (double)rnd_next(c->self, 53) / (double)(1ull << 53);
+    if (u1 < 1e-9) u1 = 1e-9;
+    c->ret = vd(sqrt(-2.0 * log(u1)) * cos(2.0 * M_PI * u2));
+}
+static void SRnd_nextBytes(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (a && a->kind == TL_K_PRIM_ARRAY) arc4random_buf(a->arr.data, a->arr.len);
+}
+static void SRnd_getInstance(tl_jcall *c) { c->ret = vl(make("java/security/SecureRandom")); }
+static void SRnd_getSeed(tl_jcall *c)     { c->ret = vl(tl_jni_new_prim_array('B', 0)); }
+static void SRnd_generateSeed(tl_jcall *c)
+{
+    int n = c->args[0].i > 0 ? c->args[0].i : 0;
+    jobj *a = tl_jni_new_prim_array('B', (uint32_t)n);
+    arc4random_buf(a->arr.data, a->arr.len);
+    c->ret = vl(a);
+}
+static void SRnd_setSeed(tl_jcall *c) { (void)c; }
+
+static void UUID_init(tl_jcall *c)
+{
+    uint8_t b[16]; arc4random_buf(b, 16);
+    b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80;
+    int64_t hi = 0, lo = 0;
+    for (int i = 0; i < 8; i++) hi = (hi << 8) | b[i];
+    for (int i = 8; i < 16; i++) lo = (lo << 8) | b[i];
+    set_long(c->self, "msb", hi); set_long(c->self, "lsb", lo);
+}
+static void UUID_init_ll(tl_jcall *c) { set_long(c->self, "msb", c->args[0].j); set_long(c->self, "lsb", c->args[1].j); }
+static void UUID_randomUUID(tl_jcall *c)
+{
+    jobj *u = make("java/util/UUID");
+    tl_jcall cc = *c; cc.self = u; UUID_init(&cc);
+    c->ret = vl(u);
+}
+static void UUID_toString(tl_jcall *c)
+{
+    int64_t hi = get_lng(c->self, "msb"), lo = get_lng(c->self, "lsb");
+    char b[48]; snprintf(b, sizeof(b), "%08x-%04x-%04x-%04x-%04x%08x",
+        (unsigned)(hi >> 32), (unsigned)((hi >> 16) & 0xffff), (unsigned)(hi & 0xffff),
+        (unsigned)((lo >> 48) & 0xffff), (unsigned)((lo >> 32) & 0xffff), (unsigned)(lo & 0xffffffff));
+    c->ret = vl(STR(b));
+}
+static void UUID_fromString(tl_jcall *c)
+{
+    const char *s = S(c->args[0].l);
+    uint64_t p[5] = {0};
+    if (sscanf(s, "%8llx-%4llx-%4llx-%4llx-%12llx", &p[0], &p[1], &p[2], &p[3], &p[4]) != 5) {
+        tl_jni_throw("java/lang/IllegalArgumentException", "bad UUID"); return;
+    }
+    jobj *u = make("java/util/UUID");
+    set_long(u, "msb", (int64_t)((p[0] << 32) | (p[1] << 16) | p[2]));
+    set_long(u, "lsb", (int64_t)((p[3] << 48) | p[4]));
+    c->ret = vl(u);
+}
+static void UUID_getMostSignificantBits(tl_jcall *c)  { c->ret = tl_jni_get_field(c->self, "msb", "J"); }
+static void UUID_getLeastSignificantBits(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "lsb", "J"); }
+static void UUID_equals(tl_jcall *c)
+{
+    c->ret = vz(get_lng(c->self, "msb") == get_lng(c->args[0].l, "msb") && get_lng(c->self, "lsb") == get_lng(c->args[0].l, "lsb"));
+}
+static void UUID_hashCode(tl_jcall *c) { c->ret = vi((int)(get_lng(c->self, "msb") ^ get_lng(c->self, "lsb"))); }
+static void UUID_compareTo(tl_jcall *c)
+{
+    int64_t a = get_lng(c->self, "msb"), b = get_lng(c->args[0].l, "msb");
+    if (a != b) { c->ret = vi(a < b ? -1 : 1); return; }
+    a = get_lng(c->self, "lsb"); b = get_lng(c->args[0].l, "lsb");
+    c->ret = vi(a < b ? -1 : a > b ? 1 : 0);
+}
+static void UUID_version(tl_jcall *c) { c->ret = vi((int)((get_lng(c->self, "msb") >> 12) & 0xf)); }
+static void UUID_variant(tl_jcall *c) { c->ret = vi((int)((get_lng(c->self, "lsb") >> 62) & 0x3)); }
+static void UUID_nameUUIDFromBytes(tl_jcall *c)
+{
+    jobj *a = c->args[0].l; uint8_t h[16] = {0};
+    if (a && a->kind == TL_K_PRIM_ARRAY) memcpy(h, a->arr.data, a->arr.len > 16 ? 16 : a->arr.len);
+    h[6] = (h[6] & 0x0f) | 0x30; h[8] = (h[8] & 0x3f) | 0x80;
+    jobj *u = make("java/util/UUID");
+    int64_t hi = 0, lo = 0;
+    for (int i = 0; i < 8; i++) hi = (hi << 8) | h[i];
+    for (int i = 8; i < 16; i++) lo = (lo << 8) | h[i];
+    set_long(u, "msb", hi); set_long(u, "lsb", lo);
+    c->ret = vl(u);
+}
+static void UUID_timestamp(tl_jcall *c) { c->ret = vj(0); }
+static void UUID_clockSequence(tl_jcall *c) { c->ret = vi(0); }
+static void UUID_node(tl_jcall *c) { c->ret = vj(0); }
+
+/* ---- Properties: a string-keyed map with load/store ---- */
+
+static void Prop_getProperty(tl_jcall *c)
+{
+    jobj *v = map_get(map_of(c->self), c->args[0].l);
+    c->ret = vl(v ? v : (c->cls->name && c->args[1].l ? c->args[1].l : NULL));
+}
+static void Prop_setProperty(tl_jcall *c) { map_put(map_of(c->self), c->args[0].l, c->args[1].l); c->ret = vl(NULL); }
+static void Prop_load(tl_jcall *c)
+{
+    jobj *is = c->args[0].l;
+    char line[1024];
+    jvec *lines = &(jvec){0};
+    for (;;) {
+        jvalue r = tl_jni_call(is, "read", "()I", NULL);
+        if (r.i < 0) break;
+        int k = 0;
+        while (r.i >= 0 && r.i != '\n' && k < 1000) { line[k++] = (char)r.i; r = tl_jni_call(is, "read", "()I", NULL); }
+        line[k] = 0;
+        char *eq = strchr(line, '=');
+        if (eq && line[0] != '#' && line[0] != '!') {
+            *eq = 0;
+            map_put(map_of(c->self), STR(line), STR(eq + 1));
+        }
+        if (r.i < 0) break;
+    }
+    (void)lines;
+}
+static void Prop_store(tl_jcall *c)
+{
+    jobj *os = c->args[0].l;
+    jmap *m = map_of(c->self);
+    for (int i = 0; i < m->n; i++) {
+        char line[1024]; snprintf(line, sizeof(line), "%s=%s\n", S(m->k[i]), S(m->v[i]));
+        jvalue a; a.l = STR(line);
+        tl_jni_call(os, "write", "([B)V", &(jvalue){ .l = tl_jni_call(STR(line), "getBytes", "()[B", NULL).l });
+        (void)a;
+    }
+}
+static void Prop_propertyNames(tl_jcall *c)
+{
+    jmap *m = map_of(c->self);
+    jobj *e = make("java/util/Enumeration"); jvec *b = vec_of(e);
+    for (int i = 0; i < m->n; i++) vec_push(b, m->k[i]);
+    c->ret = vl(e);
+}
+static void Prop_stringPropertyNames(tl_jcall *c)
+{
+    jmap *m = map_of(c->self);
+    jobj *s = make("java/util/HashSet"); jvec *b = vec_of(s);
+    for (int i = 0; i < m->n; i++) vec_push(b, m->k[i]);
+    c->ret = vl(s);
+}
+static void Prop_getProperty_d(tl_jcall *c)
+{
+    jobj *v = map_get(map_of(c->self), c->args[0].l);
+    c->ret = vl(v ? v : c->args[1].l);
+}
+static void Prop_forEach(tl_jcall *c) { Map_forEach(c); }
+static void Prop_keys(tl_jcall *c) { Map_keySet(c); }
+static void Prop_containsKey(tl_jcall *c) { Map_containsKey(c); }
+static void Prop_size(tl_jcall *c) { Map_size(c); }
+static void Prop_loadFromXML(tl_jcall *c) { (void)c; }
+static void Prop_storeToXML(tl_jcall *c) { (void)c; }
+static void Prop_putAll(tl_jcall *c) { Map_putAll(c); }
+static void Prop_clear(tl_jcall *c) { Map_clear(c); }
+static void Prop_replaceAll(tl_jcall *c) { (void)c; }
+
+/* ---- Date / Calendar / TimeZone / SimpleDateFormat ---- */
+
+static void Date_init(tl_jcall *c)   { set_long(c->self, "fastTime", now_ms()); }
+static void Date_init_ms(tl_jcall *c){ set_long(c->self, "fastTime", c->args[0].j); }
+static void Date_getTime(tl_jcall *c){ c->ret = tl_jni_get_field(c->self, "fastTime", "J"); }
+static void Date_setTime(tl_jcall *c){ set_long(c->self, "fastTime", c->args[0].j); }
+static void Date_before(tl_jcall *c) { c->ret = vz(get_lng(c->self, "fastTime") < get_lng(c->args[0].l, "fastTime")); }
+static void Date_after(tl_jcall *c)  { c->ret = vz(get_lng(c->self, "fastTime") > get_lng(c->args[0].l, "fastTime")); }
+static void Date_compareTo(tl_jcall *c)
+{
+    int64_t a = get_lng(c->self, "fastTime"), b = get_lng(c->args[0].l, "fastTime");
+    c->ret = vi(a < b ? -1 : a > b ? 1 : 0);
+}
+static void Date_equals(tl_jcall *c) { c->ret = vz(get_lng(c->self, "fastTime") == get_lng(c->args[0].l, "fastTime")); }
+static void Date_hashCode(tl_jcall *c){ c->ret = vi((int)(get_lng(c->self, "fastTime") ^ (get_lng(c->self, "fastTime") >> 32))); }
+static void Date_clone(tl_jcall *c)
+{
+    jobj *d = make("java/util/Date"); set_long(d, "fastTime", get_lng(c->self, "fastTime")); c->ret = vl(d);
+}
+static void Date_toString(tl_jcall *c)
+{
+    time_t t = (time_t)(get_lng(c->self, "fastTime") / 1000);
+    struct tm tm; localtime_r(&t, &tm);
+    char b[64]; strftime(b, sizeof(b), "%a %b %d %H:%M:%S %Z %Y", &tm);
+    c->ret = vl(STR(b));
+}
+static void Date_from(tl_jcall *c) { Date_init(c); }
+static void Date_toInstant(tl_jcall *c)
+{
+    jobj *i = make("java/time/Instant"); set_long(i, "seconds", get_lng(c->self, "fastTime") / 1000); c->ret = vl(i);
+}
+static void Date_getYear(tl_jcall *c)  { time_t t = (time_t)(get_lng(c->self, "fastTime")/1000); struct tm tm; localtime_r(&t, &tm); c->ret = vi(tm.tm_year); }
+static void Date_getMonth(tl_jcall *c) { time_t t = (time_t)(get_lng(c->self, "fastTime")/1000); struct tm tm; localtime_r(&t, &tm); c->ret = vi(tm.tm_mon); }
+static void Date_getDate(tl_jcall *c)  { time_t t = (time_t)(get_lng(c->self, "fastTime")/1000); struct tm tm; localtime_r(&t, &tm); c->ret = vi(tm.tm_mday); }
+static void Date_getDay(tl_jcall *c)   { time_t t = (time_t)(get_lng(c->self, "fastTime")/1000); struct tm tm; localtime_r(&t, &tm); c->ret = vi(tm.tm_wday); }
+static void Date_getHours(tl_jcall *c) { time_t t = (time_t)(get_lng(c->self, "fastTime")/1000); struct tm tm; localtime_r(&t, &tm); c->ret = vi(tm.tm_hour); }
+static void Date_getMinutes(tl_jcall *c){ time_t t = (time_t)(get_lng(c->self, "fastTime")/1000); struct tm tm; localtime_r(&t, &tm); c->ret = vi(tm.tm_min); }
+static void Date_getSeconds(tl_jcall *c){ time_t t = (time_t)(get_lng(c->self, "fastTime")/1000); struct tm tm; localtime_r(&t, &tm); c->ret = vi(tm.tm_sec); }
+
+static void Cal_getInstance(tl_jcall *c)
+{
+    jobj *cal = make("java/util/GregorianCalendar");
+    set_long(cal, "time", now_ms());
+    c->ret = vl(cal);
+}
+static void Cal_getTime(tl_jcall *c)
+{
+    jobj *d = make("java/util/Date"); set_long(d, "fastTime", get_lng(c->self, "time"));
+    c->ret = vl(d);
+}
+static void Cal_setTime(tl_jcall *c)    { set_long(c->self, "time", get_lng(c->args[0].l, "fastTime")); }
+static void Cal_getTimeInMillis(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "time", "J"); }
+static void Cal_setTimeInMillis(tl_jcall *c) { set_long(c->self, "time", c->args[0].j); }
+static void Cal_get(tl_jcall *c)
+{
+    time_t t = (time_t)(get_lng(c->self, "time") / 1000);
+    struct tm tm; localtime_r(&t, &tm);
+    switch (c->args[0].i) {
+    case 1:  c->ret = vi(tm.tm_year + 1900); break;   /* YEAR */
+    case 2:  c->ret = vi(tm.tm_mon); break;           /* MONTH */
+    case 3:  c->ret = vi((tm.tm_yday / 7) + 1); break;/* WEEK_OF_YEAR */
+    case 4:  c->ret = vi((tm.tm_mday - 1) / 7 + 1); break; /* WEEK_OF_MONTH */
+    case 5:  c->ret = vi(tm.tm_mday); break;          /* DAY_OF_MONTH / DATE */
+    case 6:  c->ret = vi(tm.tm_yday + 1); break;      /* DAY_OF_YEAR */
+    case 7:  c->ret = vi(tm.tm_wday + 1); break;      /* DAY_OF_WEEK */
+    case 8:  c->ret = vi((tm.tm_mday - 1) / 7 + 1); break; /* DAY_OF_WEEK_IN_MONTH */
+    case 9:  c->ret = vi(tm.tm_hour < 12 ? 0 : 1); break;  /* AM_PM */
+    case 10: c->ret = vi(tm.tm_hour % 12); break;     /* HOUR */
+    case 11: c->ret = vi(tm.tm_hour); break;          /* HOUR_OF_DAY */
+    case 12: c->ret = vi(tm.tm_min); break;           /* MINUTE */
+    case 13: c->ret = vi(tm.tm_sec); break;           /* SECOND */
+    case 14: c->ret = vi((int)(get_lng(c->self, "time") % 1000)); break; /* MILLISECOND */
+    case 15: c->ret = vi((int)(-timezone / 60)); break;  /* ZONE_OFFSET minutes→ms? keep minutes */
+    default: c->ret = vi(0); break;
+    }
+}
+static void Cal_set(tl_jcall *c)
+{
+    /* fields: only date-part edits are meaningful here; time-of-day edits follow */
+    time_t t = (time_t)(get_lng(c->self, "time") / 1000);
+    struct tm tm; localtime_r(&t, &tm);
+    int f = c->args[0].i, v = c->args[1].i;
+    switch (f) {
+    case 1: tm.tm_year = v - 1900; break;
+    case 2: tm.tm_mon = v; break;
+    case 5: tm.tm_mday = v; break;
+    case 10: tm.tm_hour = tm.tm_hour < 12 ? v : v + 12; break;
+    case 11: tm.tm_hour = v; break;
+    case 12: tm.tm_min = v; break;
+    case 13: tm.tm_sec = v; break;
+    case 14: set_long(c->self, "time", get_lng(c->self, "time") / 1000 * 1000 + v); return;
+    }
+    set_long(c->self, "time", (int64_t)mktime(&tm) * 1000 + get_lng(c->self, "time") % 1000);
+}
+static void Cal_set_ymd(tl_jcall *c)
+{
+    time_t t = (time_t)(get_lng(c->self, "time") / 1000);
+    struct tm tm; localtime_r(&t, &tm);
+    tm.tm_year = c->args[0].i - 1900; tm.tm_mon = c->args[1].i; tm.tm_mday = c->args[2].i;
+    set_long(c->self, "time", (int64_t)mktime(&tm) * 1000);
+}
+static void Cal_set_ymdhms(tl_jcall *c)
+{
+    struct tm tm = {0};
+    tm.tm_year = c->args[0].i - 1900; tm.tm_mon = c->args[1].i; tm.tm_mday = c->args[2].i;
+    tm.tm_hour = c->args[3].i; tm.tm_min = c->args[4].i; tm.tm_sec = c->args[5].i;
+    set_long(c->self, "time", (int64_t)mktime(&tm) * 1000);
+}
+static void Cal_add(tl_jcall *c)
+{
+    int f = c->args[0].i, v = c->args[1].i;
+    time_t t = (time_t)(get_lng(c->self, "time") / 1000);
+    struct tm tm; localtime_r(&t, &tm);
+    switch (f) {
+    case 1: tm.tm_year += v; break;
+    case 2: tm.tm_mon += v; break;
+    case 3: tm.tm_mday += 7 * v; break;
+    case 5: case 6: tm.tm_mday += v; break;
+    case 10: case 11: tm.tm_hour += v; break;
+    case 12: tm.tm_min += v; break;
+    case 13: tm.tm_sec += v; break;
+    case 14: set_long(c->self, "time", get_lng(c->self, "time") + v); return;
+    }
+    set_long(c->self, "time", (int64_t)mktime(&tm) * 1000 + get_lng(c->self, "time") % 1000);
+}
+static void Cal_roll(tl_jcall *c) { Cal_add(c); }
+static void Cal_clear(tl_jcall *c) { set_long(c->self, "time", 0); }
+static void Cal_before(tl_jcall *c) { c->ret = vz(get_lng(c->self, "time") < get_lng(c->args[0].l, "time")); }
+static void Cal_after(tl_jcall *c)  { c->ret = vz(get_lng(c->self, "time") > get_lng(c->args[0].l, "time")); }
+static void Cal_compareTo(tl_jcall *c)
+{
+    int64_t a = get_lng(c->self, "time"), b = get_lng(c->args[0].l, "time");
+    c->ret = vi(a < b ? -1 : a > b ? 1 : 0);
+}
+static void Cal_clone(tl_jcall *c)
+{
+    jobj *d = make("java/util/GregorianCalendar"); set_long(d, "time", get_lng(c->self, "time"));
+    c->ret = vl(d);
+}
+static void Cal_getFirstDayOfWeek(tl_jcall *c) { c->ret = vi(1); }
+static void Cal_setFirstDayOfWeek(tl_jcall *c) { (void)c; }
+static void Cal_getMinimalDaysInFirstWeek(tl_jcall *c) { c->ret = vi(1); }
+static void Cal_getTimeZone(tl_jcall *c)
+{
+    jobj *tz = make("java/util/TimeZone");
+    tzset();
+    set_str(tz, "id", tzname[0] ? tzname[0] : "UTC");
+    c->ret = vl(tz);
+}
+static void Cal_setTimeZone(tl_jcall *c) { (void)c; }
+static void Cal_isSet(tl_jcall *c) { c->ret = vz(1); }
+static void Cal_getActualMaximum(tl_jcall *c) { c->ret = vi(c->args[0].i == 5 ? 31 : 59); }
+static void Cal_getActualMinimum(tl_jcall *c) { c->ret = vi(0); }
+static void Cal_getWeeksInWeekYear(tl_jcall *c) { c->ret = vi(52); }
+static void Cal_toInstant(tl_jcall *c) { c->ret = vl(make("java/time/Instant")); }
+static void Cal_getWeekYear(tl_jcall *c)
+{
+    time_t t = (time_t)(get_lng(c->self, "time") / 1000);
+    struct tm tm; localtime_r(&t, &tm);
+    c->ret = vi(tm.tm_year + 1900);
+}
+static void Cal_setWeekDate(tl_jcall *c) { (void)c; }
+static void Cal_isWeekDateSupported(tl_jcall *c) { c->ret = vz(1); }
+
+static void TZ_getDefault(tl_jcall *c)
+{
+    static jobj *tz;
+    if (!tz) { tz = make("java/util/TimeZone"); tzset(); set_str(tz, "id", tzname[0] ? tzname[0] : "UTC"); }
+    c->ret = vl(tz);
+}
+static void TZ_getTimeZone(tl_jcall *c)
+{
+    jobj *tz = make("java/util/TimeZone");
+    set_str(tz, "id", S(c->args[0].l)[0] ? S(c->args[0].l) : "UTC");
+    c->ret = vl(tz);
+}
+static void TZ_getID(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "id", "Ljava/lang/String;"); }
+static void TZ_setID(tl_jcall *c) { set_str(c->self, "id", S(c->args[0].l)); }
+static void TZ_getDisplayName(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "id", "Ljava/lang/String;"); }
+static void TZ_getOffset(tl_jcall *c)
+{
+    (void)c;
+    tzset();
+    c->ret = vi((int)(-timezone * 1000));
+}
+static void TZ_getRawOffset(tl_jcall *c) { tzset(); c->ret = vi((int)(-timezone * 1000)); }
+static void TZ_getDSTSavings(tl_jcall *c) { c->ret = vi(0); }
+static void TZ_useDaylightTime(tl_jcall *c) { c->ret = vz(0); }
+static void TZ_observesDaylightTime(tl_jcall *c) { c->ret = vz(0); }
+static void TZ_inDaylightTime(tl_jcall *c) { c->ret = vz(0); }
+static void TZ_getAvailableIDs(tl_jcall *c)
+{
+    static const char *ids[] = { "UTC", "GMT", "America/New_York", "America/Los_Angeles", "Europe/London", "Europe/Berlin", "Asia/Tokyo", "Asia/Shanghai" };
+    int n = (int)(sizeof(ids) / sizeof(ids[0]));
+    jobj *a = tl_jni_new_obj_array(C("java/lang/String"), (uint32_t)n);
+    for (int i = 0; i < n; i++) a->oarr.v[i] = STR(ids[i]);
+    c->ret = vl(a);
+}
+static void TZ_setDefault(tl_jcall *c) { (void)c; }
+static void TZ_clone(tl_jcall *c)
+{
+    jobj *tz = make("java/util/TimeZone"); set_str(tz, "id", S(tl_jni_get_field(c->self, "id", "Ljava/lang/String;").l));
+    c->ret = vl(tz);
+}
+
+/* ---- SimpleDateFormat: Java pattern letters mapped onto strftime ---- */
+
+static void java_to_strftime(const char *jp, char *out, size_t n)
+{
+    size_t k = 0;
+    for (int i = 0; jp[i] && k + 6 < n; ) {
+        char ch = jp[i];
+        int run = 1;
+        while (jp[i + run] == ch) run++;
+        const char *spec = NULL;
+        switch (ch) {
+        case 'y': spec = run >= 3 ? "%Y" : "%y"; break;
+        case 'M': spec = run >= 4 ? "%B" : run == 3 ? "%b" : "%m"; break;
+        case 'd': spec = "%d"; break;
+        case 'H': spec = "%H"; break;
+        case 'h': spec = "%I"; break;
+        case 'm': spec = "%M"; break;
+        case 's': spec = "%S"; break;
+        case 'E': spec = run >= 4 ? "%A" : "%a"; break;
+        case 'a': spec = "%p"; break;
+        case 'z': case 'Z': case 'X': spec = "%Z"; break;
+        case 'D': spec = "%j"; break;
+        case 'w': spec = "%U"; break;
+        case 'u': spec = "%u"; break;
+        case 'F': spec = "%d"; break;
+        case 'S': spec = "%%MS%%"; break;   /* filled in by the caller */
+        case 'G': spec = "AD"; break;
+        case '\'':
+            i += run; run = 0;
+            for (; jp[i] && jp[i] != '\'' && k + 2 < n; i++) out[k++] = jp[i];
+            if (jp[i] == '\'') i++;
+            continue;
+        default:
+            out[k++] = ch; i += run; continue;
+        }
+        if (spec) { size_t l = strlen(spec); memcpy(out + k, spec, l); k += l; }
+        i += run;
+    }
+    out[k] = 0;
+}
+static void SDF_init_p(tl_jcall *c) { set_str(c->self, "pattern", S(c->args[0].l)); }
+static void SDF_format(tl_jcall *c)
+{
+    const char *pat = S(tl_jni_get_field(c->self, "pattern", "Ljava/lang/String;").l);
+    char spec[512]; java_to_strftime(pat[0] ? pat : "yyyy-MM-dd HH:mm:ss", spec, sizeof(spec));
+    int64_t ms = get_lng(c->args[0].l, "fastTime");
+    time_t t = (time_t)(ms / 1000);
+    struct tm tm; localtime_r(&t, &tm);
+    char buf[512]; strftime(buf, sizeof(buf), spec, &tm);
+    char *ms_pos = strstr(buf, "%MS%");
+    if (ms_pos) {
+        char tail[512]; snprintf(tail, sizeof(tail), "%03d%s", (int)(ms % 1000), ms_pos + 4);
+        *ms_pos = 0; snprintf(buf + strlen(buf), sizeof(buf) - strlen(buf), "%s", tail);
+    }
+    c->ret = vl(STR(buf));
+}
+static void SDF_format_obj(tl_jcall *c) { SDF_format(c); }
+static void SDF_parse(tl_jcall *c)
+{
+    const char *s = S(c->args[0].l);
+    const char *pat = S(tl_jni_get_field(c->self, "pattern", "Ljava/lang/String;").l);
+    /* parse the common numeric layouts: yyyy-MM-dd HH:mm:ss and friends */
+    struct tm tm = {0}; tm.tm_mday = 1;
+    int y = 1970, mo = 0, d = 1, h = 0, mi = 0, se = 0;
+    (void)pat;
+    if (sscanf(s, "%d-%d-%d %d:%d:%d", &y, &mo, &d, &h, &mi, &se) >= 3 ||
+        sscanf(s, "%d/%d/%d %d:%d:%d", &y, &mo, &d, &h, &mi, &se) >= 3 ||
+        sscanf(s, "%d:%d:%d", &h, &mi, &se) >= 1) {
+        tm.tm_year = y - 1900; tm.tm_mon = mo - 1; tm.tm_mday = d;
+        tm.tm_hour = h; tm.tm_min = mi; tm.tm_sec = se;
+        jobj *dt = make("java/util/Date");
+        set_long(dt, "fastTime", (int64_t)mktime(&tm) * 1000);
+        c->ret = vl(dt);
+        return;
+    }
+    tl_jni_throw("java/text/ParseException", "unparseable date");
+}
+static void SDF_applyPattern(tl_jcall *c) { set_str(c->self, "pattern", S(c->args[0].l)); }
+static void SDF_toPattern(tl_jcall *c)    { c->ret = tl_jni_get_field(c->self, "pattern", "Ljava/lang/String;"); }
+static void SDF_toLocalizedPattern(tl_jcall *c) { SDF_toPattern(c); }
+static void SDF_setLenient(tl_jcall *c)  { (void)c; }
+static void SDF_isLenient(tl_jcall *c)   { c->ret = vz(1); }
+static void SDF_clone(tl_jcall *c)
+{
+    jobj *f = make("java/text/SimpleDateFormat");
+    set_str(f, "pattern", S(tl_jni_get_field(c->self, "pattern", "Ljava/lang/String;").l));
+    c->ret = vl(f);
+}
+static void SDF_setTimeZone(tl_jcall *c) { (void)c; }
+static void SDF_getTimeZone(tl_jcall *c) { TZ_getDefault(c); }
+static void SDF_setCalendar(tl_jcall *c) { (void)c; }
+static void SDF_getCalendar(tl_jcall *c) { Cal_getInstance(c); }
+static void SDF_setNumberFormat(tl_jcall *c) { (void)c; }
+static void SDF_getNumberFormat(tl_jcall *c) { c->ret = vl(make("java/text/DecimalFormat")); }
+static void SDF_getDateFormatSymbols(tl_jcall *c) { c->ret = vl(make("java/text/DateFormatSymbols")); }
+static void DF_getInstance(tl_jcall *c)
+{
+    jobj *f = make("java/text/SimpleDateFormat"); set_str(f, "pattern", "yyyy-MM-dd HH:mm:ss"); c->ret = vl(f);
+}
+static void DF_getDateInstance(tl_jcall *c)
+{
+    jobj *f = make("java/text/SimpleDateFormat"); set_str(f, "pattern", "yyyy-MM-dd"); c->ret = vl(f);
+}
+static void DF_getTimeInstance(tl_jcall *c)
+{
+    jobj *f = make("java/text/SimpleDateFormat"); set_str(f, "pattern", "HH:mm:ss"); c->ret = vl(f);
+}
+static void DF_getDateTimeInstance(tl_jcall *c) { DF_getInstance(c); }
+static void DF_format(tl_jcall *c) { SDF_format(c); }
+static void DF_parse(tl_jcall *c)  { SDF_parse(c); }
+static void NF_getInstance(tl_jcall *c) { c->ret = vl(make("java/text/DecimalFormat")); }
+static void NF_format_d(tl_jcall *c)
+{
+    char b[64]; snprintf(b, sizeof(b), "%.2f", c->args[0].d); c->ret = vl(STR(b));
+}
+static void NF_format_j(tl_jcall *c)
+{
+    char b[64]; snprintf(b, sizeof(b), "%lld", (long long)c->args[0].j); c->ret = vl(STR(b));
+}
+static void NF_parse(tl_jcall *c)
+{
+    jobj *r = make("java/lang/Double"); tl_jni_set_field(r, "value", "D", vd(strtod(S(c->args[0].l), NULL)));
+    c->ret = vl(r);
+}
+static void NF_setGroupingUsed(tl_jcall *c) { (void)c; }
+static void NF_setMinimumFractionDigits(tl_jcall *c) { set_int(c->self, "minFrac", c->args[0].i); }
+static void NF_setMaximumFractionDigits(tl_jcall *c) { set_int(c->self, "maxFrac", c->args[0].i); }
+static void DecF_init_p(tl_jcall *c) { set_str(c->self, "pattern", S(c->args[0].l)); }
+static void DecF_format(tl_jcall *c)
+{
+    double v = c->args[0].d;
+    const char *pat = S(tl_jni_get_field(c->self, "pattern", "Ljava/lang/String;").l);
+    int dec = 2;
+    const char *dot = strchr(pat, '.');
+    if (dot) { dec = 0; while (dot[1 + dec] == '0' || dot[1 + dec] == '#') dec++; }
+    char b[80]; snprintf(b, sizeof(b), "%.*f", dec, v);
+    c->ret = vl(STR(b));
+}
+static void DecF_format_obj(tl_jcall *c)
+{
+    c->ret = vl(STR("0"));
+}
+static void DecF_applyPattern(tl_jcall *c) { set_str(c->self, "pattern", S(c->args[0].l)); }
+static void DecF_toPattern(tl_jcall *c)    { c->ret = tl_jni_get_field(c->self, "pattern", "Ljava/lang/String;"); }
+static void DecF_setDecimalSeparatorAlwaysShown(tl_jcall *c) { (void)c; }
+static void DecF_setGroupingSize(tl_jcall *c) { (void)c; }
+
+/* ---- java.util.regex: POSIX ERE under a Java-pattern translation ---- */
+
+typedef struct { regex_t re; char *pat; int flags; } jregex;
+typedef struct { jregex *rx; char *input; regmatch_t m[64]; int pos; int last_end; bool matched; } jmatch;
+
+static char *java_to_posix(const char *pat, int *cflags)
+{
+    sbuf b = {0};
+    *cflags = REG_EXTENDED;
+    for (int i = 0; pat[i]; i++) {
+        if (pat[i] == '\\' && pat[i + 1]) {
+            switch (pat[++i]) {
+            case 'd': sb_add(&b, "[0-9]"); break;
+            case 'D': sb_add(&b, "[^0-9]"); break;
+            case 's': sb_add(&b, "[[:space:]]"); break;
+            case 'S': sb_add(&b, "[^[:space:]]"); break;
+            case 'w': sb_add(&b, "[a-zA-Z0-9_]"); break;
+            case 'W': sb_add(&b, "[^a-zA-Z0-9_]"); break;
+            case 'b': sb_add(&b, "[[:<:]]"); break;
+            case 'B': sb_add(&b, " "); break;
+            case 'A': sb_add(&b, "^"); break;
+            case 'z': case 'Z': sb_add(&b, "$"); break;
+            case 'n': sb_add_n(&b, "\n", 1); break;
+            case 't': sb_add_n(&b, "\t", 1); break;
+            case 'r': sb_add_n(&b, "\r", 1); break;
+            case 'Q': for (; pat[i + 1] && !(pat[i + 1] == '\\' && pat[i + 2] == 'E'); i++) {
+                          if (strchr("^$.*+?()[]{}|\\", pat[i + 1])) sb_add_n(&b, "\\", 1);
+                          char t[2] = { pat[i + 1], 0 }; sb_add(&b, t);
+                      } i++; if (pat[i + 1] == 'E') i++; break;
+            default: sb_add_n(&b, "\\", 1); { char t[2] = { pat[i], 0 }; sb_add(&b, t); } break;
+            }
+        } else if (pat[i] == '(' && pat[i + 1] == '?') {
+            if (pat[i + 2] == 'i') { *cflags |= REG_ICASE; i += 2; if (pat[i + 1] == ')') i++; }
+            else if (pat[i + 2] == ':') { i += 2; }           /* non-capturing → plain group */
+            else { i += 1; sb_add_n(&b, "(", 1); }
+        } else {
+            char t[2] = { pat[i], 0 }; sb_add(&b, t);
+        }
+    }
+    return b.p ? b.p : strdup("");
+}
+static void Pat_compile(tl_jcall *c)
+{
+    const char *pat = S(c->args[0].l);
+    int cf = 0;
+    char *pp = java_to_posix(pat, &cf);
+    jregex *rx = calloc(1, sizeof(*rx));
+    rx->pat = strdup(pat);
+    if (regcomp(&rx->re, pp, cf) != 0) {
+        free(rx->pat); free(rx); free(pp);
+        tl_jni_throw("java/util/regex/PatternSyntaxException", pat);
+        return;
+    }
+    free(pp);
+    jobj *o = make("java/util/regex/Pattern");
+    o->native = rx;
+    c->ret = vl(o);
+}
+static void Pat_compile_f(tl_jcall *c)
+{
+    jvalue a; a.l = c->args[0].l;
+    Pat_compile(&(tl_jcall){ .self = c->self, .cls = c->cls, .args = &a });
+    tl_jcall tmp = { .self = c->self, .cls = c->cls, .args = &a };
+    Pat_compile(&tmp);
+    c->ret = tmp.ret;
+}
+static void Pat_matches_s(tl_jcall *c)
+{
+    int cf = 0;
+    char *pp = java_to_posix(S(c->args[0].l), &cf);
+    char *full = malloc(strlen(pp) + 8);
+    snprintf(full, strlen(pp) + 8, "^(%s)$", pp);
+    regex_t re;
+    int ok = regcomp(&re, full, cf | REG_NOSUB) == 0 && regexec(&re, S(c->args[1].l), 0, NULL, 0) == 0;
+    regfree(&re); free(pp); free(full);
+    c->ret = vz(ok);
+}
+static void Pat_pattern(tl_jcall *c) { c->ret = vl(STR(((jregex *)c->self->native)->pat)); }
+static void Pat_toString(tl_jcall *c) { Pat_pattern(c); }
+static void Pat_flags(tl_jcall *c) { c->ret = vi(((jregex *)c->self->native)->flags); }
+static void Pat_matcher(tl_jcall *c)
+{
+    jobj *m = make("java/util/regex/Matcher");
+    jmatch *jm = calloc(1, sizeof(*jm));
+    jm->rx = c->self->native;
+    jm->input = strdup(S(c->args[0].l));
+    m->native = jm;
+    c->ret = vl(m);
+}
+static void Pat_split(tl_jcall *c)
+{
+    jregex *rx = c->self->native;
+    const char *s = S(c->args[0].l);
+    jobj *items[512]; int n = 0;
+    const char *q = s;
+    regmatch_t m[8];
+    while (*q && n < 511) {
+        if (regexec(&rx->re, q, 8, m, 0) != 0 || m[0].rm_eo == 0) break;
+        if (m[0].rm_so == 0 && m[0].rm_eo == 0) { q++; continue; }
+        char *t = malloc((size_t)m[0].rm_so + 1); memcpy(t, q, (size_t)m[0].rm_so); t[m[0].rm_so] = 0;
+        items[n++] = STR(t); free(t);
+        q += m[0].rm_eo;
+    }
+    items[n++] = STR(q);
+    jobj *arr = tl_jni_new_obj_array(C("java/lang/String"), (uint32_t)n);
+    for (int i = 0; i < n; i++) arr->oarr.v[i] = items[i];
+    c->ret = vl(arr);
+}
+static void Pat_quote(tl_jcall *c)
+{
+    const char *s = S(c->args[0].l);
+    sbuf b = {0}; sb_add(&b, "\Q"); sb_add(&b, s); sb_add(&b, "\E");
+    c->ret = vl(STR(b.p)); free(b.p);
+}
+static void Pat_asPredicate(tl_jcall *c) { c->ret = vl(make("java/util/function/Predicate")); }
+static void Pat_splitAsStream(tl_jcall *c) { c->ret = vl(make("java/util/stream/Stream")); }
+
+static void Mat_find(tl_jcall *c)
+{
+    jmatch *jm = c->self->native;
+    if (!jm || !jm->input) { c->ret = vz(0); return; }
+    const char *s = jm->input + jm->pos;
+    if (regexec(&jm->rx->re, s, 64, jm->m, 0) != 0) { jm->matched = false; c->ret = vz(0); return; }
+    for (int i = 0; i < 64; i++) if (jm->m[i].rm_so >= 0) { jm->m[i].rm_so += jm->pos; jm->m[i].rm_eo += jm->pos; }
+    jm->last_end = jm->m[0].rm_eo;
+    jm->pos = jm->m[0].rm_eo > jm->m[0].rm_so ? jm->m[0].rm_eo : jm->m[0].rm_eo + 1;
+    jm->matched = true;
+    c->ret = vz(1);
+}
+static void Mat_find_at(tl_jcall *c) { ((jmatch *)c->self->native)->pos = c->args[0].i; Mat_find(c); }
+static void Mat_lookingAt(tl_jcall *c)
+{
+    jmatch *jm = c->self->native;
+    jm->pos = 0;
+    if (regexec(&jm->rx->re, jm->input, 64, jm->m, 0) != 0 || jm->m[0].rm_so != 0) { jm->matched = false; c->ret = vz(0); return; }
+    jm->matched = true; jm->pos = jm->m[0].rm_eo;
+    c->ret = vz(1);
+}
+static void Mat_matches(tl_jcall *c)
+{
+    jmatch *jm = c->self->native;
+    jm->pos = 0;
+    if (regexec(&jm->rx->re, jm->input, 64, jm->m, 0) != 0 ||
+        jm->m[0].rm_so != 0 || jm->input[jm->m[0].rm_eo] != 0) { jm->matched = false; c->ret = vz(0); return; }
+    jm->matched = true;
+    c->ret = vz(1);
+}
+static void Mat_group(tl_jcall *c)
+{
+    jmatch *jm = c->self->native;
+    if (!jm->matched || jm->m[0].rm_so < 0) { c->ret = vl(NULL); return; }
+    int a = jm->m[0].rm_so, b = jm->m[0].rm_eo;
+    char *t = malloc((size_t)(b - a) + 1); memcpy(t, jm->input + a, (size_t)(b - a)); t[b - a] = 0;
+    c->ret = vl(STR(t)); free(t);
+}
+static void Mat_group_i(tl_jcall *c)
+{
+    jmatch *jm = c->self->native;
+    int g = c->args[0].i;
+    if (!jm->matched || g < 0 || g >= 64 || jm->m[g].rm_so < 0) { c->ret = vl(NULL); return; }
+    int a = jm->m[g].rm_so, b = jm->m[g].rm_eo;
+    char *t = malloc((size_t)(b - a) + 1); memcpy(t, jm->input + a, (size_t)(b - a)); t[b - a] = 0;
+    c->ret = vl(STR(t)); free(t);
+}
+static void Mat_groupCount(tl_jcall *c)
+{
+    jmatch *jm = c->self->native;
+    int n = 0;
+    for (int i = 1; i < 64; i++) if (jm->m[i].rm_so >= 0 || i <= (int)jm->rx->re.re_nsub) n = i;
+    c->ret = vi(jm->matched ? (int)jm->rx->re.re_nsub : (int)jm->rx->re.re_nsub);
+    (void)n;
+}
+static void Mat_start(tl_jcall *c)  { c->ret = vi(((jmatch *)c->self->native)->matched ? ((jmatch *)c->self->native)->m[0].rm_so : -1); }
+static void Mat_end(tl_jcall *c)    { c->ret = vi(((jmatch *)c->self->native)->matched ? ((jmatch *)c->self->native)->m[0].rm_eo : -1); }
+static void Mat_start_i(tl_jcall *c)
+{
+    jmatch *jm = c->self->native; int g = c->args[0].i;
+    c->ret = vi(jm->matched && g >= 0 && g < 64 ? jm->m[g].rm_so : -1);
+}
+static void Mat_end_i(tl_jcall *c)
+{
+    jmatch *jm = c->self->native; int g = c->args[0].i;
+    c->ret = vi(jm->matched && g >= 0 && g < 64 ? jm->m[g].rm_eo : -1);
+}
+static void Mat_reset(tl_jcall *c)
+{
+    jmatch *jm = c->self->native; jm->pos = 0; jm->matched = false;
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void Mat_reset_s(tl_jcall *c)
+{
+    jmatch *jm = c->self->native;
+    free(jm->input); jm->input = strdup(S(c->args[0].l));
+    jm->pos = 0; jm->matched = false;
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void Mat_region(tl_jcall *c)
+{
+    jmatch *jm = c->self->native;
+    jm->pos = c->args[0].i;
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void Mat_replaceAll(tl_jcall *c)
+{
+    jmatch *jm = c->self->native;
+    const char *rep = S(c->args[0].l);
+    sbuf b = {0};
+    const char *s = jm->input;
+    regmatch_t m[8];
+    while (*s) {
+        if (regexec(&jm->rx->re, s, 8, m, 0) != 0) break;
+        sb_add_n(&b, s, (size_t)m[0].rm_so);
+        sb_add(&b, rep);
+        s += m[0].rm_eo > m[0].rm_so ? m[0].rm_eo : 1;
+    }
+    sb_add(&b, s);
+    c->ret = vl(STR(b.p ? b.p : jm->input)); free(b.p);
+}
+static void Mat_replaceFirst(tl_jcall *c)
+{
+    jmatch *jm = c->self->native;
+    regmatch_t m[8];
+    if (regexec(&jm->rx->re, jm->input, 8, m, 0) != 0) { c->ret = vl(STR(jm->input)); return; }
+    sbuf b = {0};
+    sb_add_n(&b, jm->input, (size_t)m[0].rm_so);
+    sb_add(&b, S(c->args[0].l));
+    sb_add(&b, jm->input + m[0].rm_eo);
+    c->ret = vl(STR(b.p)); free(b.p);
+}
+static void Mat_quoteReplacement(tl_jcall *c) { c->ret = vl(c->args[0].l ? tl_jni_ref(c->args[0].l) : STR("")); }
+static void Mat_appendReplacement(tl_jcall *c)
+{
+    jmatch *jm = c->self->native;
+    jobj *sbj = c->args[0].l;
+    if (jm->matched) {
+        sbuf *b = sb_of(sbj);
+        sb_add_n(b, jm->input + get_int(c->self, "_tail"), (size_t)(jm->m[0].rm_so - get_int(c->self, "_tail")));
+        sb_add(b, S(c->args[1].l));
+        set_int(c->self, "_tail", jm->m[0].rm_eo);
+    }
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void Mat_appendTail(tl_jcall *c)
+{
+    jmatch *jm = c->self->native;
+    sb_add(sb_of(c->args[0].l), jm->input + get_int(c->self, "_tail"));
+    c->ret = vl(c->args[0].l ? tl_jni_ref(c->args[0].l) : NULL);
+}
+static void Mat_toMatchResult(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void Mat_usePattern(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void Mat_hitEnd(tl_jcall *c) { c->ret = vz(!((jmatch *)c->self->native)->matched); }
+static void Mat_requireEnd(tl_jcall *c) { c->ret = vz(0); }
+static void Mat_hasTransparentBounds(tl_jcall *c) { c->ret = vz(0); }
+static void Mat_hasAnchoringBounds(tl_jcall *c) { c->ret = vz(1); }
+static void Mat_useTransparentBounds(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void Mat_useAnchoringBounds(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void Mat_region_start(tl_jcall *c) { c->ret = vi(0); }
+static void Mat_region_end(tl_jcall *c) { c->ret = vi((int)strlen(((jmatch *)c->self->native)->input)); }
+
+/* wire the forward-declared String regex methods */
+static void String_matches(tl_jcall *c)
+{
+    jvalue a[2]; a[0].l = c->args[0].l; a[1].l = c->self;
+    tl_jcall t = { .self = c->self, .cls = c->cls, .args = a };
+    Pat_matches_s(&t);
+    c->ret = t.ret;
+}
+static void String_replaceAll(tl_jcall *c)
+{
+    jvalue a; a.l = c->args[0].l;
+    jobj *p = tl_jni_call(tl_jni_class_object("java/util/regex/Pattern"), "compile", "(Ljava/lang/String;)Ljava/util/regex/Pattern;", &a).l;
+    if (!p) { c->ret = vl(tl_jni_ref(c->self)); return; }
+    jvalue b; b.l = c->self;
+    jobj *m = tl_jni_call(p, "matcher", "(Ljava/lang/CharSequence;)Ljava/util/regex/Matcher;", &b).l;
+    c->ret = tl_jni_call(m, "replaceAll", "(Ljava/lang/String;)Ljava/lang/String;", &c->args[1]);
+}
+static void String_replaceFirst(tl_jcall *c)
+{
+    jvalue a; a.l = c->args[0].l;
+    jobj *p = tl_jni_call(tl_jni_class_object("java/util/regex/Pattern"), "compile", "(Ljava/lang/String;)Ljava/util/regex/Pattern;", &a).l;
+    if (!p) { c->ret = vl(tl_jni_ref(c->self)); return; }
+    jvalue b; b.l = c->self;
+    jobj *m = tl_jni_call(p, "matcher", "(Ljava/lang/CharSequence;)Ljava/util/regex/Matcher;", &b).l;
+    c->ret = tl_jni_call(m, "replaceFirst", "(Ljava/lang/String;)Ljava/lang/String;", &c->args[1]);
+}
+static void String_format(tl_jcall *c);
+
+/* ---- concurrent primitives: real cond/mutex state ---- */
+
+typedef struct { pthread_mutex_t mu; pthread_cond_t cv; int count; } jcdl;
+static void CDL_init(tl_jcall *c)
+{
+    jcdl *l = calloc(1, sizeof(*l));
+    pthread_mutex_init(&l->mu, NULL); pthread_cond_init(&l->cv, NULL);
+    l->count = c->args[0].i;
+    c->self->native = l;
+}
+static void CDL_await(tl_jcall *c)
+{
+    jcdl *l = c->self->native;
+    pthread_mutex_lock(&l->mu);
+    while (l->count > 0) pthread_cond_wait(&l->cv, &l->mu);
+    pthread_mutex_unlock(&l->mu);
+}
+static void CDL_await_to(tl_jcall *c)
+{
+    jcdl *l = c->self->native;
+    struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += c->args[0].j / 1000; ts.tv_nsec += (c->args[0].j % 1000) * 1000000;
+    if (ts.tv_nsec >= 1000000000) { ts.tv_sec++; ts.tv_nsec -= 1000000000; }
+    pthread_mutex_lock(&l->mu);
+    int r = 0;
+    while (l->count > 0 && r == 0) r = pthread_cond_timedwait(&l->cv, &l->mu, &ts);
+    pthread_mutex_unlock(&l->mu);
+    c->ret = vz(l->count == 0);
+}
+static void CDL_countDown(tl_jcall *c)
+{
+    jcdl *l = c->self->native;
+    pthread_mutex_lock(&l->mu);
+    if (l->count > 0 && --l->count == 0) pthread_cond_broadcast(&l->cv);
+    pthread_mutex_unlock(&l->mu);
+}
+static void CDL_getCount(tl_jcall *c) { c->ret = vj(((jcdl *)c->self->native)->count); }
+static void CDL_toString(tl_jcall *c) { char b[64]; snprintf(b, sizeof(b), "java.util.concurrent.CountDownLatch[count=%d]", ((jcdl *)c->self->native)->count); c->ret = vl(STR(b)); }
+
+typedef struct { pthread_mutex_t mu; pthread_cond_t cv; int permits; } jsem;
+static void Sem_init(tl_jcall *c)
+{
+    jsem *s = calloc(1, sizeof(*s));
+    pthread_mutex_init(&s->mu, NULL); pthread_cond_init(&s->cv, NULL);
+    s->permits = c->args[0].i;
+    c->self->native = s;
+}
+static void Sem_acquire(tl_jcall *c)
+{
+    jsem *s = c->self->native;
+    pthread_mutex_lock(&s->mu);
+    while (s->permits <= 0) pthread_cond_wait(&s->cv, &s->mu);
+    s->permits--;
+    pthread_mutex_unlock(&s->mu);
+}
+static void Sem_acquire_n(tl_jcall *c)
+{
+    jsem *s = c->self->native; int n = c->args[0].i;
+    pthread_mutex_lock(&s->mu);
+    while (s->permits < n) pthread_cond_wait(&s->cv, &s->mu);
+    s->permits -= n;
+    pthread_mutex_unlock(&s->mu);
+}
+static void Sem_tryAcquire(tl_jcall *c)
+{
+    jsem *s = c->self->native;
+    pthread_mutex_lock(&s->mu);
+    int ok = s->permits > 0; if (ok) s->permits--;
+    pthread_mutex_unlock(&s->mu);
+    c->ret = vz(ok);
+}
+static void Sem_release(tl_jcall *c)
+{
+    jsem *s = c->self->native;
+    pthread_mutex_lock(&s->mu);
+    s->permits++;
+    pthread_cond_signal(&s->cv);
+    pthread_mutex_unlock(&s->mu);
+}
+static void Sem_availablePermits(tl_jcall *c) { c->ret = vi(((jsem *)c->self->native)->permits); }
+static void Sem_drainPermits(tl_jcall *c)
+{
+    jsem *s = c->self->native;
+    pthread_mutex_lock(&s->mu);
+    int n = s->permits; s->permits = 0;
+    pthread_mutex_unlock(&s->mu);
+    c->ret = vi(n);
+}
+static void Sem_isFair(tl_jcall *c) { c->ret = vz(0); }
+static void Sem_hasQueuedThreads(tl_jcall *c) { c->ret = vz(0); }
+static void Sem_getQueueLength(tl_jcall *c) { c->ret = vi(0); }
+
+typedef struct { pthread_mutex_t mu; pthread_cond_t cv; jvec q; } jqueue;
+static void LBQ_init(tl_jcall *c)
+{
+    jqueue *q = calloc(1, sizeof(*q));
+    pthread_mutex_init(&q->mu, NULL); pthread_cond_init(&q->cv, NULL);
+    c->self->native = q;
+}
+static void LBQ_put(tl_jcall *c)
+{
+    jqueue *q = c->self->native;
+    pthread_mutex_lock(&q->mu);
+    vec_push(&q->q, c->args[0].l);
+    pthread_cond_signal(&q->cv);
+    pthread_mutex_unlock(&q->mu);
+}
+static void LBQ_offer(tl_jcall *c) { LBQ_put(c); c->ret = vz(1); }
+static void LBQ_add(tl_jcall *c)   { LBQ_put(c); c->ret = vz(1); }
+static void LBQ_take(tl_jcall *c)
+{
+    jqueue *q = c->self->native;
+    pthread_mutex_lock(&q->mu);
+    while (q->q.n == 0) pthread_cond_wait(&q->cv, &q->mu);
+    jobj *r = vec_remove(&q->q, 0);
+    pthread_mutex_unlock(&q->mu);
+    c->ret = vl(r);
+}
+static void LBQ_poll(tl_jcall *c)
+{
+    jqueue *q = c->self->native;
+    pthread_mutex_lock(&q->mu);
+    jobj *r = q->q.n ? vec_remove(&q->q, 0) : NULL;
+    pthread_mutex_unlock(&q->mu);
+    c->ret = vl(r);
+}
+static void LBQ_peek(tl_jcall *c)
+{
+    jqueue *q = c->self->native;
+    c->ret = vl(q->q.n ? q->q.v[0] : NULL);
+}
+static void LBQ_size(tl_jcall *c) { c->ret = vi(((jqueue *)c->self->native)->q.n); }
+static void LBQ_isEmpty(tl_jcall *c) { c->ret = vz(((jqueue *)c->self->native)->q.n == 0); }
+static void LBQ_remainingCapacity(tl_jcall *c) { c->ret = vi(0x7fffffff); }
+static void LBQ_clear(tl_jcall *c) { ((jqueue *)c->self->native)->q.n = 0; }
+static void LBQ_contains(tl_jcall *c)
+{
+    jqueue *q = c->self->native;
+    c->ret = vz(vec_index(&q->q, c->args[0].l) >= 0);
+}
+static void LBQ_iterator(tl_jcall *c)
+{
+    jqueue *q = c->self->native;
+    c->ret = vl(tl_jni_new_list_iterator(q->q.v, (uint32_t)q->q.n));
+}
+
+/* ---- Executor / Future / Timer ---- */
+
+static void *run_runnable(void *arg)
+{
+    jobj *r = arg;
+    fire(r, "java/lang/Runnable", "run", "()V", NULL, 0);
+    tl_jni_unref(r);
+    return NULL;
+}
+static void Exec_execute(tl_jcall *c)
+{
+    jobj *r = tl_jni_ref(c->args[0].l);
+    pthread_t t;
+    pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED); pthread_attr_setstacksize(&a, 1u << 20);
+    pthread_create(&t, &a, run_runnable, r);
+    pthread_attr_destroy(&a);
+}
+static void Exec_submit(tl_jcall *c)
+{
+    jobj *f = make("java/util/concurrent/FutureTask");
+    tl_jni_set_field(f, "task", "Ljava/lang/Runnable;", c->args[0]);
+    Exec_execute(c);
+    c->ret = vl(f);
+}
+static void Execs_newFixedThreadPool(tl_jcall *c)  { c->ret = vl(make("java/util/concurrent/ThreadPoolExecutor")); }
+static void Execs_newSingleThreadExecutor(tl_jcall *c) { c->ret = vl(make("java/util/concurrent/ThreadPoolExecutor")); }
+static void Execs_newCachedThreadPool(tl_jcall *c) { c->ret = vl(make("java/util/concurrent/ThreadPoolExecutor")); }
+static void Execs_newScheduledThreadPool(tl_jcall *c) { c->ret = vl(make("java/util/concurrent/ScheduledThreadPoolExecutor")); }
+static void Execs_callable(tl_jcall *c)
+{
+    jobj *f = make("java/util/concurrent/FutureTask"); tl_jni_set_field(f, "task", "Ljava/lang/Runnable;", c->args[0]); c->ret = vl(f);
+}
+static void Execs_defaultThreadFactory(tl_jcall *c) { c->ret = vl(make("java/util/concurrent/ThreadFactory")); }
+static void Exec_shutdown(tl_jcall *c) { (void)c; }
+static void Exec_shutdownNow(tl_jcall *c) { c->ret = vl(make("java/util/ArrayList")); }
+static void Exec_isShutdown(tl_jcall *c) { c->ret = vz(0); }
+static void Exec_isTerminated(tl_jcall *c) { c->ret = vz(0); }
+static void Exec_awaitTermination(tl_jcall *c) { c->ret = vz(1); }
+static void Exec_invokeAll(tl_jcall *c) { c->ret = vl(make("java/util/ArrayList")); }
+static void Exec_invokeAny(tl_jcall *c) { c->ret = vl(NULL); }
+static void Fut_get(tl_jcall *c)
+{
+    /* run the deferred task now, synchronously, then return its (null) result */
+    jobj *t = tl_jni_get_field(c->self, "task", "Ljava/lang/Runnable;").l;
+    if (t && !get_int(c->self, "_done")) { fire(t, "java/lang/Runnable", "run", "()V", NULL, 0); set_int(c->self, "_done", 1); }
+    c->ret = tl_jni_get_field(c->self, "result", "Ljava/lang/Object;");
+}
+static void Fut_get_to(tl_jcall *c) { Fut_get(c); }
+static void Fut_isDone(tl_jcall *c) { c->ret = vz(get_int(c->self, "_done")); }
+static void Fut_isCancelled(tl_jcall *c) { c->ret = vz(0); }
+static void Fut_cancel(tl_jcall *c) { c->ret = vz(0); }
+static void Fut_run(tl_jcall *c)
+{
+    jobj *t = tl_jni_get_field(c->self, "task", "Ljava/lang/Runnable;").l;
+    if (t) fire(t, "java/lang/Runnable", "run", "()V", NULL, 0);
+    set_int(c->self, "_done", 1);
+}
+static void CF_new(tl_jcall *c) { c->ret = vl(make("java/util/concurrent/CompletableFuture")); }
+static void CF_completedFuture(tl_jcall *c)
+{
+    jobj *f = make("java/util/concurrent/CompletableFuture");
+    tl_jni_set_field(f, "result", "Ljava/lang/Object;", c->args[0]);
+    set_int(f, "_done", 1);
+    c->ret = vl(f);
+}
+static void CF_supplyAsync(tl_jcall *c)
+{
+    jobj *f = make("java/util/concurrent/CompletableFuture");
+    jvalue r = fire(c->args[0].l, "java/util/function/Supplier", "get", "()Ljava/lang/Object;", NULL, 0);
+    tl_jni_set_field(f, "result", "Ljava/lang/Object;", r);
+    set_int(f, "_done", 1);
+    c->ret = vl(f);
+}
+static void CF_runAsync(tl_jcall *c)
+{
+    fire(c->args[0].l, "java/lang/Runnable", "run", "()V", NULL, 0);
+    CF_completedFuture(c);
+}
+static void CF_thenApply(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void CF_thenAccept(tl_jcall *c) { c->ret = vl(make("java/util/concurrent/CompletableFuture")); }
+static void CF_thenCompose(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void CF_thenRun(tl_jcall *c) { c->ret = vl(make("java/util/concurrent/CompletableFuture")); }
+static void CF_whenComplete(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void CF_exceptionally(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void CF_complete(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "result", "Ljava/lang/Object;", c->args[0]);
+    set_int(c->self, "_done", 1);
+    c->ret = vz(1);
+}
+static void CF_completeExceptionally(tl_jcall *c) { c->ret = vz(1); }
+static void CF_join(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "result", "Ljava/lang/Object;"); }
+static void CF_getNow(tl_jcall *c)
+{
+    jvalue r = tl_jni_get_field(c->self, "result", "Ljava/lang/Object;");
+    c->ret = vl(get_int(c->self, "_done") ? r.l : c->args[0].l);
+}
+static void CF_allOf(tl_jcall *c) { c->ret = vl(make("java/util/concurrent/CompletableFuture")); }
+static void CF_anyOf(tl_jcall *c) { c->ret = vl(make("java/util/concurrent/CompletableFuture")); }
+
+static void *timer_loop(void *arg)
+{
+    jobj *timer = arg;
+    for (;;) {
+        usleep(50000);
+        jobj *task = tl_jni_get_field(timer, "task", "Ljava/util/TimerTask;").l;
+        if (!task || get_int(timer, "cancelled")) break;
+        int64_t when = get_lng(timer, "when");
+        if (when && now_ms() >= when) {
+            fire(task, "java/util/TimerTask", "run", "()V", NULL, 0);
+            int64_t period = get_lng(timer, "period");
+            if (period > 0) set_long(timer, "when", now_ms() + period);
+            else { set_int(timer, "done", 1); break; }
+        }
+    }
+    tl_jni_unref(timer);
+    return NULL;
+}
+static void Timer_schedule(tl_jcall *c)
+{
+    set_obj(c->self, "task", "Ljava/util/TimerTask;", c->args[0].l);
+    set_long(c->self, "when", now_ms() + c->args[1].j);
+    set_long(c->self, "period", 0);
+    pthread_t t; pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED);
+    pthread_create(&t, &a, timer_loop, tl_jni_ref(c->self));
+    pthread_attr_destroy(&a);
+}
+static void Timer_schedule_period(tl_jcall *c)
+{
+    set_obj(c->self, "task", "Ljava/util/TimerTask;", c->args[0].l);
+    set_long(c->self, "when", now_ms() + c->args[1].j);
+    set_long(c->self, "period", c->args[2].j);
+    pthread_t t; pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED);
+    pthread_create(&t, &a, timer_loop, tl_jni_ref(c->self));
+    pthread_attr_destroy(&a);
+}
+static void Timer_scheduleAtFixedRate(tl_jcall *c) { Timer_schedule_period(c); }
+static void Timer_cancel(tl_jcall *c) { set_int(c->self, "cancelled", 1); }
+static void Timer_purge(tl_jcall *c) { (void)c; }
+static void TimerTask_cancel(tl_jcall *c) { set_int(c->self, "cancelled", 1); c->ret = vz(1); }
+static void TimerTask_run(tl_jcall *c) { (void)c; }
+static void TimerTask_scheduledExecutionTime(tl_jcall *c) { c->ret = vj(now_ms()); }
+
+/* ---- atomics ---- */
+
+static void AtomInt_init(tl_jcall *c) { set_int(c->self, "value", c->args[0].i); }
+static void AtomInt_get(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "value", "I"); }
+static void AtomInt_set(tl_jcall *c) { set_int(c->self, "value", c->args[0].i); }
+static void AtomInt_getAndSet(tl_jcall *c)
+{
+    jvalue old = tl_jni_get_field(c->self, "value", "I");
+    set_int(c->self, "value", c->args[0].i);
+    c->ret = old;
+}
+static void AtomInt_compareAndSet(tl_jcall *c)
+{
+    jvalue cur = tl_jni_get_field(c->self, "value", "I");
+    if (cur.i == c->args[0].i) { set_int(c->self, "value", c->args[1].i); c->ret = vz(1); }
+    else c->ret = vz(0);
+}
+static void AtomInt_getAndIncrement(tl_jcall *c)
+{
+    jvalue v = tl_jni_get_field(c->self, "value", "I"); set_int(c->self, "value", v.i + 1); c->ret = v;
+}
+static void AtomInt_getAndDecrement(tl_jcall *c)
+{
+    jvalue v = tl_jni_get_field(c->self, "value", "I"); set_int(c->self, "value", v.i - 1); c->ret = v;
+}
+static void AtomInt_incrementAndGet(tl_jcall *c)
+{
+    jvalue v = tl_jni_get_field(c->self, "value", "I"); set_int(c->self, "value", v.i + 1); c->ret = vi(v.i + 1);
+}
+static void AtomInt_decrementAndGet(tl_jcall *c)
+{
+    jvalue v = tl_jni_get_field(c->self, "value", "I"); set_int(c->self, "value", v.i - 1); c->ret = vi(v.i - 1);
+}
+static void AtomInt_addAndGet(tl_jcall *c)
+{
+    jvalue v = tl_jni_get_field(c->self, "value", "I"); set_int(c->self, "value", v.i + c->args[0].i); c->ret = vi(v.i + c->args[0].i);
+}
+static void AtomInt_getAndAdd(tl_jcall *c)
+{
+    jvalue v = tl_jni_get_field(c->self, "value", "I"); set_int(c->self, "value", v.i + c->args[0].i); c->ret = v;
+}
+static void AtomInt_lazySet(tl_jcall *c) { AtomInt_set(c); }
+static void AtomInt_weakCompareAndSet(tl_jcall *c) { AtomInt_compareAndSet(c); }
+static void AtomInt_intValue(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "value", "I"); }
+static void AtomInt_longValue(tl_jcall *c) { c->ret = vj(get_int(c->self, "value")); }
+static void AtomInt_floatValue(tl_jcall *c) { c->ret = vf(get_int(c->self, "value")); }
+static void AtomInt_doubleValue(tl_jcall *c) { c->ret = vd(get_int(c->self, "value")); }
+static void AtomInt_toString(tl_jcall *c) { char b[24]; snprintf(b, sizeof(b), "%d", get_int(c->self, "value")); c->ret = vl(STR(b)); }
+
+static void AtomLong_init(tl_jcall *c) { set_long(c->self, "value", c->args[0].j); }
+static void AtomLong_get(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "value", "J"); }
+static void AtomLong_set(tl_jcall *c) { set_long(c->self, "value", c->args[0].j); }
+static void AtomLong_getAndSet(tl_jcall *c)
+{
+    jvalue old = tl_jni_get_field(c->self, "value", "J"); set_long(c->self, "value", c->args[0].j); c->ret = old;
+}
+static void AtomLong_compareAndSet(tl_jcall *c)
+{
+    jvalue cur = tl_jni_get_field(c->self, "value", "J");
+    if (cur.j == c->args[0].j) { set_long(c->self, "value", c->args[1].j); c->ret = vz(1); }
+    else c->ret = vz(0);
+}
+static void AtomLong_incrementAndGet(tl_jcall *c)
+{
+    jvalue v = tl_jni_get_field(c->self, "value", "J"); set_long(c->self, "value", v.j + 1); c->ret = vj(v.j + 1);
+}
+static void AtomLong_decrementAndGet(tl_jcall *c)
+{
+    jvalue v = tl_jni_get_field(c->self, "value", "J"); set_long(c->self, "value", v.j - 1); c->ret = vj(v.j - 1);
+}
+static void AtomLong_getAndIncrement(tl_jcall *c)
+{
+    jvalue v = tl_jni_get_field(c->self, "value", "J"); set_long(c->self, "value", v.j + 1); c->ret = v;
+}
+static void AtomLong_getAndDecrement(tl_jcall *c)
+{
+    jvalue v = tl_jni_get_field(c->self, "value", "J"); set_long(c->self, "value", v.j - 1); c->ret = v;
+}
+static void AtomLong_addAndGet(tl_jcall *c)
+{
+    jvalue v = tl_jni_get_field(c->self, "value", "J"); set_long(c->self, "value", v.j + c->args[0].j); c->ret = vj(v.j + c->args[0].j);
+}
+static void AtomLong_getAndAdd(tl_jcall *c)
+{
+    jvalue v = tl_jni_get_field(c->self, "value", "J"); set_long(c->self, "value", v.j + c->args[0].j); c->ret = v;
+}
+static void AtomLong_intValue(tl_jcall *c) { c->ret = vi((int)get_lng(c->self, "value")); }
+static void AtomLong_longValue(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "value", "J"); }
+static void AtomLong_floatValue(tl_jcall *c) { c->ret = vf((float)get_lng(c->self, "value")); }
+static void AtomLong_doubleValue(tl_jcall *c) { c->ret = vd((double)get_lng(c->self, "value")); }
+static void AtomLong_toString(tl_jcall *c) { char b[32]; snprintf(b, sizeof(b), "%lld", (long long)get_lng(c->self, "value")); c->ret = vl(STR(b)); }
+
+static void AtomBool_init(tl_jcall *c) { set_bool(c->self, "value", c->args[0].z); }
+static void AtomBool_get(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "value", "Z"); }
+static void AtomBool_set(tl_jcall *c) { set_bool(c->self, "value", c->args[0].z); }
+static void AtomBool_getAndSet(tl_jcall *c)
+{
+    jvalue old = tl_jni_get_field(c->self, "value", "Z"); set_bool(c->self, "value", c->args[0].z); c->ret = old;
+}
+static void AtomBool_compareAndSet(tl_jcall *c)
+{
+    jvalue cur = tl_jni_get_field(c->self, "value", "Z");
+    if (cur.z == c->args[0].z) { set_bool(c->self, "value", c->args[1].z); c->ret = vz(1); }
+    else c->ret = vz(0);
+}
+static void AtomBool_toString(tl_jcall *c) { c->ret = vl(STR(get_int(c->self, "value") ? "true" : "false")); }
+
+static void AtomRef_init(tl_jcall *c) { tl_jni_set_field(c->self, "value", "Ljava/lang/Object;", c->args[0]); }
+static void AtomRef_get(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "value", "Ljava/lang/Object;"); }
+static void AtomRef_set(tl_jcall *c) { tl_jni_set_field(c->self, "value", "Ljava/lang/Object;", c->args[0]); }
+static void AtomRef_getAndSet(tl_jcall *c)
+{
+    jvalue old = tl_jni_get_field(c->self, "value", "Ljava/lang/Object;");
+    tl_jni_set_field(c->self, "value", "Ljava/lang/Object;", c->args[0]);
+    c->ret = old;
+}
+static void AtomRef_compareAndSet(tl_jcall *c)
+{
+    jvalue cur = tl_jni_get_field(c->self, "value", "Ljava/lang/Object;");
+    if (cur.l == c->args[0].l) { tl_jni_set_field(c->self, "value", "Ljava/lang/Object;", c->args[1]); c->ret = vz(1); }
+    else c->ret = vz(0);
+}
+static void AtomRef_lazySet(tl_jcall *c) { AtomRef_set(c); }
+static void AtomRef_getAndUpdate(tl_jcall *c) { AtomRef_getAndSet(c); }
+static void AtomRef_toString(tl_jcall *c)
+{
+    char b[300]; obj_str(tl_jni_get_field(c->self, "value", "Ljava/lang/Object;").l, b, sizeof(b));
+    c->ret = vl(STR(b));
+}
+static void AtomIntArr_get(tl_jcall *c)
+{
+    jobj *a = tl_jni_get_field(c->self, "array", "[I").l;
+    int i = c->args[0].i;
+    c->ret = vi(a && i >= 0 && i < (int)a->arr.len ? ((int32_t *)a->arr.data)[i] : 0);
+}
+static void AtomIntArr_set(tl_jcall *c)
+{
+    jobj *a = tl_jni_get_field(c->self, "array", "[I").l;
+    int i = c->args[0].i;
+    if (a && i >= 0 && i < (int)a->arr.len) ((int32_t *)a->arr.data)[i] = c->args[1].i;
+}
+static void AtomIntArr_init(tl_jcall *c)
+{
+    jobj *a = tl_jni_new_prim_array('I', (uint32_t)c->args[0].i);
+    tl_jni_set_field(c->self, "array", "[I", vl(a));
+}
+static void AtomIntArr_length(tl_jcall *c)
+{
+    jobj *a = tl_jni_get_field(c->self, "array", "[I").l;
+    c->ret = vi(a ? (int)a->arr.len : 0);
+}
+static void AtomIntArr_getAndSet(tl_jcall *c)
+{
+    jobj *a = tl_jni_get_field(c->self, "array", "[I").l;
+    int i = c->args[0].i;
+    int32_t old = a && i >= 0 && i < (int)a->arr.len ? ((int32_t *)a->arr.data)[i] : 0;
+    if (a && i >= 0 && i < (int)a->arr.len) ((int32_t *)a->arr.data)[i] = c->args[1].i;
+    c->ret = vi(old);
+}
+static void AtomIntArr_compareAndSet(tl_jcall *c)
+{
+    jobj *a = tl_jni_get_field(c->self, "array", "[I").l;
+    int i = c->args[0].i;
+    int ok = a && i >= 0 && i < (int)a->arr.len && ((int32_t *)a->arr.data)[i] == c->args[1].i;
+    if (ok) ((int32_t *)a->arr.data)[i] = c->args[2].i;
+    c->ret = vz(ok);
+}
+static void AtomIntArr_incrementAndGet(tl_jcall *c)
+{
+    jobj *a = tl_jni_get_field(c->self, "array", "[I").l;
+    int i = c->args[0].i;
+    if (a && i >= 0 && i < (int)a->arr.len) c->ret = vi(++((int32_t *)a->arr.data)[i]);
+    else c->ret = vi(0);
+}
+static void Lock_lock(tl_jcall *c) { (void)c; }
+static void Lock_unlock(tl_jcall *c) { (void)c; }
+static void Lock_tryLock(tl_jcall *c) { c->ret = vz(1); }
+static void Lock_newCondition(tl_jcall *c) { c->ret = vl(make("java/util/concurrent/locks/Condition")); }
+static void Lock_lockInterruptibly(tl_jcall *c) { (void)c; }
+static void Cond_await(tl_jcall *c) { (void)c; }
+static void Cond_signal(tl_jcall *c) { (void)c; }
+static void Cond_signalAll(tl_jcall *c) { (void)c; }
+
+/* ============================================================== java.io */
+
+/* InputStream/OutputStream base classes already exist in hle.c (read()=−1 etc.);
+ * these give the concrete kinds real state: a host fd or a byte buffer. */
+
+typedef struct { int fd; bool own; } fdis;
+static void FIS_init_file(tl_jcall *c)
+{
+    const char *p = file_path(c->args[0].l);
+    int fd = open(p, O_RDONLY);
+    if (fd < 0) { char m[600]; snprintf(m, sizeof(m), "%s: open failed", p); tl_jni_throw("java/io/FileNotFoundException", m); return; }
+    fdis *st = calloc(1, sizeof(*st)); st->fd = fd; st->own = true;
+    c->self->native = st;
+}
+static void FIS_init_path(tl_jcall *c)
+{
+    const char *p = S(c->args[0].l);
+    int fd = open(p, O_RDONLY);
+    if (fd < 0) { char m[600]; snprintf(m, sizeof(m), "%s: open failed", p); tl_jni_throw("java/io/FileNotFoundException", m); return; }
+    fdis *st = calloc(1, sizeof(*st)); st->fd = fd; st->own = true;
+    c->self->native = st;
+}
+static void FIS_init_fd(tl_jcall *c)
+{
+    fdis *st = calloc(1, sizeof(*st));
+    st->fd = (int)get_lng(c->args[0].l, "fd");
+    c->self->native = st;
+}
+static void FIS_read0(tl_jcall *c)
+{
+    fdis *st = c->self->native;
+    if (!st) { c->ret = vi(-1); return; }
+    uint8_t b;
+    c->ret = vi(read(st->fd, &b, 1) == 1 ? b : -1);
+}
+static void FIS_read_arr(tl_jcall *c)
+{
+    fdis *st = c->self->native;
+    jobj *a = c->args[0].l;
+    if (!st || !a) { c->ret = vi(-1); return; }
+    c->ret = vi((int)read(st->fd, a->arr.data, a->arr.len));
+}
+static void FIS_read_range(tl_jcall *c)
+{
+    fdis *st = c->self->native;
+    jobj *a = c->args[0].l;
+    int off = c->args[1].i, len = c->args[2].i;
+    if (!st || !a || off < 0 || len < 0 || off + len > (int)a->arr.len) { c->ret = vi(-1); return; }
+    c->ret = vi((int)read(st->fd, (char *)a->arr.data + off, (size_t)len));
+}
+static void FIS_available(tl_jcall *c)
+{
+    fdis *st = c->self->native;
+    if (!st) { c->ret = vi(0); return; }
+    off_t cur = lseek(st->fd, 0, SEEK_CUR), end = lseek(st->fd, 0, SEEK_END);
+    lseek(st->fd, cur, SEEK_SET);
+    c->ret = vi(end > cur ? (int)(end - cur) : 0);
+}
+static void FIS_skip(tl_jcall *c)
+{
+    fdis *st = c->self->native;
+    c->ret = vj(st ? (int64_t)(lseek(st->fd, c->args[0].j, SEEK_CUR) - lseek(st->fd, 0, SEEK_CUR)) : 0);
+}
+static void FIS_close(tl_jcall *c)
+{
+    fdis *st = c->self->native;
+    if (st && st->own) close(st->fd);
+    if (st) st->fd = -1;
+}
+static void FIS_mark(tl_jcall *c)   { (void)c; }
+static void FIS_reset(tl_jcall *c)  { fdis *st = c->self->native; if (st) lseek(st->fd, 0, SEEK_SET); }
+static void FIS_markSupported(tl_jcall *c) { c->ret = vz(1); }
+static void FIS_getFD(tl_jcall *c)
+{
+    fdis *st = c->self->native;
+    jobj *fd = make("java/io/FileDescriptor");
+    set_long(fd, "fd", st ? st->fd : -1);
+    c->ret = vl(fd);
+}
+static void FIS_getChannel(tl_jcall *c)
+{
+    jobj *ch = make("java/nio/channels/FileChannel");
+    tl_jni_set_field(ch, "stream", "Ljava/io/InputStream;", vl(c->self));
+    c->ret = vl(ch);
+}
+static void FD_sync(tl_jcall *c) { fdis st = { .fd = (int)get_lng(c->self, "fd") }; if (st.fd >= 0) fsync(st.fd); }
+static void FD_valid(tl_jcall *c) { c->ret = vz(get_lng(c->self, "fd") >= 0); }
+
+/* ByteArrayInputStream: buf field is the byte[] */
+static void BAIS_init(tl_jcall *c) { tl_jni_set_field(c->self, "buf", "[B", c->args[0]); set_int(c->self, "pos", 0); }
+static void BAIS_init_range(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "buf", "[B", c->args[0]);
+    set_int(c->self, "pos", c->args[1].i);
+    set_int(c->self, "count", c->args[1].i + c->args[2].i);
+}
+static int bais_len(jobj *o)
+{
+    jobj *b = tl_jni_get_field(o, "buf", "[B").l;
+    int cnt = get_int(o, "count");
+    return cnt ? cnt : (b ? (int)b->arr.len : 0);
+}
+static void BAIS_read0(tl_jcall *c)
+{
+    jobj *b = tl_jni_get_field(c->self, "buf", "[B").l;
+    int pos = get_int(c->self, "pos");
+    if (!b || pos >= bais_len(c->self)) { c->ret = vi(-1); return; }
+    set_int(c->self, "pos", pos + 1);
+    c->ret = vi(((uint8_t *)b->arr.data)[pos]);
+}
+static void BAIS_read_arr(tl_jcall *c)
+{
+    jobj *b = tl_jni_get_field(c->self, "buf", "[B").l;
+    jobj *dst = c->args[0].l;
+    int pos = get_int(c->self, "pos"), avail = bais_len(c->self) - pos;
+    if (!b || !dst || avail <= 0) { c->ret = vi(-1); return; }
+    int n = (int)dst->arr.len < avail ? (int)dst->arr.len : avail;
+    memcpy(dst->arr.data, (char *)b->arr.data + pos, (size_t)n);
+    set_int(c->self, "pos", pos + n);
+    c->ret = vi(n);
+}
+static void BAIS_read_range(tl_jcall *c)
+{
+    jobj *b = tl_jni_get_field(c->self, "buf", "[B").l;
+    jobj *dst = c->args[0].l;
+    int off = c->args[1].i, len = c->args[2].i;
+    int pos = get_int(c->self, "pos"), avail = bais_len(c->self) - pos;
+    if (!b || !dst || avail <= 0) { c->ret = vi(-1); return; }
+    int n = len < avail ? len : avail;
+    if (off < 0 || off + n > (int)dst->arr.len) n = (int)dst->arr.len - off;
+    memcpy((char *)dst->arr.data + off, (char *)b->arr.data + pos, (size_t)n);
+    set_int(c->self, "pos", pos + n);
+    c->ret = vi(n);
+}
+static void BAIS_available(tl_jcall *c) { c->ret = vi(bais_len(c->self) - get_int(c->self, "pos")); }
+static void BAIS_skip(tl_jcall *c)
+{
+    int pos = get_int(c->self, "pos");
+    int64_t n = c->args[0].j;
+    if (pos + n > bais_len(c->self)) n = bais_len(c->self) - pos;
+    set_int(c->self, "pos", pos + (int)n);
+    c->ret = vj(n);
+}
+static void BAIS_reset(tl_jcall *c) { set_int(c->self, "pos", get_int(c->self, "mark")); }
+static void BAIS_mark(tl_jcall *c)  { set_int(c->self, "mark", get_int(c->self, "pos")); }
+static void BAIS_markSupported(tl_jcall *c) { c->ret = vz(1); }
+static void BAIS_close(tl_jcall *c) { (void)c; }
+
+/* ByteArrayOutputStream: grows a byte[] */
+static void BAOS_init(tl_jcall *c)   { vec_of(c->self); }
+static void BAOS_init_sz(tl_jcall *c){ vec_of(c->self); }
+static void BAOS_write_byte(tl_jcall *c)
+{
+    sbuf *b = sb_of(c->self);
+    char t = (char)c->args[0].i;
+    sb_add_n(b, &t, 1);
+}
+static void BAOS_write_arr(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (a && a->kind == TL_K_PRIM_ARRAY) sb_add_n(sb_of(c->self), a->arr.data, a->arr.len);
+}
+static void BAOS_write_range(tl_jcall *c)
+{
+    jobj *a = c->args[0].l; int off = c->args[1].i, len = c->args[2].i;
+    if (a && a->kind == TL_K_PRIM_ARRAY) sb_add_n(sb_of(c->self), (char *)a->arr.data + off, (size_t)len);
+}
+static void BAOS_toByteArray(tl_jcall *c)
+{
+    sbuf *b = sb_of(c->self);
+    jobj *a = tl_jni_new_prim_array('B', (uint32_t)b->n);
+    memcpy(a->arr.data, b->p, b->n);
+    c->ret = vl(a);
+}
+static void BAOS_toString(tl_jcall *c)
+{
+    sbuf *b = sb_of(c->self);
+    char *t = malloc(b->n + 1); memcpy(t, b->p, b->n); t[b->n] = 0;
+    c->ret = vl(STR(t)); free(t);
+}
+static void BAOS_size(tl_jcall *c)  { c->ret = vi((int)sb_of(c->self)->n); }
+static void BAOS_reset(tl_jcall *c) { sb_of(c->self)->n = 0; }
+static void BAOS_flush(tl_jcall *c) { (void)c; }
+static void BAOS_close(tl_jcall *c) { (void)c; }
+static void BAOS_writeTo(tl_jcall *c)
+{
+    sbuf *b = sb_of(c->self);
+    jobj *a = tl_jni_new_prim_array('B', (uint32_t)b->n);
+    memcpy(a->arr.data, b->p, b->n);
+    jvalue av; av.l = a;
+    tl_jni_call(c->args[0].l, "write", "([B)V", &av);
+}
+
+/* InputStreamReader/BufferedReader: line-based over any InputStream */
+static void ISR_init(tl_jcall *c) { tl_jni_set_field(c->self, "in", "Ljava/io/InputStream;", c->args[0]); }
+static void ISR_init_cs(tl_jcall *c) { ISR_init(c); }
+static int isr_read(jobj *self)
+{
+    jobj *in = tl_jni_get_field(self, "in", "Ljava/io/InputStream;").l;
+    if (!in) return -1;
+    jvalue r = tl_jni_call(in, "read", "()I", NULL);
+    return r.i;
+}
+static void ISR_read0(tl_jcall *c) { c->ret = vi(isr_read(c->self)); }
+static void ISR_read_chars(tl_jcall *c)
+{
+    jobj *dst = c->args[0].l;
+    int off = c->args[1].i, len = c->args[2].i;
+    int n = 0;
+    for (; n < len; n++) {
+        int ch = isr_read(c->self);
+        if (ch < 0) break;
+        if (dst && off + n < (int)dst->arr.len) ((uint16_t *)dst->arr.data)[off + n] = (uint16_t)ch;
+    }
+    c->ret = vi(n ? n : -1);
+}
+static void ISR_ready(tl_jcall *c) { c->ret = vz(1); }
+static void ISR_close(tl_jcall *c)
+{
+    jobj *in = tl_jni_get_field(c->self, "in", "Ljava/io/InputStream;").l;
+    if (in) tl_jni_call(in, "close", "()V", NULL);
+}
+static void ISR_getEncoding(tl_jcall *c) { c->ret = vl(STR("UTF-8")); }
+
+static void BR_init(tl_jcall *c) { tl_jni_set_field(c->self, "in", "Ljava/io/Reader;", c->args[0]); set_str(c->self, "_line", ""); }
+static void BR_readLine(tl_jcall *c)
+{
+    jobj *in = tl_jni_get_field(c->self, "in", "Ljava/io/Reader;").l;
+    if (!in) { c->ret = vl(NULL); return; }
+    sbuf b = {0};
+    for (;;) {
+        jvalue r = tl_jni_call(in, "read", "()I", NULL);
+        if (r.i < 0) break;
+        if (r.i == '\n') break;
+        if (r.i == '\r') {
+            jvalue n = tl_jni_call(in, "read", "()I", NULL);
+            if (n.i != '\n' && n.i >= 0) { char t[2] = { (char)n.i, 0 }; sb_add(&b, t); }
+            break;
+        }
+        char t[2] = { (char)r.i, 0 }; sb_add(&b, t);
+    }
+    if (!b.n && !b.p) { c->ret = vl(NULL); free(b.p); return; }
+    if (b.n == 0 && b.p) { /* empty but allocated — EOF vs blank line ambiguity stays honest */ }
+    c->ret = vl(STR(b.p ? b.p : ""));
+    free(b.p);
+}
+static void BR_read0(tl_jcall *c)
+{
+    jobj *in = tl_jni_get_field(c->self, "in", "Ljava/io/Reader;").l;
+    jvalue r = in ? tl_jni_call(in, "read", "()I", NULL) : (jvalue){ .i = -1 };
+    c->ret = vi(r.i);
+}
+static void BR_ready(tl_jcall *c) { c->ret = vz(1); }
+static void BR_close(tl_jcall *c) { ISR_close(c); }
+static void BR_lines(tl_jcall *c) { c->ret = vl(make("java/util/stream/Stream")); }
+
+static void SR_init(tl_jcall *c) { set_str(c->self, "src", S(c->args[0].l)); }
+static void SR_read0(tl_jcall *c)
+{
+    const char *s = S(tl_jni_get_field(c->self, "src", "Ljava/lang/String;").l);
+    int pos = get_int(c->self, "pos");
+    c->ret = vi(s[pos] ? (set_int(c->self, "pos", pos + 1), (uint8_t)s[pos]) : -1);
+}
+static void SR_read_chars(tl_jcall *c)
+{
+    const char *s = S(tl_jni_get_field(c->self, "src", "Ljava/lang/String;").l);
+    int pos = get_int(c->self, "pos"), off = c->args[1].i, len = c->args[2].i, n = 0;
+    jobj *dst = c->args[0].l;
+    for (; n < len && s[pos + n]; n++) if (dst && off + n < (int)dst->arr.len) ((uint16_t *)dst->arr.data)[off + n] = (uint8_t)s[pos + n];
+    set_int(c->self, "pos", pos + n);
+    c->ret = vi(n ? n : -1);
+}
+static void SR_ready(tl_jcall *c) { c->ret = vz(1); }
+static void SR_close(tl_jcall *c) { (void)c; }
+
+static void PW_init_os(tl_jcall *c) { tl_jni_set_field(c->self, "out", "Ljava/io/OutputStream;", c->args[0]); }
+static void PW_init_path(tl_jcall *c)
+{
+    jobj *fos = make("java/io/FileOutputStream");
+    jvalue a; a.l = c->args[0].l;
+    tl_jni_call(fos, "<init>", "(Ljava/lang/String;)V", &a);
+    tl_jni_set_field(c->self, "out", "Ljava/io/OutputStream;", vl(fos));
+}
+static void PW_init_file(tl_jcall *c)
+{
+    jobj *fos = make("java/io/FileOutputStream");
+    jvalue a; a.l = c->args[0].l;
+    tl_jni_call(fos, "<init>", "(Ljava/io/File;)V", &a);
+    tl_jni_set_field(c->self, "out", "Ljava/io/OutputStream;", vl(fos));
+}
+static void pw_out(jobj *self, const char *s)
+{
+    jobj *os = tl_jni_get_field(self, "out", "Ljava/io/OutputStream;").l;
+    if (!os) return;
+    jvalue b; b.l = tl_jni_call(STR(s), "getBytes", "()[B", NULL).l;
+    if (b.l) tl_jni_call(os, "write", "([B)V", &b);
+}
+static void PW_print(tl_jcall *c)  { char b[600]; obj_str(c->args[0].l, b, sizeof(b)); pw_out(c->self, b); }
+static void PW_print_s(tl_jcall *c){ pw_out(c->self, S(c->args[0].l)); }
+static void PW_print_i(tl_jcall *c){ char t[24]; snprintf(t, sizeof(t), "%d", c->args[0].i); pw_out(c->self, t); }
+static void PW_print_j(tl_jcall *c){ char t[32]; snprintf(t, sizeof(t), "%lld", (long long)c->args[0].j); pw_out(c->self, t); }
+static void PW_print_z(tl_jcall *c){ pw_out(c->self, c->args[0].z ? "true" : "false"); }
+static void PW_print_d(tl_jcall *c){ char t[40]; snprintf(t, sizeof(t), "%g", c->args[0].d); pw_out(c->self, t); }
+static void PW_print_f(tl_jcall *c){ char t[40]; snprintf(t, sizeof(t), "%g", (double)c->args[0].f); pw_out(c->self, t); }
+static void PW_print_c(tl_jcall *c){ char t[8]; snprintf(t, sizeof(t), "%c", (char)c->args[0].c); pw_out(c->self, t); }
+static void PW_println(tl_jcall *c)   { pw_out(c->self, "\n"); }
+static void PW_println_s(tl_jcall *c) { pw_out(c->self, S(c->args[0].l)); pw_out(c->self, "\n"); }
+static void PW_println_o(tl_jcall *c) { char b[600]; obj_str(c->args[0].l, b, sizeof(b)); pw_out(c->self, b); pw_out(c->self, "\n"); }
+static void PW_println_i(tl_jcall *c) { char t[24]; snprintf(t, sizeof(t), "%d\n", c->args[0].i); pw_out(c->self, t); }
+static void PW_flush(tl_jcall *c)
+{
+    jobj *os = tl_jni_get_field(c->self, "out", "Ljava/io/OutputStream;").l;
+    if (os) tl_jni_call(os, "flush", "()V", NULL);
+}
+static void PW_close(tl_jcall *c) { PW_flush(c); }
+static void PW_checkError(tl_jcall *c) { c->ret = vz(0); }
+static void PW_write_i(tl_jcall *c) { char t = (char)c->args[0].i; pw_out(c->self, (char[]){ t, 0 }); }
+static void PW_write_s(tl_jcall *c) { pw_out(c->self, S(c->args[0].l)); }
+static void PW_append(tl_jcall *c) { PW_print(c); c->ret = vl(tl_jni_ref(c->self)); }
+
+/* RandomAccessFile: fd + mode */
+static void RAF_init(tl_jcall *c)
+{
+    const char *p = file_path(c->args[0].l);
+    const char *m = S(c->args[1].l);
+    int flags = strchr(m, 'w') ? O_RDWR | O_CREAT : O_RDONLY;
+    int fd = open(p, flags, 0644);
+    if (fd < 0) { char b[600]; snprintf(b, sizeof(b), "%s", p); tl_jni_throw("java/io/FileNotFoundException", b); return; }
+    fdis *st = calloc(1, sizeof(*st)); st->fd = fd; st->own = true;
+    c->self->native = st;
+}
+static void RAF_init_path(tl_jcall *c)
+{
+    jobj *f = new_file(S(c->args[0].l));
+    tl_jcall t = { .self = c->self, .cls = c->cls, .args = (jvalue[]){ { .l = f }, c->args[1] } };
+    RAF_init(&t);
+}
+static void RAF_read0(tl_jcall *c) { FIS_read0(c); }
+static void RAF_read_arr(tl_jcall *c) { FIS_read_arr(c); }
+static void RAF_read_range(tl_jcall *c) { FIS_read_range(c); }
+static void RAF_readFully(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (!a) return;
+    fdis *st = c->self->native;
+    int off = 0, len = (int)a->arr.len;
+    while (off < len) {
+        ssize_t r = read(st->fd, (char *)a->arr.data + off, (size_t)(len - off));
+        if (r <= 0) { tl_jni_throw("java/io/EOFException", ""); return; }
+        off += (int)r;
+    }
+}
+static void RAF_readByte(tl_jcall *c)
+{
+    uint8_t b;
+    fdis *st = c->self->native;
+    if (!st || read(st->fd, &b, 1) != 1) { tl_jni_throw("java/io/EOFException", ""); return; }
+    c->ret = vi(b);
+}
+static void RAF_readInt(tl_jcall *c)
+{
+    uint8_t b[4]; fdis *st = c->self->native;
+    if (!st || read(st->fd, b, 4) != 4) { tl_jni_throw("java/io/EOFException", ""); return; }
+    c->ret = vi((b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]);
+}
+static void RAF_readLong(tl_jcall *c)
+{
+    uint8_t b[8]; fdis *st = c->self->native;
+    if (!st || read(st->fd, b, 8) != 8) { tl_jni_throw("java/io/EOFException", ""); return; }
+    int64_t v = 0; for (int i = 0; i < 8; i++) v = (v << 8) | b[i];
+    c->ret = vj(v);
+}
+static void RAF_readShort(tl_jcall *c)
+{
+    uint8_t b[2]; fdis *st = c->self->native;
+    if (!st || read(st->fd, b, 2) != 2) { tl_jni_throw("java/io/EOFException", ""); return; }
+    c->ret = vs((int16_t)((b[0] << 8) | b[1]));
+}
+static void RAF_readChar(tl_jcall *c)
+{
+    uint8_t b[2]; fdis *st = c->self->native;
+    if (!st || read(st->fd, b, 2) != 2) { tl_jni_throw("java/io/EOFException", ""); return; }
+    c->ret = vc((uint16_t)((b[0] << 8) | b[1]));
+}
+static void RAF_readBoolean(tl_jcall *c)
+{
+    uint8_t b; fdis *st = c->self->native;
+    if (!st || read(st->fd, &b, 1) != 1) { tl_jni_throw("java/io/EOFException", ""); return; }
+    c->ret = vz(b);
+}
+static void RAF_readFloat(tl_jcall *c)
+{
+    uint8_t b[4]; fdis *st = c->self->native;
+    if (!st || read(st->fd, b, 4) != 4) { tl_jni_throw("java/io/EOFException", ""); return; }
+    uint32_t u = ((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) | ((uint32_t)b[2] << 8) | b[3];
+    float f; memcpy(&f, &u, 4);
+    c->ret = vf(f);
+}
+static void RAF_readDouble(tl_jcall *c)
+{
+    uint8_t b[8]; fdis *st = c->self->native;
+    if (!st || read(st->fd, b, 8) != 8) { tl_jni_throw("java/io/EOFException", ""); return; }
+    uint64_t u = 0; for (int i = 0; i < 8; i++) u = (u << 8) | b[i];
+    double d; memcpy(&d, &u, 8);
+    c->ret = vd(d);
+}
+static void RAF_readLine(tl_jcall *c)
+{
+    fdis *st = c->self->native;
+    sbuf b = {0};
+    for (;;) {
+        char ch;
+        ssize_t r = read(st->fd, &ch, 1);
+        if (r <= 0) break;
+        if (ch == '\n') break;
+        if (ch == '\r') continue;
+        sb_add_n(&b, &ch, 1);
+    }
+    if (!b.p) { c->ret = vl(NULL); return; }
+    c->ret = vl(STR(b.p)); free(b.p);
+}
+static void RAF_readUTF(tl_jcall *c)
+{
+    uint8_t lb[2]; fdis *st = c->self->native;
+    if (!st || read(st->fd, lb, 2) != 2) { tl_jni_throw("java/io/EOFException", ""); return; }
+    int len = (lb[0] << 8) | lb[1];
+    char *t = malloc((size_t)len + 1);
+    if (read(st->fd, t, (size_t)len) != len) { free(t); tl_jni_throw("java/io/EOFException", ""); return; }
+    t[len] = 0; c->ret = vl(STR(t)); free(t);
+}
+static void RAF_readUnsignedByte(tl_jcall *c) { RAF_readByte(c); }
+static void RAF_readUnsignedShort(tl_jcall *c)
+{
+    uint8_t b[2]; fdis *st = c->self->native;
+    if (!st || read(st->fd, b, 2) != 2) { tl_jni_throw("java/io/EOFException", ""); return; }
+    c->ret = vi((b[0] << 8) | b[1]);
+}
+static void RAF_skipBytes(tl_jcall *c)
+{
+    fdis *st = c->self->native;
+    if (!st) { c->ret = vi(0); return; }
+    off_t r = lseek(st->fd, c->args[0].i, SEEK_CUR);
+    c->ret = vi(r >= 0 ? c->args[0].i : 0);
+}
+static void RAF_write_byte(tl_jcall *c)
+{
+    fdis *st = c->self->native;
+    if (st) { char b = (char)c->args[0].i; ssize_t w = write(st->fd, &b, 1); (void)w; }
+}
+static void RAF_write_arr(tl_jcall *c)
+{
+    fdis *st = c->self->native; jobj *a = c->args[0].l;
+    if (st && a) { ssize_t w = write(st->fd, a->arr.data, a->arr.len); (void)w; }
+}
+static void RAF_write_range(tl_jcall *c)
+{
+    fdis *st = c->self->native; jobj *a = c->args[0].l;
+    if (st && a) { ssize_t w = write(st->fd, (char *)a->arr.data + c->args[1].i, (size_t)c->args[2].i); (void)w; }
+}
+static void RAF_writeInt(tl_jcall *c)
+{
+    fdis *st = c->self->native;
+    if (!st) return;
+    uint8_t b[4] = { (uint8_t)(c->args[0].i >> 24), (uint8_t)(c->args[0].i >> 16), (uint8_t)(c->args[0].i >> 8), (uint8_t)c->args[0].i };
+    ssize_t w = write(st->fd, b, 4); (void)w;
+}
+static void RAF_writeLong(tl_jcall *c)
+{
+    fdis *st = c->self->native;
+    if (!st) return;
+    uint8_t b[8]; int64_t v = c->args[0].j;
+    for (int i = 7; i >= 0; i--) { b[i] = (uint8_t)v; v >>= 8; }
+    ssize_t w = write(st->fd, b, 8); (void)w;
+}
+static void RAF_writeShort(tl_jcall *c)
+{
+    fdis *st = c->self->native;
+    if (!st) return;
+    uint8_t b[2] = { (uint8_t)(c->args[0].i >> 8), (uint8_t)c->args[0].i };
+    ssize_t w = write(st->fd, b, 2); (void)w;
+}
+static void RAF_writeBoolean(tl_jcall *c) { RAF_write_byte(c); }
+static void RAF_writeBytes(tl_jcall *c)
+{
+    fdis *st = c->self->native;
+    if (st) { const char *s = S(c->args[0].l); ssize_t w = write(st->fd, s, strlen(s)); (void)w; }
+}
+static void RAF_writeChars(tl_jcall *c) { RAF_writeBytes(c); }
+static void RAF_writeUTF(tl_jcall *c)
+{
+    fdis *st = c->self->native;
+    if (!st) return;
+    const char *s = S(c->args[0].l);
+    uint16_t l = (uint16_t)strlen(s);
+    uint8_t lb[2] = { (uint8_t)(l >> 8), (uint8_t)l };
+    ssize_t w = write(st->fd, lb, 2); w = write(st->fd, s, l); (void)w;
+}
+static void RAF_seek(tl_jcall *c)
+{
+    fdis *st = c->self->native;
+    if (st) lseek(st->fd, c->args[0].j, SEEK_SET);
+}
+static void RAF_getFilePointer(tl_jcall *c)
+{
+    fdis *st = c->self->native;
+    c->ret = vj(st ? (int64_t)lseek(st->fd, 0, SEEK_CUR) : 0);
+}
+static void RAF_length(tl_jcall *c)
+{
+    fdis *st = c->self->native;
+    c->ret = vj(st ? (int64_t)lseek(st->fd, 0, SEEK_END) : 0);
+}
+static void RAF_setLength(tl_jcall *c)
+{
+    fdis *st = c->self->native;
+    if (st) ftruncate(st->fd, c->args[0].j);
+}
+static void RAF_close(tl_jcall *c) { FIS_close(c); }
+static void RAF_getFD(tl_jcall *c) { FIS_getFD(c); }
+static void RAF_getChannel(tl_jcall *c) { FIS_getChannel(c); }
+static void RAF_sync(tl_jcall *c) { fdis *st = c->self->native; if (st) fsync(st->fd); }
+
+/* ---- File extras hle.c does not have ---- */
+
+static void File_list(tl_jcall *c)
+{
+    const char *p = file_path(c->self);
+    DIR *d = opendir(p);
+    if (!d) { c->ret = vl(NULL); return; }
+    jobj *items[1024]; int n = 0;
+    struct dirent *e;
+    while ((e = readdir(d)) && n < 1023) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+        items[n++] = STR(e->d_name);
+    }
+    closedir(d);
+    jobj *a = tl_jni_new_obj_array(C("java/lang/String"), (uint32_t)n);
+    for (int i = 0; i < n; i++) a->oarr.v[i] = items[i];
+    c->ret = vl(a);
+}
+static void File_listFiles(tl_jcall *c)
+{
+    const char *p = file_path(c->self);
+    DIR *d = opendir(p);
+    if (!d) { c->ret = vl(NULL); return; }
+    jobj *items[1024]; int n = 0;
+    struct dirent *e;
+    while ((e = readdir(d)) && n < 1023) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+        char path[1024]; snprintf(path, sizeof(path), "%s/%s", p, e->d_name);
+        items[n++] = new_file(path);
+    }
+    closedir(d);
+    jobj *a = tl_jni_new_obj_array(C("java/io/File"), (uint32_t)n);
+    for (int i = 0; i < n; i++) a->oarr.v[i] = items[i];
+    c->ret = vl(a);
+}
+static void File_renameTo(tl_jcall *c)
+{
+    const char *a = file_path(c->self), *b = file_path(c->args[0].l);
+    c->ret = vz(rename(a, b) == 0);
+}
+static void File_createNewFile(tl_jcall *c)
+{
+    const char *p = file_path(c->self);
+    int fd = open(p, O_CREAT | O_EXCL | O_WRONLY, 0644);
+    if (fd >= 0) { close(fd); c->ret = vz(1); }
+    else c->ret = vz(0);
+}
+static void File_lastModified(tl_jcall *c)
+{
+    struct stat st;
+    c->ret = vj(stat(file_path(c->self), &st) == 0 ? (int64_t)st.st_mtime * 1000 : 0);
+}
+static void File_setLastModified(tl_jcall *c)
+{
+    struct timeval tv[2];
+    tv[0].tv_sec = c->args[0].j / 1000; tv[0].tv_usec = (c->args[0].j % 1000) * 1000;
+    tv[1] = tv[0];
+    c->ret = vz(utimes(file_path(c->self), tv) == 0);
+}
+static void File_getAbsoluteFile(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void File_getCanonicalFile(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void File_isAbsolute(tl_jcall *c) { c->ret = vz(file_path(c->self)[0] == '/'); }
+static void File_canExecute(tl_jcall *c) { c->ret = vz(access(file_path(c->self), X_OK) == 0); }
+static void File_setExecutable(tl_jcall *c)
+{
+    struct stat st;
+    if (stat(file_path(c->self), &st) != 0) { c->ret = vz(0); return; }
+    c->ret = vz(chmod(file_path(c->self), st.st_mode | 0755) == 0);
+}
+static void File_setReadable(tl_jcall *c)
+{
+    struct stat st;
+    if (stat(file_path(c->self), &st) != 0) { c->ret = vz(0); return; }
+    c->ret = vz(chmod(file_path(c->self), st.st_mode | 0444) == 0);
+}
+static void File_setWritable(tl_jcall *c)
+{
+    struct stat st;
+    if (stat(file_path(c->self), &st) != 0) { c->ret = vz(0); return; }
+    c->ret = vz(chmod(file_path(c->self), st.st_mode | 0644) == 0);
+}
+static void File_isHidden(tl_jcall *c)
+{
+    const char *p = file_path(c->self), *base = strrchr(p, '/');
+    c->ret = vz(base && base[1] == '.');
+}
+static void File_getFreeSpace(tl_jcall *c)
+{
+    struct statvfs sv;
+    c->ret = vj(statvfs(file_path(c->self), &sv) == 0 ? (int64_t)sv.f_bavail * sv.f_frsize : 0);
+}
+static void File_getTotalSpace(tl_jcall *c)
+{
+    struct statvfs sv;
+    c->ret = vj(statvfs(file_path(c->self), &sv) == 0 ? (int64_t)sv.f_blocks * sv.f_frsize : 0);
+}
+static void File_getUsableSpace(tl_jcall *c) { File_getFreeSpace(c); }
+static void File_toURI(tl_jcall *c)
+{
+    jobj *u = make("java/net/URI");
+    char b[1100]; snprintf(b, sizeof(b), "file://%s", file_path(c->self));
+    set_str(u, "str", b);
+    c->ret = vl(u);
+}
+static void File_toPath(tl_jcall *c)
+{
+    jobj *p = make("java/nio/file/Path");
+    set_str(p, "path", file_path(c->self));
+    c->ret = vl(p);
+}
+static void File_equals(tl_jcall *c) { c->ret = vz(!strcmp(file_path(c->self), file_path(c->args[0].l))); }
+static void File_hashCode(tl_jcall *c)
+{
+    const char *s = file_path(c->self); int h = 0;
+    for (; *s; s++) h = h * 31 + (uint8_t)*s;
+    c->ret = vi(h ^ 1234321);
+}
+static void File_compareTo(tl_jcall *c) { c->ret = vi(strcmp(file_path(c->self), file_path(c->args[0].l))); }
+static void File_deleteOnExit(tl_jcall *c) { (void)c; }
+static void File_createTempFile(tl_jcall *c)
+{
+    char tmpl[700];
+    snprintf(tmpl, sizeof(tmpl), "%s/%sXXXXXX%s", M2.cache, S(c->args[0].l), c->args[1].l ? S(c->args[1].l) : ".tmp");
+    int fd = mkstemps(tmpl, (int)(c->args[1].l ? strlen(S(c->args[1].l)) : 4));
+    if (fd >= 0) close(fd);
+    c->ret = vl(new_file(tmpl));
+}
+static void File_listRoots(tl_jcall *c)
+{
+    jobj *a = tl_jni_new_obj_array(C("java/io/File"), 1);
+    a->oarr.v[0] = new_file("/");
+    c->ret = vl(a);
+}
+static void File_init_uri(tl_jcall *c)
+{
+    set_str(c->self, "path", S(c->args[0].l) + (strncmp(S(c->args[0].l), "file://", 7) ? 0 : 7));
+}
+static void FileSeparator(tl_jcall *c) { c->ret = vl(STR("/")); }
+static void PathChar(tl_jcall *c) { c->ret = vl(STR(":")); }
+
+/* java/nio/file/Path minimal */
+static void Path_toString(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "path", "Ljava/lang/String;"); }
+static void Path_toFile(tl_jcall *c) { c->ret = vl(new_file(S(tl_jni_get_field(c->self, "path", "Ljava/lang/String;").l))); }
+static void Path_getFileName(tl_jcall *c)
+{
+    const char *p = S(tl_jni_get_field(c->self, "path", "Ljava/lang/String;").l);
+    const char *b = strrchr(p, '/');
+    jobj *r = make("java/nio/file/Path");
+    set_str(r, "path", b ? b + 1 : p);
+    c->ret = vl(r);
+}
+static void Path_getParent(tl_jcall *c)
+{
+    const char *p = S(tl_jni_get_field(c->self, "path", "Ljava/lang/String;").l);
+    char *t = strdup(p), *b = strrchr(t, '/');
+    if (b) *b = 0;
+    jobj *r = make("java/nio/file/Path");
+    set_str(r, "path", t);
+    free(t);
+    c->ret = vl(r);
+}
+static void Path_resolve(tl_jcall *c)
+{
+    const char *a = S(tl_jni_get_field(c->self, "path", "Ljava/lang/String;").l);
+    const char *b = S(c->args[0].l);
+    char buf[1024]; snprintf(buf, sizeof(buf), "%s/%s", a, b);
+    jobj *r = make("java/nio/file/Path"); set_str(r, "path", buf);
+    c->ret = vl(r);
+}
+static void Path_toAbsolutePath(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void Path_normalize(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void Path_toUri(tl_jcall *c)
+{
+    jobj *u = make("java/net/URI");
+    char b[1100]; snprintf(b, sizeof(b), "file://%s", S(tl_jni_get_field(c->self, "path", "Ljava/lang/String;").l));
+    set_str(u, "str", b);
+    c->ret = vl(u);
+}
+static void Path_startsWith(tl_jcall *c)
+{
+    const char *a = S(tl_jni_get_field(c->self, "path", "Ljava/lang/String;").l);
+    const char *b = S(c->args[0].l);
+    c->ret = vz(strncmp(a, b, strlen(b)) == 0);
+}
+static void Path_endsWith(tl_jcall *c)
+{
+    const char *a = S(tl_jni_get_field(c->self, "path", "Ljava/lang/String;").l);
+    const char *b = S(c->args[0].l);
+    size_t al = strlen(a), bl = strlen(b);
+    c->ret = vz(bl <= al && !strcmp(a + al - bl, b));
+}
+static void Path_compareTo(tl_jcall *c)
+{
+    c->ret = vi(strcmp(S(tl_jni_get_field(c->self, "path", "Ljava/lang/String;").l), S(tl_jni_get_field(c->args[0].l, "path", "Ljava/lang/String;").l)));
+}
+static void Path_equals(tl_jcall *c)
+{
+    c->ret = vz(!strcmp(S(tl_jni_get_field(c->self, "path", "Ljava/lang/String;").l), S(tl_jni_get_field(c->args[0].l, "path", "Ljava/lang/String;").l)));
+}
+static void Path_hashCode(tl_jcall *c)
+{
+    const char *s = S(tl_jni_get_field(c->self, "path", "Ljava/lang/String;").l); int h = 0;
+    for (; *s; s++) h = h * 31 + (uint8_t)*s;
+    c->ret = vi(h);
+}
+static void Paths_get(tl_jcall *c)
+{
+    jobj *r = make("java/nio/file/Path");
+    set_str(r, "path", S(c->args[0].l));
+    c->ret = vl(r);
+}
+static void Files_exists(tl_jcall *c)
+{
+    const char *p = S(tl_jni_get_field(c->args[0].l, "path", "Ljava/lang/String;").l);
+    c->ret = vz(access(p, F_OK) == 0);
+}
+static void Files_isDirectory(tl_jcall *c)
+{
+    struct stat st;
+    const char *p = S(tl_jni_get_field(c->args[0].l, "path", "Ljava/lang/String;").l);
+    c->ret = vz(stat(p, &st) == 0 && S_ISDIR(st.st_mode));
+}
+static void Files_size(tl_jcall *c)
+{
+    struct stat st;
+    const char *p = S(tl_jni_get_field(c->args[0].l, "path", "Ljava/lang/String;").l);
+    c->ret = vj(stat(p, &st) == 0 ? st.st_size : 0);
+}
+static void Files_readAllBytes(tl_jcall *c)
+{
+    const char *p = S(tl_jni_get_field(c->args[0].l, "path", "Ljava/lang/String;").l);
+    FILE *f = fopen(p, "rb");
+    if (!f) { tl_jni_throw("java/io/IOException", p); return; }
+    fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
+    jobj *a = tl_jni_new_prim_array('B', (uint32_t)n);
+    size_t rd = fread(a->arr.data, 1, (size_t)n, f); (void)rd;
+    fclose(f);
+    c->ret = vl(a);
+}
+static void Files_write(tl_jcall *c)
+{
+    const char *p = S(tl_jni_get_field(c->args[0].l, "path", "Ljava/lang/String;").l);
+    jobj *a = c->args[1].l;
+    FILE *f = fopen(p, "wb");
+    if (!f) { tl_jni_throw("java/io/IOException", p); return; }
+    if (a && a->kind == TL_K_PRIM_ARRAY) fwrite(a->arr.data, 1, a->arr.len, f);
+    fclose(f);
+    c->ret = vl(c->args[0].l);
+}
+static void Files_copy(tl_jcall *c)
+{
+    const char *a = S(tl_jni_get_field(c->args[0].l, "path", "Ljava/lang/String;").l);
+    const char *b = S(tl_jni_get_field(c->args[1].l, "path", "Ljava/lang/String;").l);
+    FILE *in = fopen(a, "rb"); if (!in) { tl_jni_throw("java/io/IOException", a); return; }
+    FILE *out = fopen(b, "wb"); if (!out) { fclose(in); tl_jni_throw("java/io/IOException", b); return; }
+    char buf[8192]; size_t n, tot = 0;
+    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) { fwrite(buf, 1, n, out); tot += n; }
+    fclose(in); fclose(out);
+    c->ret = vj((int64_t)tot);
+}
+static void Files_move(tl_jcall *c)
+{
+    const char *a = S(tl_jni_get_field(c->args[0].l, "path", "Ljava/lang/String;").l);
+    const char *b = S(tl_jni_get_field(c->args[1].l, "path", "Ljava/lang/String;").l);
+    rename(a, b);
+    c->ret = vl(c->args[1].l);
+}
+static void Files_delete(tl_jcall *c)
+{
+    const char *p = S(tl_jni_get_field(c->args[0].l, "path", "Ljava/lang/String;").l);
+    unlink(p);
+}
+static void Files_createDirectories(tl_jcall *c)
+{
+    const char *p = S(tl_jni_get_field(c->args[0].l, "path", "Ljava/lang/String;").l);
+    mkdirs(p);
+    c->ret = vl(c->args[0].l);
+}
+static void Files_createFile(tl_jcall *c)
+{
+    const char *p = S(tl_jni_get_field(c->args[0].l, "path", "Ljava/lang/String;").l);
+    int fd = open(p, O_CREAT | O_WRONLY, 0644); if (fd >= 0) close(fd);
+    c->ret = vl(c->args[0].l);
+}
+static void Files_readAllLines(tl_jcall *c)
+{
+    const char *p = S(tl_jni_get_field(c->args[0].l, "path", "Ljava/lang/String;").l);
+    jobj *l = make("java/util/ArrayList"); jvec *b = vec_of(l);
+    FILE *f = fopen(p, "r");
+    if (f) {
+        char line[2048];
+        while (fgets(line, sizeof(line), f)) {
+            size_t n = strlen(line);
+            while (n && (line[n - 1] == '\n' || line[n - 1] == '\r')) line[--n] = 0;
+            vec_push(b, STR(line));
+        }
+        fclose(f);
+    }
+    c->ret = vl(l);
+}
+static void Files_lines(tl_jcall *c) { Files_readAllLines(c); }
+static void Files_newInputStream(tl_jcall *c)
+{
+    jobj *s = make("java/io/FileInputStream");
+    tl_jcall t = { .self = s, .cls = NULL, .args = &(jvalue){ .l = new_file(S(tl_jni_get_field(c->args[0].l, "path", "Ljava/lang/String;").l)) } };
+    FIS_init_file(&t);
+    c->ret = vl(s);
+}
+static void Files_newOutputStream(tl_jcall *c)
+{
+    jobj *s = make("java/io/FileOutputStream");
+    jvalue a; a.l = new_file(S(tl_jni_get_field(c->args[0].l, "path", "Ljava/lang/String;").l));
+    tl_jni_call(s, "<init>", "(Ljava/io/File;)V", &a);
+    c->ret = vl(s);
+}
+static void Files_isRegularFile(tl_jcall *c)
+{
+    struct stat st;
+    const char *p = S(tl_jni_get_field(c->args[0].l, "path", "Ljava/lang/String;").l);
+    c->ret = vz(stat(p, &st) == 0 && S_ISREG(st.st_mode));
+}
+static void Files_notExists(tl_jcall *c) { Files_exists(c); c->ret.z = !c->ret.z; }
+static void Files_isReadable(tl_jcall *c) { c->ret = vz(access(S(tl_jni_get_field(c->args[0].l, "path", "Ljava/lang/String;").l), R_OK) == 0); }
+static void Files_isWritable(tl_jcall *c) { c->ret = vz(access(S(tl_jni_get_field(c->args[0].l, "path", "Ljava/lang/String;").l), W_OK) == 0); }
+static void Files_isExecutable(tl_jcall *c) { c->ret = vz(access(S(tl_jni_get_field(c->args[0].l, "path", "Ljava/lang/String;").l), X_OK) == 0); }
+static void Files_isHidden(tl_jcall *c)
+{
+    const char *p = S(tl_jni_get_field(c->args[0].l, "path", "Ljava/lang/String;").l);
+    const char *b = strrchr(p, '/');
+    c->ret = vz(b && b[1] == '.');
+}
+static void Files_getLastModifiedTime(tl_jcall *c)
+{
+    struct stat st;
+    const char *p = S(tl_jni_get_field(c->args[0].l, "path", "Ljava/lang/String;").l);
+    jobj *ft = make("java/nio/file/attribute/FileTime");
+    set_long(ft, "millis", stat(p, &st) == 0 ? (int64_t)st.st_mtime * 1000 : 0);
+    c->ret = vl(ft);
+}
+static void FileTime_toMillis(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "millis", "J"); }
+static void Files_createDirectory(tl_jcall *c)
+{
+    const char *p = S(tl_jni_get_field(c->args[0].l, "path", "Ljava/lang/String;").l);
+    mkdir(p, 0755);
+    c->ret = vl(c->args[0].l);
+}
+static void Files_createSymbolicLink(tl_jcall *c) { c->ret = vl(c->args[0].l); }
+static void Files_createLink(tl_jcall *c) { c->ret = vl(c->args[0].l); }
+static void Files_walkFileTree(tl_jcall *c) { c->ret = vl(c->args[0].l); }
+static void Files_list(tl_jcall *c) { c->ret = vl(make("java/util/stream/Stream")); }
+static void Files_walk(tl_jcall *c) { c->ret = vl(make("java/util/stream/Stream")); }
+static void Files_find(tl_jcall *c) { c->ret = vl(make("java/util/stream/Stream")); }
+static void Files_probeContentType(tl_jcall *c)
+{
+    const char *p = S(tl_jni_get_field(c->args[0].l, "path", "Ljava/lang/String;").l);
+    const char *ext = strrchr(p, '.');
+    const char *t = "application/octet-stream";
+    if (ext) {
+        if (!strcasecmp(ext, ".png")) t = "image/png";
+        else if (!strcasecmp(ext, ".jpg") || !strcasecmp(ext, ".jpeg")) t = "image/jpeg";
+        else if (!strcasecmp(ext, ".gif")) t = "image/gif";
+        else if (!strcasecmp(ext, ".txt")) t = "text/plain";
+        else if (!strcasecmp(ext, ".json")) t = "application/json";
+        else if (!strcasecmp(ext, ".xml")) t = "text/xml";
+        else if (!strcasecmp(ext, ".html")) t = "text/html";
+    }
+    c->ret = vl(STR(t));
+}
+
+/* ============================================================== java.nio */
+
+/* ByteBuffer fields: addr (J), cap (J), pos (I), lim (I), mark (I), order (obj),
+ * array (byte[] for heap buffers), direct (Z). Views (FloatBuffer etc.) hold
+ * their own addr/pos/lim plus esz so get/put index correctly. */
+
+static uint8_t *bb_addr(jobj *o) { return (uint8_t *)(uintptr_t)get_lng(o, "addr"); }
+static int bb_pos(jobj *o) { return get_int(o, "pos"); }
+static int bb_lim(jobj *o) { return get_int(o, "lim") ? get_int(o, "lim") : (int)get_lng(o, "cap"); }
+static bool bb_le(jobj *o)
+{
+    jobj *ord = tl_jni_get_field(o, "order", "Ljava/nio/ByteOrder;").l;
+    if (!ord) return true;
+    return !strcmp(S(tl_jni_get_field(ord, "name", "Ljava/lang/String;").l), "LITTLE_ENDIAN");
+}
+static uint64_t bb_read(jobj *o, int at, int n)
+{
+    uint8_t *p = bb_addr(o);
+    uint64_t v = 0;
+    if (bb_le(o)) { for (int i = n - 1; i >= 0; i--) v = (v << 8) | p[at + i]; }
+    else          { for (int i = 0; i < n; i++) v = (v << 8) | p[at + i]; }
+    return v;
+}
+static void bb_write(jobj *o, int at, uint64_t v, int n)
+{
+    uint8_t *p = bb_addr(o);
+    if (bb_le(o)) { for (int i = 0; i < n; i++) { p[at + i] = (uint8_t)v; v >>= 8; } }
+    else          { for (int i = n - 1; i >= 0; i--) { p[at + i] = (uint8_t)v; v >>= 8; } }
+}
+static jobj *new_bb(uint8_t *addr, int64_t cap, bool direct)
+{
+    jobj *b = make("java/nio/ByteBuffer");
+    set_long(b, "addr", (int64_t)(uintptr_t)addr);
+    set_long(b, "cap", cap);
+    set_int(b, "pos", 0);
+    set_int(b, "lim", (int)cap);
+    set_int(b, "mark", -1);
+    set_bool(b, "direct", direct);
+    jobj *ord = make("java/nio/ByteOrder"); set_str(ord, "name", "LITTLE_ENDIAN");
+    set_obj(b, "order", "Ljava/nio/ByteOrder;", ord);
+    return b;
+}
+static void BB_allocate(tl_jcall *c)
+{
+    int n = c->args[0].i > 0 ? c->args[0].i : 0;
+    jobj *arr = tl_jni_new_prim_array('B', (uint32_t)n);
+    jobj *b = new_bb(arr->arr.data, n, false);
+    set_obj(b, "array", "[B", arr);
+    c->ret = vl(b);
+}
+static void BB_allocateDirect(tl_jcall *c)
+{
+    int n = c->args[0].i > 0 ? c->args[0].i : 0;
+    void *p = calloc(1, (size_t)n);
+    c->ret = vl(new_bb(p, n, true));
+}
+static void BB_wrap(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (!a || a->kind != TL_K_PRIM_ARRAY) { c->ret = vl(NULL); return; }
+    jobj *b = new_bb(a->arr.data, a->arr.len, false);
+    set_obj(b, "array", "[B", a);
+    c->ret = vl(b);
+}
+static void BB_wrap_range(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (!a || a->kind != TL_K_PRIM_ARRAY) { c->ret = vl(NULL); return; }
+    int off = c->args[1].i, len = c->args[2].i;
+    jobj *b = new_bb((uint8_t *)a->arr.data + off, len, false);
+    set_obj(b, "array", "[B", a);
+    set_int(b, "pos", 0);
+    c->ret = vl(b);
+}
+static void BB_get(tl_jcall *c)
+{
+    int pos = bb_pos(c->self);
+    if (pos >= bb_lim(c->self)) { tl_jni_throw("java/nio/BufferUnderflowException", ""); return; }
+    set_int(c->self, "pos", pos + 1);
+    c->ret = vb((int8_t)bb_addr(c->self)[pos]);
+}
+static void BB_get_at(tl_jcall *c)   { c->ret = vb((int8_t)bb_addr(c->self)[c->args[0].i]); }
+static void BB_get_arr(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (!a) return;
+    int pos = bb_pos(c->self), n = (int)a->arr.len;
+    memcpy(a->arr.data, bb_addr(c->self) + pos, (size_t)n);
+    set_int(c->self, "pos", pos + n);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void BB_get_range(tl_jcall *c)
+{
+    jobj *a = c->args[0].l; int off = c->args[1].i, len = c->args[2].i;
+    if (!a) return;
+    int pos = bb_pos(c->self);
+    memcpy((char *)a->arr.data + off, bb_addr(c->self) + pos, (size_t)len);
+    set_int(c->self, "pos", pos + len);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void BB_put_bb(tl_jcall *c)
+{
+    jobj *src = c->args[0].l;
+    if (!src) { c->ret = vl(tl_jni_ref(c->self)); return; }
+    int sp = bb_pos(src), rem = bb_lim(src) - sp, pos = bb_pos(c->self);
+    memcpy(bb_addr(c->self) + pos, bb_addr(src) + sp, (size_t)rem);
+    set_int(src, "pos", sp + rem);
+    set_int(c->self, "pos", pos + rem);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void BB_getChar(tl_jcall *c)   { int p = bb_pos(c->self); set_int(c->self, "pos", p + 2); c->ret = vc((uint16_t)bb_read(c->self, p, 2)); }
+static void BB_getCharAt(tl_jcall *c) { c->ret = vc((uint16_t)bb_read(c->self, c->args[0].i, 2)); }
+static void BB_getShort(tl_jcall *c)   { int p = bb_pos(c->self); set_int(c->self, "pos", p + 2); c->ret = vs((int16_t)bb_read(c->self, p, 2)); }
+static void BB_getShortAt(tl_jcall *c) { c->ret = vs((int16_t)bb_read(c->self, c->args[0].i, 2)); }
+static void BB_getInt(tl_jcall *c)    { int p = bb_pos(c->self); set_int(c->self, "pos", p + 4); c->ret = vi((int32_t)bb_read(c->self, p, 4)); }
+static void BB_getIntAt(tl_jcall *c)  { c->ret = vi((int32_t)bb_read(c->self, c->args[0].i, 4)); }
+static void BB_getLong(tl_jcall *c)   { int p = bb_pos(c->self); set_int(c->self, "pos", p + 8); c->ret = vj((int64_t)bb_read(c->self, p, 8)); }
+static void BB_getLongAt(tl_jcall *c) { c->ret = vj((int64_t)bb_read(c->self, c->args[0].i, 8)); }
+static void BB_getFloat(tl_jcall *c)
+{
+    int p = bb_pos(c->self); set_int(c->self, "pos", p + 4);
+    uint32_t u = (uint32_t)bb_read(c->self, p, 4); float f; memcpy(&f, &u, 4);
+    c->ret = vf(f);
+}
+static void BB_getFloatAt(tl_jcall *c)
+{
+    uint32_t u = (uint32_t)bb_read(c->self, c->args[0].i, 4); float f; memcpy(&f, &u, 4);
+    c->ret = vf(f);
+}
+static void BB_getDouble(tl_jcall *c)
+{
+    int p = bb_pos(c->self); set_int(c->self, "pos", p + 8);
+    uint64_t u = bb_read(c->self, p, 8); double d; memcpy(&d, &u, 8);
+    c->ret = vd(d);
+}
+static void BB_getDoubleAt(tl_jcall *c)
+{
+    uint64_t u = bb_read(c->self, c->args[0].i, 8); double d; memcpy(&d, &u, 8);
+    c->ret = vd(d);
+}
+static void BB_putChar(tl_jcall *c)   { int p = bb_pos(c->self); bb_write(c->self, p, c->args[0].c, 2); set_int(c->self, "pos", p + 2); c->ret = vl(tl_jni_ref(c->self)); }
+static void BB_putShort(tl_jcall *c)  { int p = bb_pos(c->self); bb_write(c->self, p, (uint16_t)c->args[0].s, 2); set_int(c->self, "pos", p + 2); c->ret = vl(tl_jni_ref(c->self)); }
+static void BB_putInt(tl_jcall *c)    { int p = bb_pos(c->self); bb_write(c->self, p, (uint32_t)c->args[0].i, 4); set_int(c->self, "pos", p + 4); c->ret = vl(tl_jni_ref(c->self)); }
+static void BB_putLong(tl_jcall *c)   { int p = bb_pos(c->self); bb_write(c->self, p, (uint64_t)c->args[0].j, 8); set_int(c->self, "pos", p + 8); c->ret = vl(tl_jni_ref(c->self)); }
+static void BB_putFloat(tl_jcall *c)
+{
+    int p = bb_pos(c->self); uint32_t u; float f = c->args[0].f; memcpy(&u, &f, 4);
+    bb_write(c->self, p, u, 4); set_int(c->self, "pos", p + 4);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void BB_putDouble(tl_jcall *c)
+{
+    int p = bb_pos(c->self); uint64_t u; double d = c->args[0].d; memcpy(&u, &d, 8);
+    bb_write(c->self, p, u, 8); set_int(c->self, "pos", p + 8);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void BB_putIntAt(tl_jcall *c)   { bb_write(c->self, c->args[0].i, (uint32_t)c->args[1].i, 4); c->ret = vl(tl_jni_ref(c->self)); }
+static void BB_putLongAt(tl_jcall *c)  { bb_write(c->self, c->args[0].i, (uint64_t)c->args[1].j, 8); c->ret = vl(tl_jni_ref(c->self)); }
+static void BB_putShortAt(tl_jcall *c) { bb_write(c->self, c->args[0].i, (uint16_t)c->args[1].s, 2); c->ret = vl(tl_jni_ref(c->self)); }
+static void BB_putFloatAt(tl_jcall *c)
+{
+    uint32_t u; float f = c->args[1].f; memcpy(&u, &f, 4);
+    bb_write(c->self, c->args[0].i, u, 4); c->ret = vl(tl_jni_ref(c->self));
+}
+static void BB_putDoubleAt(tl_jcall *c)
+{
+    uint64_t u; double d = c->args[1].d; memcpy(&u, &d, 8);
+    bb_write(c->self, c->args[0].i, u, 8); c->ret = vl(tl_jni_ref(c->self));
+}
+static void BB_putCharAt(tl_jcall *c)  { bb_write(c->self, c->args[0].i, c->args[1].c, 2); c->ret = vl(tl_jni_ref(c->self)); }
+static void BB_position(tl_jcall *c)    { c->ret = vi(bb_pos(c->self)); }
+static void BB_setPos(tl_jcall *c)      { set_int(c->self, "pos", c->args[0].i); c->ret = vl(tl_jni_ref(c->self)); }
+static void BB_limit(tl_jcall *c)       { c->ret = vi(bb_lim(c->self)); }
+static void BB_setLimit(tl_jcall *c)    { set_int(c->self, "lim", c->args[0].i); c->ret = vl(tl_jni_ref(c->self)); }
+static void BB_capacity(tl_jcall *c)    { c->ret = vi((int)get_lng(c->self, "cap")); }
+static void BB_remaining(tl_jcall *c)   { c->ret = vi(bb_lim(c->self) - bb_pos(c->self)); }
+static void BB_hasRemaining(tl_jcall *c){ c->ret = vz(bb_pos(c->self) < bb_lim(c->self)); }
+static void BB_clear(tl_jcall *c)       { set_int(c->self, "pos", 0); set_int(c->self, "lim", (int)get_lng(c->self, "cap")); set_int(c->self, "mark", -1); c->ret = vl(tl_jni_ref(c->self)); }
+static void BB_flip(tl_jcall *c)        { set_int(c->self, "lim", bb_pos(c->self)); set_int(c->self, "pos", 0); set_int(c->self, "mark", -1); c->ret = vl(tl_jni_ref(c->self)); }
+static void BB_rewind(tl_jcall *c)      { set_int(c->self, "pos", 0); set_int(c->self, "mark", -1); c->ret = vl(tl_jni_ref(c->self)); }
+static void BB_mark(tl_jcall *c)        { set_int(c->self, "mark", bb_pos(c->self)); c->ret = vl(tl_jni_ref(c->self)); }
+static void BB_reset(tl_jcall *c)       { int m = get_int(c->self, "mark"); if (m >= 0) set_int(c->self, "pos", m); c->ret = vl(tl_jni_ref(c->self)); }
+static void BB_array(tl_jcall *c)
+{
+    jobj *a = tl_jni_get_field(c->self, "array", "[B").l;
+    c->ret = vl(a);
+}
+static void BB_hasArray(tl_jcall *c)    { c->ret = vz(tl_jni_get_field(c->self, "array", "[B").l != NULL); }
+static void BB_isDirect(tl_jcall *c)    { c->ret = tl_jni_get_field(c->self, "direct", "Z"); }
+static void BB_isReadOnly(tl_jcall *c)  { c->ret = vz(false); }
+static void BB_order(tl_jcall *c)       { c->ret = tl_jni_get_field(c->self, "order", "Ljava/nio/ByteOrder;"); }
+static void BB_setOrder(tl_jcall *c)
+{
+    set_obj(c->self, "order", "Ljava/nio/ByteOrder;", c->args[0].l);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void BO_nativeOrder(tl_jcall *c)
+{
+    jobj *o = make("java/nio/ByteOrder"); set_str(o, "name", "LITTLE_ENDIAN");
+    c->ret = vl(o);
+}
+static void BO_toString(tl_jcall *c)    { c->ret = tl_jni_get_field(c->self, "name", "Ljava/lang/String;"); }
+static void BB_slice(tl_jcall *c)
+{
+    int pos = bb_pos(c->self), rem = bb_lim(c->self) - pos;
+    jobj *b = make("java/nio/ByteBuffer");
+    set_long(b, "addr", (int64_t)(uintptr_t)(bb_addr(c->self) + pos));
+    set_long(b, "cap", rem); set_int(b, "pos", 0); set_int(b, "lim", rem); set_int(b, "mark", -1);
+    set_obj(b, "order", "Ljava/nio/ByteOrder;", tl_jni_get_field(c->self, "order", "Ljava/nio/ByteOrder;").l);
+    c->ret = vl(b);
+}
+static void BB_duplicate(tl_jcall *c)
+{
+    jobj *b = make("java/nio/ByteBuffer");
+    set_long(b, "addr", get_lng(c->self, "addr")); set_long(b, "cap", get_lng(c->self, "cap"));
+    set_int(b, "pos", get_int(c->self, "pos")); set_int(b, "lim", bb_lim(c->self)); set_int(b, "mark", -1);
+    set_obj(b, "order", "Ljava/nio/ByteOrder;", tl_jni_get_field(c->self, "order", "Ljava/nio/ByteOrder;").l);
+    jobj *a = tl_jni_get_field(c->self, "array", "[B").l; if (a) set_obj(b, "array", "[B", a);
+    c->ret = vl(b);
+}
+static void BB_asReadOnly(tl_jcall *c)  { BB_duplicate(c); }
+static void BB_compact(tl_jcall *c)
+{
+    int pos = bb_pos(c->self), rem = bb_lim(c->self) - pos;
+    memmove(bb_addr(c->self), bb_addr(c->self) + pos, (size_t)rem);
+    set_int(c->self, "pos", rem); set_int(c->self, "lim", (int)get_lng(c->self, "cap"));
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void BB_arrayOffset(tl_jcall *c)
+{
+    jobj *a = tl_jni_get_field(c->self, "array", "[B").l;
+    c->ret = vi(a ? (int)((uint8_t *)bb_addr(c->self) - (uint8_t *)a->arr.data) : 0);
+}
+static void BB_toString(tl_jcall *c)
+{
+    char b[128]; snprintf(b, sizeof(b), "java.nio.ByteBuffer[pos=%d,lim=%d,cap=%lld]",
+        bb_pos(c->self), bb_lim(c->self), (long long)get_lng(c->self, "cap"));
+    c->ret = vl(STR(b));
+}
+
+/* Typed views share the parent byte buffer's memory; element size in "esz".
+ * Views carry their own pos/lim measured in elements. */
+static jobj *new_view(const char *clsname, jobj *parent, int esz)
+{
+    int pos = bb_pos(parent), rem = bb_lim(parent) - pos;
+    jobj *v = make(clsname);
+    set_long(v, "addr", (int64_t)(uintptr_t)(bb_addr(parent) + pos));
+    set_long(v, "cap", rem / esz);
+    set_int(v, "pos", 0); set_int(v, "lim", rem / esz); set_int(v, "mark", -1);
+    set_int(v, "esz", esz);
+    set_bool(v, "direct", tl_jni_get_field(parent, "direct", "Z").z);
+    set_obj(v, "order", "Ljava/nio/ByteOrder;", tl_jni_get_field(parent, "order", "Ljava/nio/ByteOrder;").l);
+    set_obj(v, "parent", "Ljava/nio/ByteBuffer;", parent);
+    return v;
+}
+static void BB_asFloat(tl_jcall *c)  { c->ret = vl(new_view("java/nio/FloatBuffer", c->self, 4)); }
+static void BB_asInt(tl_jcall *c)    { c->ret = vl(new_view("java/nio/IntBuffer", c->self, 4)); }
+static void BB_asShort(tl_jcall *c)  { c->ret = vl(new_view("java/nio/ShortBuffer", c->self, 2)); }
+static void BB_asLong(tl_jcall *c)   { c->ret = vl(new_view("java/nio/LongBuffer", c->self, 8)); }
+static void BB_asDouble(tl_jcall *c) { c->ret = vl(new_view("java/nio/DoubleBuffer", c->self, 8)); }
+static void BB_asChar(tl_jcall *c)   { c->ret = vl(new_view("java/nio/CharBuffer", c->self, 2)); }
+
+static int vb_pos(jobj *v) { return get_int(v, "pos"); }
+static int vb_lim(jobj *v) { int l = get_int(v, "lim"); return l ? l : (int)get_lng(v, "cap"); }
+static int vb_esz(jobj *v) { int e = get_int(v, "esz"); return e ? e : 4; }
+static uint8_t *vb_base(jobj *v) { return (uint8_t *)(uintptr_t)get_lng(v, "addr"); }
+
+static void VB_get_float(tl_jcall *c)
+{
+    int p = vb_pos(c->self); set_int(c->self, "pos", p + 1);
+    uint32_t u; memcpy(&u, vb_base(c->self) + p * vb_esz(c->self), 4); float f; memcpy(&f, &u, 4);
+    c->ret = vf(f);
+}
+static void VB_get_floatAt(tl_jcall *c)
+{
+    uint32_t u; memcpy(&u, vb_base(c->self) + c->args[0].i * vb_esz(c->self), 4); float f; memcpy(&f, &u, 4);
+    c->ret = vf(f);
+}
+static void VB_put_float(tl_jcall *c)
+{
+    int p = vb_pos(c->self); set_int(c->self, "pos", p + 1);
+    float f = c->args[0].f; memcpy(vb_base(c->self) + p * vb_esz(c->self), &f, 4);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void VB_put_floatAt(tl_jcall *c)
+{
+    float f = c->args[1].f; memcpy(vb_base(c->self) + c->args[0].i * vb_esz(c->self), &f, 4);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void VB_get_floatArr(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (!a) return;
+    int p = vb_pos(c->self), n = (int)a->arr.len;
+    for (int i = 0; i < n; i++) memcpy((char *)a->arr.data + i * 4, vb_base(c->self) + (p + i) * vb_esz(c->self), 4);
+    set_int(c->self, "pos", p + n);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void VB_put_floatArr(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (!a) { c->ret = vl(tl_jni_ref(c->self)); return; }
+    int p = vb_pos(c->self), n = (int)a->arr.len;
+    for (int i = 0; i < n; i++) memcpy(vb_base(c->self) + (p + i) * vb_esz(c->self), (char *)a->arr.data + i * 4, 4);
+    set_int(c->self, "pos", p + n);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void VB_get_int(tl_jcall *c)
+{
+    int p = vb_pos(c->self); set_int(c->self, "pos", p + 1);
+    int32_t v; memcpy(&v, vb_base(c->self) + p * vb_esz(c->self), 4); c->ret = vi(v);
+}
+static void VB_get_intAt(tl_jcall *c)
+{
+    int32_t v; memcpy(&v, vb_base(c->self) + c->args[0].i * vb_esz(c->self), 4); c->ret = vi(v);
+}
+static void VB_put_int(tl_jcall *c)
+{
+    int p = vb_pos(c->self); set_int(c->self, "pos", p + 1);
+    int32_t v = c->args[0].i; memcpy(vb_base(c->self) + p * vb_esz(c->self), &v, 4);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void VB_put_intAt(tl_jcall *c)
+{
+    int32_t v = c->args[1].i; memcpy(vb_base(c->self) + c->args[0].i * vb_esz(c->self), &v, 4);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void VB_get_intArr(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (!a) return;
+    int p = vb_pos(c->self), n = (int)a->arr.len;
+    for (int i = 0; i < n; i++) memcpy((char *)a->arr.data + i * 4, vb_base(c->self) + (p + i) * vb_esz(c->self), 4);
+    set_int(c->self, "pos", p + n);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void VB_put_intArr(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (!a) { c->ret = vl(tl_jni_ref(c->self)); return; }
+    int p = vb_pos(c->self), n = (int)a->arr.len;
+    for (int i = 0; i < n; i++) memcpy(vb_base(c->self) + (p + i) * vb_esz(c->self), (char *)a->arr.data + i * 4, 4);
+    set_int(c->self, "pos", p + n);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void VB_get_short(tl_jcall *c)
+{
+    int p = vb_pos(c->self); set_int(c->self, "pos", p + 1);
+    int16_t v; memcpy(&v, vb_base(c->self) + p * 2, 2); c->ret = vs(v);
+}
+static void VB_get_shortAt(tl_jcall *c)
+{
+    int16_t v; memcpy(&v, vb_base(c->self) + c->args[0].i * 2, 2); c->ret = vs(v);
+}
+static void VB_put_short(tl_jcall *c)
+{
+    int p = vb_pos(c->self); set_int(c->self, "pos", p + 1);
+    int16_t v = (int16_t)c->args[0].s; memcpy(vb_base(c->self) + p * 2, &v, 2);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void VB_put_shortAt(tl_jcall *c)
+{
+    int16_t v = (int16_t)c->args[1].s; memcpy(vb_base(c->self) + c->args[0].i * 2, &v, 2);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void VB_get_long(tl_jcall *c)
+{
+    int p = vb_pos(c->self); set_int(c->self, "pos", p + 1);
+    int64_t v; memcpy(&v, vb_base(c->self) + p * 8, 8); c->ret = vj(v);
+}
+static void VB_get_longAt(tl_jcall *c)
+{
+    int64_t v; memcpy(&v, vb_base(c->self) + c->args[0].i * 8, 8); c->ret = vj(v);
+}
+static void VB_put_long(tl_jcall *c)
+{
+    int p = vb_pos(c->self); set_int(c->self, "pos", p + 1);
+    int64_t v = c->args[0].j; memcpy(vb_base(c->self) + p * 8, &v, 8);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void VB_put_longAt(tl_jcall *c)
+{
+    int64_t v = c->args[1].j; memcpy(vb_base(c->self) + c->args[0].i * 8, &v, 8);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void VB_get_double(tl_jcall *c)
+{
+    int p = vb_pos(c->self); set_int(c->self, "pos", p + 1);
+    double v; memcpy(&v, vb_base(c->self) + p * 8, 8); c->ret = vd(v);
+}
+static void VB_get_doubleAt(tl_jcall *c)
+{
+    double v; memcpy(&v, vb_base(c->self) + c->args[0].i * 8, 8); c->ret = vd(v);
+}
+static void VB_put_double(tl_jcall *c)
+{
+    int p = vb_pos(c->self); set_int(c->self, "pos", p + 1);
+    double v = c->args[0].d; memcpy(vb_base(c->self) + p * 8, &v, 8);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void VB_put_doubleAt(tl_jcall *c)
+{
+    double v = c->args[1].d; memcpy(vb_base(c->self) + c->args[0].i * 8, &v, 8);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void VB_get_char(tl_jcall *c)
+{
+    int p = vb_pos(c->self); set_int(c->self, "pos", p + 1);
+    uint16_t v; memcpy(&v, vb_base(c->self) + p * 2, 2); c->ret = vc(v);
+}
+static void VB_get_charAt(tl_jcall *c)
+{
+    uint16_t v; memcpy(&v, vb_base(c->self) + c->args[0].i * 2, 2); c->ret = vc(v);
+}
+static void VB_put_char(tl_jcall *c)
+{
+    int p = vb_pos(c->self); set_int(c->self, "pos", p + 1);
+    uint16_t v = c->args[0].c; memcpy(vb_base(c->self) + p * 2, &v, 2);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void VB_put_charAt(tl_jcall *c)
+{
+    uint16_t v = c->args[1].c; memcpy(vb_base(c->self) + c->args[0].i * 2, &v, 2);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void VB_position(tl_jcall *c)    { c->ret = vi(vb_pos(c->self)); }
+static void VB_setPos(tl_jcall *c)      { set_int(c->self, "pos", c->args[0].i); c->ret = vl(tl_jni_ref(c->self)); }
+static void VB_limit(tl_jcall *c)       { c->ret = vi(vb_lim(c->self)); }
+static void VB_setLimit(tl_jcall *c)    { set_int(c->self, "lim", c->args[0].i); c->ret = vl(tl_jni_ref(c->self)); }
+static void VB_capacity(tl_jcall *c)    { c->ret = vi((int)get_lng(c->self, "cap")); }
+static void VB_remaining(tl_jcall *c)   { c->ret = vi(vb_lim(c->self) - vb_pos(c->self)); }
+static void VB_hasRemaining(tl_jcall *c){ c->ret = vz(vb_pos(c->self) < vb_lim(c->self)); }
+static void VB_clear(tl_jcall *c)       { set_int(c->self, "pos", 0); set_int(c->self, "lim", (int)get_lng(c->self, "cap")); set_int(c->self, "mark", -1); c->ret = vl(tl_jni_ref(c->self)); }
+static void VB_flip(tl_jcall *c)        { set_int(c->self, "lim", vb_pos(c->self)); set_int(c->self, "pos", 0); set_int(c->self, "mark", -1); c->ret = vl(tl_jni_ref(c->self)); }
+static void VB_rewind(tl_jcall *c)      { set_int(c->self, "pos", 0); set_int(c->self, "mark", -1); c->ret = vl(tl_jni_ref(c->self)); }
+static void VB_mark(tl_jcall *c)        { set_int(c->self, "mark", vb_pos(c->self)); c->ret = vl(tl_jni_ref(c->self)); }
+static void VB_reset(tl_jcall *c)       { int m = get_int(c->self, "mark"); if (m >= 0) set_int(c->self, "pos", m); c->ret = vl(tl_jni_ref(c->self)); }
+static void VB_isDirect(tl_jcall *c)    { c->ret = tl_jni_get_field(c->self, "direct", "Z"); }
+static void VB_isReadOnly(tl_jcall *c)  { c->ret = vz(false); }
+static void VB_hasArray(tl_jcall *c)    { c->ret = vz(tl_jni_get_field(c->self, "array", "[F").l != NULL || tl_jni_get_field(c->self, "array", "[I").l != NULL); }
+static void VB_order(tl_jcall *c)       { c->ret = tl_jni_get_field(c->self, "order", "Ljava/nio/ByteOrder;"); }
+static void VB_duplicate(tl_jcall *c)
+{
+    jobj *v = make(tl_jni_class_name(c->self->cls));
+    set_long(v, "addr", get_lng(c->self, "addr")); set_long(v, "cap", get_lng(c->self, "cap"));
+    set_int(v, "pos", get_int(c->self, "pos")); set_int(v, "lim", vb_lim(c->self)); set_int(v, "mark", -1);
+    set_int(v, "esz", vb_esz(c->self));
+    set_obj(v, "order", "Ljava/nio/ByteOrder;", tl_jni_get_field(c->self, "order", "Ljava/nio/ByteOrder;").l);
+    c->ret = vl(v);
+}
+static void VB_slice(tl_jcall *c)
+{
+    int esz = vb_esz(c->self), pos = vb_pos(c->self), rem = vb_lim(c->self) - pos;
+    jobj *v = make(tl_jni_class_name(c->self->cls));
+    set_long(v, "addr", (int64_t)(uintptr_t)(vb_base(c->self) + (int64_t)pos * esz));
+    set_long(v, "cap", rem); set_int(v, "pos", 0); set_int(v, "lim", rem); set_int(v, "mark", -1);
+    set_int(v, "esz", esz);
+    set_obj(v, "order", "Ljava/nio/ByteOrder;", tl_jni_get_field(c->self, "order", "Ljava/nio/ByteOrder;").l);
+    c->ret = vl(v);
+}
+static void VB_compact(tl_jcall *c)
+{
+    int esz = vb_esz(c->self), pos = vb_pos(c->self), rem = vb_lim(c->self) - pos;
+    memmove(vb_base(c->self), vb_base(c->self) + (int64_t)pos * esz, (size_t)rem * esz);
+    set_int(c->self, "pos", rem); set_int(c->self, "lim", (int)get_lng(c->self, "cap"));
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static jobj *alloc_view(const char *clsname, int n, int esz)
+{
+    void *p = calloc(1, (size_t)n * esz);
+    jobj *v = make(clsname);
+    set_long(v, "addr", (int64_t)(uintptr_t)p);
+    set_long(v, "cap", n); set_int(v, "pos", 0); set_int(v, "lim", n); set_int(v, "mark", -1);
+    set_int(v, "esz", esz); set_bool(v, "direct", true);
+    jobj *ord = make("java/nio/ByteOrder"); set_str(ord, "name", "LITTLE_ENDIAN");
+    set_obj(v, "order", "Ljava/nio/ByteOrder;", ord);
+    return v;
+}
+static void FB_allocate(tl_jcall *c)  { c->ret = vl(alloc_view("java/nio/FloatBuffer", c->args[0].i, 4)); }
+static void IB_allocate(tl_jcall *c)  { c->ret = vl(alloc_view("java/nio/IntBuffer", c->args[0].i, 4)); }
+static void SB_allocate(tl_jcall *c)  { c->ret = vl(alloc_view("java/nio/ShortBuffer", c->args[0].i, 2)); }
+static void LB_allocate(tl_jcall *c)  { c->ret = vl(alloc_view("java/nio/LongBuffer", c->args[0].i, 8)); }
+static void DB_allocate(tl_jcall *c)  { c->ret = vl(alloc_view("java/nio/DoubleBuffer", c->args[0].i, 8)); }
+static void CB_allocate(tl_jcall *c)  { c->ret = vl(alloc_view("java/nio/CharBuffer", c->args[0].i, 2)); }
+static void FB_wrap(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (!a) { c->ret = vl(NULL); return; }
+    jobj *v = alloc_view("java/nio/FloatBuffer", (int)a->arr.len, 4);
+    memcpy(vb_base(v), a->arr.data, a->arr.len * 4);
+    c->ret = vl(v);
+}
+static void IB_wrap(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (!a) { c->ret = vl(NULL); return; }
+    jobj *v = alloc_view("java/nio/IntBuffer", (int)a->arr.len, 4);
+    memcpy(vb_base(v), a->arr.data, a->arr.len * 4);
+    c->ret = vl(v);
+}
+static void SB_wrap(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (!a) { c->ret = vl(NULL); return; }
+    jobj *v = alloc_view("java/nio/ShortBuffer", (int)a->arr.len, 2);
+    memcpy(vb_base(v), a->arr.data, a->arr.len * 2);
+    c->ret = vl(v);
+}
+static void LB_wrap(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (!a) { c->ret = vl(NULL); return; }
+    jobj *v = alloc_view("java/nio/LongBuffer", (int)a->arr.len, 8);
+    memcpy(vb_base(v), a->arr.data, a->arr.len * 8);
+    c->ret = vl(v);
+}
+static void DB_wrap(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (!a) { c->ret = vl(NULL); return; }
+    jobj *v = alloc_view("java/nio/DoubleBuffer", (int)a->arr.len, 8);
+    memcpy(vb_base(v), a->arr.data, a->arr.len * 8);
+    c->ret = vl(v);
+}
+static void CB_wrap(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (!a) { c->ret = vl(NULL); return; }
+    jobj *v = alloc_view("java/nio/CharBuffer", (int)a->arr.len, 2);
+    memcpy(vb_base(v), a->arr.data, a->arr.len * 2);
+    c->ret = vl(v);
+}
+static void VB_toString(tl_jcall *c)
+{
+    char b[128]; snprintf(b, sizeof(b), "%s[pos=%d,lim=%d,cap=%lld]",
+        tl_jni_class_name(c->self->cls), vb_pos(c->self), vb_lim(c->self), (long long)get_lng(c->self, "cap"));
+    c->ret = vl(STR(b));
+}
+
+/* ============================================================== reflection */
+
+/* member->native holds the tl_jmeth*/tl_jfield* — invoke dispatches through
+ * tl_jni_invoke which routes to HLE fn or the interpreter (m->dvm). */
+static tl_jmeth *meth_of(jobj *member) { return member ? member->native : NULL; }
+static tl_jfield *fld_of(jobj *member) { return member ? member->native : NULL; }
+
+/* Unpack the Object[] varargs into a jvalue array, unboxing per argk. */
+static jvalue *unpack_args(tl_jmeth *m, jobj *arr, jobj **refs)
+{
+    int n = m ? m->nargs : 0;
+    jvalue *a = calloc(n ? n : 1, sizeof(jvalue));
+    for (int i = 0; i < n; i++) {
+        jobj *o = (arr && arr->kind == TL_K_OBJ_ARRAY && i < (int)arr->oarr.len) ? arr->oarr.v[i] : NULL;
+        if (m->argk[i] == 'L') { a[i].l = o; if (refs) refs[i] = o; }
+        else                    a[i] = unbox_as(o, m->argk[i]);
+    }
+    return a;
+}
+
+static void Method_invoke(tl_jcall *c)
+{
+    tl_jmeth *m = meth_of(c->self);
+    if (!m) { tl_jni_throw("java/lang/NullPointerException", "no method"); return; }
+    if (!m->exists || (!m->fn && !m->dvm)) {
+        tl_jni_throw("java/lang/reflect/InvocationTargetException", "method not implemented");
+        return;
+    }
+    jobj *arr = c->args[1].l;
+    jvalue *a = unpack_args(m, arr, NULL);
+    jvalue r = tl_jni_invoke(c->args[0].l, m, false, a);
+    free(a);
+    if (tl_jni_pending()) { tl_jni_throw("java/lang/reflect/InvocationTargetException", "callee threw"); return; }
+    c->ret = vl(m->retk == 'V' ? NULL : m->retk == 'L' ? r.l : box_for(m->retk, r));
+}
+
+static void Ctor_newInstance(tl_jcall *c)
+{
+    tl_jmeth *m = meth_of(c->self);
+    if (!m) { tl_jni_throw("java/lang/NullPointerException", "no constructor"); return; }
+    jobj *o = tl_jni_new_object(m->cls);
+    if (!o) { tl_jni_throw("java/lang/InstantiationException", m->cls->name); return; }
+    jvalue *a = unpack_args(m, c->args[0].l, NULL);
+    tl_jni_invoke(o, m, true, a);
+    free(a);
+    if (tl_jni_pending()) { tl_jni_throw("java/lang/reflect/InvocationTargetException", "ctor threw"); return; }
+    c->ret = vl(o);
+}
+
+static void Method_getName(tl_jcall *c)
+{
+    tl_jmeth *m = meth_of(c->self);
+    c->ret = vl(STR(m ? m->name : "?"));
+}
+static void Method_getReturnType(tl_jcall *c)
+{
+    tl_jmeth *m = meth_of(c->self);
+    static const struct { char k; const char *n; } prim[] = {
+        {'V',"void"},{'Z',"boolean"},{'B',"byte"},{'C',"char"},{'S',"short"},
+        {'I',"int"},{'J',"long"},{'F',"float"},{'D',"double"}
+    };
+    if (!m) { c->ret = vl(NULL); return; }
+    if (m->retk == 'L') {
+        /* extract class name from sig return part */
+        const char *r = strchr(m->sig, ')');
+        char buf[256] = "java/lang/Object";
+        if (r && r[1] == 'L') { snprintf(buf, sizeof(buf), "%s", r + 2); char *s = strchr(buf, ';'); if (s) *s = 0; }
+        else if (r && r[1] == '[') snprintf(buf, sizeof(buf), "java/lang/Object");
+        jobj *mirror = m->cls && m->cls->mirror ? tl_jni_ref(m->cls->mirror) : NULL;
+        /* return the declaring class mirror as a stand-in for object returns */
+        c->ret = vl(mirror);
+        (void)buf;
+        return;
+    }
+    for (size_t i = 0; i < sizeof(prim) / sizeof(prim[0]); i++)
+        if (prim[i].k == m->retk) {
+            jobj *mirror = m->cls ? m->cls->mirror : NULL;
+            c->ret = vl(mirror ? tl_jni_ref(mirror) : NULL);
+            return;
+        }
+    c->ret = vl(NULL);
+}
+static void Method_getParameterTypes(tl_jcall *c)
+{
+    tl_jmeth *m = meth_of(c->self);
+    int n = m ? m->nargs : 0;
+    jobj *arr = tl_jni_new_obj_array(C("java/lang/Class"), (uint32_t)n);
+    jobj **p = arr->oarr.v;
+    for (int i = 0; i < n; i++)
+        p[i] = (m->argk[i] == 'L' && m->cls && m->cls->mirror) ? tl_jni_ref(m->cls->mirror) : NULL;
+    c->ret = vl(arr);
+}
+static void Method_getModifiers(tl_jcall *c)
+{
+    tl_jmeth *m = meth_of(c->self);
+    int mod = 0x0001; /* public */
+    if (m && m->is_static) mod |= 0x0008;
+    c->ret = vi(mod);
+}
+static void Method_toString(tl_jcall *c)
+{
+    tl_jmeth *m = meth_of(c->self);
+    char buf[512];
+    snprintf(buf, sizeof(buf), "%s.%s%s",
+        m && m->cls ? m->cls->name : "?", m ? m->name : "?", m ? m->sig : "");
+    c->ret = vl(STR(buf));
+}
+static void Method_getDeclaringClass(tl_jcall *c)
+{
+    tl_jmeth *m = meth_of(c->self);
+    c->ret = vl(m && m->cls && m->cls->mirror ? tl_jni_ref(m->cls->mirror) : NULL);
+}
+static void Member_isSynthetic(tl_jcall *c) { c->ret = vz(false); }
+static void AO_isAccessible(tl_jcall *c)    { c->ret = vz(true); }
+static void AO_setAccessible(tl_jcall *c)   { (void)c; }
+static void AO_setAccessibleStatic(tl_jcall *c) { (void)c; }
+static void AO_isAnnotationPresent(tl_jcall *c) { c->ret = vz(false); }
+static void AO_getAnnotation(tl_jcall *c)   { c->ret = vl(NULL); }
+static void AO_getAnnotations(tl_jcall *c)  { c->ret = vl(tl_jni_new_obj_array(C("java/lang/annotation/Annotation"), 0)); }
+static void AO_getDeclaredAnnotations(tl_jcall *c) { AO_getAnnotations(c); }
+
+/* ---- java.lang.reflect.Field ---- */
+static jvalue *field_val(jobj *member, jobj *obj)
+{
+    tl_jfield *f = fld_of(member);
+    if (!f) return NULL;
+    if (f->is_static) {
+        if (f->cls->nstatics > (int)f->index) return &f->cls->statics[f->index];
+        return &f->dval;
+    }
+    jvalue *slot = tl_jni_field_slot(obj, f);
+    return slot;
+}
+static void Field_get(tl_jcall *c)
+{
+    tl_jfield *f = fld_of(c->self);
+    jvalue *v = field_val(c->self, c->args[0].l);
+    if (!f || !v) { c->ret = vl(NULL); return; }
+    c->ret = vl(f->sig[0] == 'L' || f->sig[0] == '[' ? v->l : box_for(f->sig[0], *v));
+}
+static void Field_set(tl_jcall *c)
+{
+    tl_jfield *f = fld_of(c->self);
+    jvalue *v = field_val(c->self, c->args[0].l);
+    if (!f || !v) return;
+    if (f->sig[0] == 'L' || f->sig[0] == '[') v->l = c->args[1].l;
+    else *v = unbox_as(c->args[1].l, f->sig[0]);
+}
+static void Field_getBoolean(tl_jcall *c) { jvalue *v = field_val(c->self, c->args[0].l); c->ret = v ? *v : vz(false); }
+static void Field_getByte(tl_jcall *c)    { jvalue *v = field_val(c->self, c->args[0].l); c->ret = v ? *v : vb(0); }
+static void Field_getChar(tl_jcall *c)    { jvalue *v = field_val(c->self, c->args[0].l); c->ret = v ? *v : vc(0); }
+static void Field_getShort(tl_jcall *c)   { jvalue *v = field_val(c->self, c->args[0].l); c->ret = v ? *v : vs(0); }
+static void Field_getInt(tl_jcall *c)     { jvalue *v = field_val(c->self, c->args[0].l); c->ret = v ? *v : vi(0); }
+static void Field_getLong(tl_jcall *c)    { jvalue *v = field_val(c->self, c->args[0].l); c->ret = v ? *v : vj(0); }
+static void Field_getFloat(tl_jcall *c)
+{
+    jvalue *v = field_val(c->self, c->args[0].l);
+    if (!v) { c->ret = vf(0); return; }
+    tl_jfield *f = fld_of(c->self);
+    c->ret = vf(f && f->sig[0] == 'D' ? (float)v->d : v->f);
+}
+static void Field_getDouble(tl_jcall *c)
+{
+    jvalue *v = field_val(c->self, c->args[0].l);
+    if (!v) { c->ret = vd(0); return; }
+    tl_jfield *f = fld_of(c->self);
+    c->ret = vd(f && f->sig[0] == 'F' ? v->f : v->d);
+}
+static void Field_setBoolean(tl_jcall *c) { jvalue *v = field_val(c->self, c->args[0].l); if (v) *v = c->args[1]; }
+static void Field_setByte(tl_jcall *c)    { jvalue *v = field_val(c->self, c->args[0].l); if (v) *v = c->args[1]; }
+static void Field_setChar(tl_jcall *c)    { jvalue *v = field_val(c->self, c->args[0].l); if (v) *v = c->args[1]; }
+static void Field_setShort(tl_jcall *c)   { jvalue *v = field_val(c->self, c->args[0].l); if (v) *v = c->args[1]; }
+static void Field_setInt(tl_jcall *c)     { jvalue *v = field_val(c->self, c->args[0].l); if (v) *v = c->args[1]; }
+static void Field_setLong(tl_jcall *c)    { jvalue *v = field_val(c->self, c->args[0].l); if (v) *v = c->args[1]; }
+static void Field_setFloat(tl_jcall *c)   { jvalue *v = field_val(c->self, c->args[0].l); if (v) v->f = c->args[1].f; }
+static void Field_setDouble(tl_jcall *c)  { jvalue *v = field_val(c->self, c->args[0].l); if (v) v->d = c->args[1].d; }
+static void Field_getName(tl_jcall *c)
+{
+    tl_jfield *f = fld_of(c->self);
+    c->ret = vl(STR(f ? f->name : "?"));
+}
+static void Field_getType(tl_jcall *c)
+{
+    tl_jfield *f = fld_of(c->self);
+    jobj *mirror = f && f->cls ? f->cls->mirror : NULL;
+    c->ret = vl(mirror ? tl_jni_ref(mirror) : NULL);
+}
+static void Field_getModifiers(tl_jcall *c)
+{
+    tl_jfield *f = fld_of(c->self);
+    c->ret = vi(0x0001 | (f && f->is_static ? 0x0008 : 0));
+}
+static void Field_toString(tl_jcall *c)
+{
+    tl_jfield *f = fld_of(c->self);
+    char buf[512];
+    snprintf(buf, sizeof(buf), "%s.%s:%s",
+        f && f->cls ? f->cls->name : "?", f ? f->name : "?", f ? f->sig : "");
+    c->ret = vl(STR(buf));
+}
+static void Field_getDeclaringClass(tl_jcall *c)
+{
+    tl_jfield *f = fld_of(c->self);
+    c->ret = vl(f && f->cls && f->cls->mirror ? tl_jni_ref(f->cls->mirror) : NULL);
+}
+static void Field_equals(tl_jcall *c)
+{
+    c->ret = vz(c->self->native == (c->args[0].l ? c->args[0].l->native : NULL));
+}
+static void Method_equals(tl_jcall *c) { Field_equals(c); }
+
+/* ---- java.lang.reflect.Array ---- */
+static void Array_newInstance(tl_jcall *c)
+{
+    jobj *comp = c->args[0].l;
+    int n = c->args[1].i > 0 ? c->args[1].i : 0;
+    /* component mirror -> we cannot reliably recover element class; use Object[] */
+    (void)comp;
+    c->ret = vl(tl_jni_new_obj_array(C("java/lang/Object"), (uint32_t)n));
+}
+static void Array_getLength(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    c->ret = vi(!a ? 0 : a->kind == TL_K_OBJ_ARRAY ? (int)a->oarr.len : (int)a->arr.len);
+}
+static void Array_get(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    int i = c->args[1].i;
+    if (!a || i < 0 || i >= (int)(a->kind == TL_K_OBJ_ARRAY ? a->oarr.len : a->arr.len)) { c->ret = vl(NULL); return; }
+    if (a->kind == TL_K_OBJ_ARRAY) { c->ret = vl(a->oarr.v[i]); return; }
+    /* primitive array: box the element */
+    switch (a->arr.etype) {
+    case 'Z': c->ret = vl(box_bool(((uint8_t *)a->arr.data)[i])); return;
+    case 'B': c->ret = vl(box_byte(((int8_t *)a->arr.data)[i])); return;
+    case 'C': c->ret = vl(box_char(((uint16_t *)a->arr.data)[i])); return;
+    case 'S': c->ret = vl(box_short(((int16_t *)a->arr.data)[i])); return;
+    case 'I': c->ret = vl(box_int(((int32_t *)a->arr.data)[i])); return;
+    case 'J': c->ret = vl(box_long(((int64_t *)a->arr.data)[i])); return;
+    case 'F': c->ret = vl(box_float(((float *)a->arr.data)[i])); return;
+    case 'D': c->ret = vl(box_double(((double *)a->arr.data)[i])); return;
+    }
+    c->ret = vl(NULL);
+}
+static void Array_set(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    int i = c->args[1].i;
+    jobj *o = c->args[2].l;
+    if (!a || i < 0 || i >= (int)(a->kind == TL_K_OBJ_ARRAY ? a->oarr.len : a->arr.len)) return;
+    if (a->kind == TL_K_OBJ_ARRAY) { a->oarr.v[i] = o; return; }
+    if (a->kind != TL_K_PRIM_ARRAY) return;
+    jvalue v = unbox_as(o, a->arr.etype);
+    switch (a->arr.etype) {
+    case 'Z': ((uint8_t *)a->arr.data)[i] = v.z; return;
+    case 'B': ((int8_t *)a->arr.data)[i] = v.b; return;
+    case 'C': ((uint16_t *)a->arr.data)[i] = v.c; return;
+    case 'S': ((int16_t *)a->arr.data)[i] = v.s; return;
+    case 'I': ((int32_t *)a->arr.data)[i] = v.i; return;
+    case 'J': ((int64_t *)a->arr.data)[i] = v.j; return;
+    case 'F': ((float *)a->arr.data)[i] = v.f; return;
+    case 'D': ((double *)a->arr.data)[i] = v.d; return;
+    }
+}
+static void Array_getInt(tl_jcall *c)
+{
+    jobj *a = c->args[0].l; int i = c->args[1].i;
+    c->ret = vi(a && a->kind == TL_K_PRIM_ARRAY && i >= 0 && i < (int)a->arr.len ? ((int32_t *)a->arr.data)[i] : 0);
+}
+static void Array_setInt(tl_jcall *c)
+{
+    jobj *a = c->args[0].l; int i = c->args[1].i;
+    if (a && a->kind == TL_K_PRIM_ARRAY && i >= 0 && i < (int)a->arr.len) ((int32_t *)a->arr.data)[i] = c->args[2].i;
+}
+static void Array_getBoolean(tl_jcall *c)
+{
+    jobj *a = c->args[0].l; int i = c->args[1].i;
+    c->ret = vz(a && a->kind == TL_K_PRIM_ARRAY && i >= 0 && i < (int)a->arr.len && ((uint8_t *)a->arr.data)[i]);
+}
+static void Array_getByte(tl_jcall *c)
+{
+    jobj *a = c->args[0].l; int i = c->args[1].i;
+    c->ret = vb(a && a->kind == TL_K_PRIM_ARRAY && i >= 0 && i < (int)a->arr.len ? ((int8_t *)a->arr.data)[i] : 0);
+}
+static void Array_getLong(tl_jcall *c)
+{
+    jobj *a = c->args[0].l; int i = c->args[1].i;
+    c->ret = vj(a && a->kind == TL_K_PRIM_ARRAY && i >= 0 && i < (int)a->arr.len ? ((int64_t *)a->arr.data)[i] : 0);
+}
+static void Array_getFloat(tl_jcall *c)
+{
+    jobj *a = c->args[0].l; int i = c->args[1].i;
+    c->ret = vf(a && a->kind == TL_K_PRIM_ARRAY && i >= 0 && i < (int)a->arr.len ? ((float *)a->arr.data)[i] : 0);
+}
+static void Array_getDouble(tl_jcall *c)
+{
+    jobj *a = c->args[0].l; int i = c->args[1].i;
+    c->ret = vd(a && a->kind == TL_K_PRIM_ARRAY && i >= 0 && i < (int)a->arr.len ? ((double *)a->arr.data)[i] : 0);
+}
+static void Array_getShort(tl_jcall *c)
+{
+    jobj *a = c->args[0].l; int i = c->args[1].i;
+    c->ret = vs(a && a->kind == TL_K_PRIM_ARRAY && i >= 0 && i < (int)a->arr.len ? ((int16_t *)a->arr.data)[i] : 0);
+}
+static void Array_getChar(tl_jcall *c)
+{
+    jobj *a = c->args[0].l; int i = c->args[1].i;
+    c->ret = vc(a && a->kind == TL_K_PRIM_ARRAY && i >= 0 && i < (int)a->arr.len ? ((uint16_t *)a->arr.data)[i] : 0);
+}
+static void Array_setBoolean(tl_jcall *c) { jobj *a = c->args[0].l; int i = c->args[1].i; if (a && a->kind == TL_K_PRIM_ARRAY && i >= 0 && i < (int)a->arr.len) ((uint8_t *)a->arr.data)[i] = c->args[2].z; }
+static void Array_setByte(tl_jcall *c)    { jobj *a = c->args[0].l; int i = c->args[1].i; if (a && a->kind == TL_K_PRIM_ARRAY && i >= 0 && i < (int)a->arr.len) ((int8_t *)a->arr.data)[i] = c->args[2].b; }
+static void Array_setLong(tl_jcall *c)    { jobj *a = c->args[0].l; int i = c->args[1].i; if (a && a->kind == TL_K_PRIM_ARRAY && i >= 0 && i < (int)a->arr.len) ((int64_t *)a->arr.data)[i] = c->args[2].j; }
+static void Array_setFloat(tl_jcall *c)   { jobj *a = c->args[0].l; int i = c->args[1].i; if (a && a->kind == TL_K_PRIM_ARRAY && i >= 0 && i < (int)a->arr.len) ((float *)a->arr.data)[i] = c->args[2].f; }
+static void Array_setDouble(tl_jcall *c)  { jobj *a = c->args[0].l; int i = c->args[1].i; if (a && a->kind == TL_K_PRIM_ARRAY && i >= 0 && i < (int)a->arr.len) ((double *)a->arr.data)[i] = c->args[2].d; }
+static void Array_setShort(tl_jcall *c)   { jobj *a = c->args[0].l; int i = c->args[1].i; if (a && a->kind == TL_K_PRIM_ARRAY && i >= 0 && i < (int)a->arr.len) ((int16_t *)a->arr.data)[i] = c->args[2].s; }
+static void Array_setChar(tl_jcall *c)    { jobj *a = c->args[0].l; int i = c->args[1].i; if (a && a->kind == TL_K_PRIM_ARRAY && i >= 0 && i < (int)a->arr.len) ((uint16_t *)a->arr.data)[i] = c->args[2].c; }
+
+/* ============================================================== android.util */
+
+/* android.util.Log — every app calls this; route into the host log. */
+static int log_print(int lvl, const char *tag, const char *msg)
+{
+    tl_log_line("android: %c/%s: %s", "VDIWEA"[lvl >= 2 && lvl <= 7 ? lvl - 2 : 4], tag ? tag : "?", msg ? msg : "");
+    return msg ? (int)strlen(msg) : 0;
+}
+static void Log_v(tl_jcall *c) { c->ret = vi(log_print(2, S(c->args[0].l), S(c->args[1].l))); }
+static void Log_d(tl_jcall *c) { c->ret = vi(log_print(3, S(c->args[0].l), S(c->args[1].l))); }
+static void Log_i(tl_jcall *c) { c->ret = vi(log_print(4, S(c->args[0].l), S(c->args[1].l))); }
+static void Log_w(tl_jcall *c) { c->ret = vi(log_print(5, S(c->args[0].l), S(c->args[1].l))); }
+static void Log_e(tl_jcall *c) { c->ret = vi(log_print(6, S(c->args[0].l), S(c->args[1].l))); }
+static void Log_wtf(tl_jcall *c) { c->ret = vi(log_print(7, S(c->args[0].l), S(c->args[1].l))); }
+static void Log_println(tl_jcall *c) { c->ret = vi(log_print(c->args[0].i, S(c->args[1].l), S(c->args[2].l))); }
+static void Log_v_t(tl_jcall *c) { c->ret = vi(log_print(2, S(c->args[0].l), S(c->args[1].l))); }
+static void Log_d_t(tl_jcall *c) { c->ret = vi(log_print(3, S(c->args[0].l), S(c->args[1].l))); }
+static void Log_i_t(tl_jcall *c) { c->ret = vi(log_print(4, S(c->args[0].l), S(c->args[1].l))); }
+static void Log_w_t(tl_jcall *c) { c->ret = vi(log_print(5, S(c->args[0].l), S(c->args[1].l))); }
+static void Log_e_t(tl_jcall *c) { c->ret = vi(log_print(6, S(c->args[0].l), S(c->args[1].l))); }
+static void Log_isLoggable(tl_jcall *c) { c->ret = vz(c->args[1].i >= 3); }
+
+/* android.util.Base64 */
+static const char b64t[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+static void sb_putc(sbuf *b, char ch) { sb_add_n(b, &ch, 1); }
+static char *b64enc(const void *in, size_t n, int flags, size_t *outn)
+{
+    const uint8_t *d = in;
+    sbuf *b = calloc(1, sizeof(sbuf));
+    bool wrap = !(flags & 2 /*NO_WRAP*/), pad = !(flags & 1 /*NO_PADDING*/);
+    const char *alpha = (flags & 8 /*URL_SAFE*/) ?
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_" : b64t;
+    size_t col = 0;
+    for (size_t i = 0; i < n; i += 3) {
+        uint32_t v = d[i] << 16 | (i + 1 < n ? d[i + 1] << 8 : 0) | (i + 2 < n ? d[i + 2] : 0);
+        char q[4] = { alpha[v >> 18], alpha[(v >> 12) & 63],
+                      i + 1 < n ? alpha[(v >> 6) & 63] : '=',
+                      i + 2 < n ? alpha[v & 63] : '=' };
+        int qn = i + 1 < n ? (i + 2 < n ? 4 : 3) : 2;
+        if (pad) { for (int k = 0; k < 4; k++) sb_putc(b, q[k]); }
+        else for (int k = 0; k < qn; k++) sb_putc(b, q[k]);
+        col += pad ? 4 : (size_t)qn;
+        if (wrap && col >= 76) { sb_putc(b, '\r'); sb_putc(b, '\n'); col = 0; }
+    }
+    if (outn) *outn = b->n;
+    char *r = b->p ? b->p : strdup("");
+    free(b);
+    return r;
+}
+static int b64dec_ch(int ch)
+{
+    if (ch >= 'A' && ch <= 'Z') return ch - 'A';
+    if (ch >= 'a' && ch <= 'z') return ch - 'a' + 26;
+    if (ch >= '0' && ch <= '9') return ch - '0' + 52;
+    if (ch == '+' || ch == '-') return 62;
+    if (ch == '/' || ch == '_') return 63;
+    return -1;
+}
+static uint8_t *b64dec(const char *s, size_t sn, size_t *outn)
+{
+    uint8_t *o = malloc(sn * 3 / 4 + 4);
+    size_t n = 0; uint32_t acc = 0; int bits = 0;
+    for (size_t i = 0; i < sn; i++) {
+        int v = b64dec_ch((uint8_t)s[i]);
+        if (v < 0) continue;
+        acc = (acc << 6) | (uint32_t)v; bits += 6;
+        if (bits >= 8) { bits -= 8; o[n++] = (uint8_t)(acc >> bits); }
+    }
+    *outn = n;
+    return o;
+}
+static void B64_encode(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (!a) { c->ret = vl(NULL); return; }
+    size_t n;
+    char *e = b64enc(a->arr.data, a->arr.len, c->args[1].i, &n);
+    jobj *r = tl_jni_new_prim_array('B', (uint32_t)n);
+    memcpy(r->arr.data, e, n);
+    free(e);
+    c->ret = vl(r);
+}
+static void B64_encodeToString(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (!a) { c->ret = vl(NULL); return; }
+    char *e = b64enc(a->arr.data, a->arr.len, c->args[1].i, NULL);
+    c->ret = vl(STR(e)); free(e);
+}
+static void B64_decode(tl_jcall *c)
+{
+    size_t n;
+    uint8_t *d;
+    if (c->args[0].l && c->args[0].l->kind == TL_K_STRING)
+        d = b64dec(S(c->args[0].l), strlen(S(c->args[0].l)), &n);
+    else if (c->args[0].l)
+        d = b64dec(c->args[0].l->arr.data, c->args[0].l->arr.len, &n);
+    else { c->ret = vl(NULL); return; }
+    jobj *r = tl_jni_new_prim_array('B', (uint32_t)n);
+    memcpy(r->arr.data, d, n); free(d);
+    c->ret = vl(r);
+}
+
+/* android.util.TextUtils */
+static void TU_isEmpty(tl_jcall *c) { c->ret = vz(!c->args[0].l || !*S(c->args[0].l)); }
+static void TU_equals(tl_jcall *c)
+{
+    const char *a = c->args[0].l ? S(c->args[0].l) : NULL, *b = c->args[1].l ? S(c->args[1].l) : NULL;
+    c->ret = vz(a == b || (a && b && !strcmp(a, b)));
+}
+static void TU_join(tl_jcall *c)
+{
+    const char *del = S(c->args[0].l);
+    jobj *it = c->args[1].l;
+    sbuf *b = calloc(1, sizeof(sbuf));
+    if (it && it->kind == TL_K_OBJ_ARRAY) {
+        for (uint32_t i = 0; i < it->oarr.len; i++) {
+            if (i) sb_add(b, del);
+            char t[256]; obj_str(it->oarr.v[i], t, sizeof(t)); sb_add(b, t);
+        }
+    } else if (it) {
+        jobj *itor = tl_jni_call(it, "iterator", "()Ljava/util/Iterator;", NULL).l;
+        bool first = true;
+        while (itor && tl_jni_call(itor, "hasNext", "()Z", NULL).z) {
+            if (!first) sb_add(b, del); first = false;
+            char t[256]; obj_str(tl_jni_call(itor, "next", "()Ljava/lang/Object;", NULL).l, t, sizeof(t)); sb_add(b, t);
+        }
+    }
+    c->ret = vl(STR(b->p ? b->p : ""));
+    free(b->p); free(b);
+}
+static void TU_split(tl_jcall *c)
+{
+    const char *s = S(c->args[0].l), *pat = S(c->args[1].l);
+    jvec *v = calloc(1, sizeof(jvec));
+    if (pat && !pat[0]) { vec_push(v, STR(s)); }
+    else {
+        size_t pn = strlen(pat);
+        const char *p = s, *e;
+        while ((e = strstr(p, pat))) {
+            char *t = strndup(p, (size_t)(e - p));
+            vec_push(v, STR(t)); free(t);
+            p = e + pn;
+        }
+        vec_push(v, STR(p));
+    }
+    jobj *arr = tl_jni_new_obj_array(C("java/lang/String"), (uint32_t)v->n);
+    for (int i = 0; i < v->n; i++) arr->oarr.v[i] = v->v[i];
+    free(v->v); free(v);
+    c->ret = vl(arr);
+}
+static void TU_concat(tl_jcall *c)
+{
+    jobj *arr = c->args[0].l;
+    sbuf *b = calloc(1, sizeof(sbuf));
+    if (arr && arr->kind == TL_K_OBJ_ARRAY)
+        for (uint32_t i = 0; i < arr->oarr.len; i++) { char t[512]; obj_str(arr->oarr.v[i], t, sizeof(t)); sb_add(b, t); }
+    c->ret = vl(STR(b->p ? b->p : ""));
+    free(b->p); free(b);
+}
+static void TU_htmlEncode(tl_jcall *c)
+{
+    const char *s = S(c->args[0].l);
+    sbuf *b = calloc(1, sizeof(sbuf));
+    for (; *s; s++) switch (*s) {
+    case '<': sb_add(b, "&lt;"); break;
+    case '>': sb_add(b, "&gt;"); break;
+    case '&': sb_add(b, "&amp;"); break;
+    case '\'': sb_add(b, "&#39;"); break;
+    case '"': sb_add(b, "&quot;"); break;
+    default: sb_putc(b, *s);
+    }
+    c->ret = vl(STR(b->p ? b->p : ""));
+    free(b->p); free(b);
+}
+static void TU_getTrimmedLength(tl_jcall *c)
+{
+    const char *s = S(c->args[0].l);
+    while (*s == ' ' || *s == '\t' || *s == '\n') s++;
+    size_t n = strlen(s);
+    while (n && (s[n-1] == ' ' || s[n-1] == '\t' || s[n-1] == '\n')) n--;
+    c->ret = vi((int)n);
+}
+static void TU_isDigitsOnly(tl_jcall *c)
+{
+    const char *s = S(c->args[0].l);
+    bool d = *s != 0;
+    for (; *s; s++) if (!isdigit((uint8_t)*s)) d = false;
+    c->ret = vz(d);
+}
+static void TU_length(tl_jcall *c) { c->ret = vi(c->args[0].l ? (int)strlen(S(c->args[0].l)) : 0); }
+static void TU_getReverse(tl_jcall *c)
+{
+    const char *s = S(c->args[0].l);
+    size_t n = strlen(s);
+    char *r = malloc(n + 1);
+    for (size_t i = 0; i < n; i++) r[i] = s[n - 1 - i];
+    r[n] = 0; c->ret = vl(STR(r)); free(r);
+}
+static void TU_substring(tl_jcall *c)
+{
+    const char *s = S(c->args[0].l);
+    int a = c->args[1].i, e = c->args[2].i, n = (int)strlen(s);
+    if (a < 0) a = 0; if (e > n) e = n; if (a > e) a = e;
+    char *r = strndup(s + a, (size_t)(e - a));
+    c->ret = vl(STR(r)); free(r);
+}
+
+/* android.util.SparseArray — int->Object map on two parallel jvecs: keys in
+ * iarr->v as int boxes' values; simpler: jvec of Entry objects with int key. */
+typedef struct { int key; jobj *val; } spair;
+typedef struct { spair *v; int n, cap; } sarr;
+static sarr *sa_of(jobj *o)
+{
+    if (!o->native) o->native = calloc(1, sizeof(sarr));
+    return o->native;
+}
+static int sa_find(sarr *a, int key)
+{
+    for (int i = 0; i < a->n; i++) if (a->v[i].key == key) return i;
+    return -1;
+}
+static void sa_put(sarr *a, int key, jobj *val)
+{
+    int i = sa_find(a, key);
+    if (i < 0) {
+        if (a->n == a->cap) a->v = realloc(a->v, (size_t)(a->cap = a->cap ? a->cap * 2 : 8) * sizeof(spair));
+        i = a->n++;
+    }
+    a->v[i].key = key; a->v[i].val = val;
+}
+static void SA_get(tl_jcall *c)
+{
+    sarr *a = sa_of(c->self);
+    int i = sa_find(a, c->args[0].i);
+    c->ret = vl(i >= 0 ? a->v[i].val : NULL);
+}
+static void SA_get_def(tl_jcall *c)
+{
+    sarr *a = sa_of(c->self);
+    int i = sa_find(a, c->args[0].i);
+    c->ret = vl(i >= 0 ? a->v[i].val : c->args[1].l);
+}
+static void SA_put(tl_jcall *c)   { sa_put(sa_of(c->self), c->args[0].i, c->args[1].l); }
+static void SA_append(tl_jcall *c){ sa_put(sa_of(c->self), c->args[0].i, c->args[1].l); }
+static void SA_remove(tl_jcall *c)
+{
+    sarr *a = sa_of(c->self);
+    int i = sa_find(a, c->args[0].i);
+    if (i >= 0) { memmove(&a->v[i], &a->v[i + 1], (size_t)(a->n - i - 1) * sizeof(spair)); a->n--; }
+}
+static void SA_removeAt(tl_jcall *c)
+{
+    sarr *a = sa_of(c->self);
+    int i = c->args[0].i;
+    if (i >= 0 && i < a->n) { memmove(&a->v[i], &a->v[i + 1], (size_t)(a->n - i - 1) * sizeof(spair)); a->n--; }
+}
+static void SA_clear(tl_jcall *c) { sa_of(c->self)->n = 0; }
+static void SA_size(tl_jcall *c)  { c->ret = vi(sa_of(c->self)->n); }
+static void SA_keyAt(tl_jcall *c)
+{
+    sarr *a = sa_of(c->self);
+    c->ret = vi(c->args[0].i >= 0 && c->args[0].i < a->n ? a->v[c->args[0].i].key : 0);
+}
+static void SA_valueAt(tl_jcall *c)
+{
+    sarr *a = sa_of(c->self);
+    c->ret = vl(c->args[0].i >= 0 && c->args[0].i < a->n ? a->v[c->args[0].i].val : NULL);
+}
+static void SA_indexOfKey(tl_jcall *c)   { c->ret = vi(sa_find(sa_of(c->self), c->args[0].i)); }
+static void SA_indexOfValue(tl_jcall *c)
+{
+    sarr *a = sa_of(c->self);
+    int r = -1;
+    for (int i = 0; i < a->n; i++) if (a->v[i].val == c->args[0].l) { r = i; break; }
+    c->ret = vi(r);
+}
+static void SA_setValueAt(tl_jcall *c)
+{
+    sarr *a = sa_of(c->self);
+    if (c->args[0].i >= 0 && c->args[0].i < a->n) a->v[c->args[0].i].val = c->args[1].l;
+}
+
+/* ============================================================== android.os.Bundle */
+
+/* Real key->value store; entries keep the put-time kind letter so getters can
+ * coerce (getInt on a long-put clamps, getString stringifies). */
+typedef struct { char *k; char sig; jvalue v; } bent;
+typedef struct { bent *e; int n, cap; } bmap;
+static bmap *bm_of(jobj *o)
+{
+    if (!o->native) o->native = calloc(1, sizeof(bmap));
+    return o->native;
+}
+static bent *bm_find(bmap *m, const char *k)
+{
+    for (int i = 0; i < m->n; i++) if (!strcmp(m->e[i].k, k)) return &m->e[i];
+    return NULL;
+}
+static void bm_put(bmap *m, const char *k, char sig, jvalue v)
+{
+    bent *e = bm_find(m, k);
+    if (!e) {
+        if (m->n == m->cap) m->e = realloc(m->e, (size_t)(m->cap = m->cap ? m->cap * 2 : 8) * sizeof(bent));
+        e = &m->e[m->n++];
+        e->k = strdup(k);
+    }
+    e->sig = sig; e->v = v;
+}
+static int64_t bm_int(bent *e)
+{
+    if (!e) return 0;
+    switch (e->sig) {
+    case 'F': return (int64_t)e->v.f;
+    case 'D': return (int64_t)e->v.d;
+    case 'L': case '[': return int_of(e->v.l);
+    default:  return e->v.j;
+    }
+}
+static double bm_real(bent *e)
+{
+    if (!e) return 0;
+    switch (e->sig) {
+    case 'F': return e->v.f;
+    case 'D': return e->v.d;
+    case 'L': case '[': return (double)int_of(e->v.l);
+    default:  return (double)e->v.j;
+    }
+}
+static jobj *bm_obj(bent *e)
+{
+    if (!e) return NULL;
+    if (e->sig == 'L' || e->sig == '[') return e->v.l;
+    return box_for(e->sig, e->v);
+}
+static jobj *bm_str(bent *e)
+{
+    if (!e) return NULL;
+    if (e->sig == 'L' || e->sig == '[') return e->v.l;
+    char buf[64];
+    switch (e->sig) {
+    case 'Z': snprintf(buf, 64, "%s", e->v.z ? "true" : "false"); break;
+    case 'I': snprintf(buf, 64, "%d", e->v.i); break;
+    case 'J': snprintf(buf, 64, "%lld", (long long)e->v.j); break;
+    case 'F': snprintf(buf, 64, "%g", (double)e->v.f); break;
+    case 'D': snprintf(buf, 64, "%g", e->v.d); break;
+    default: snprintf(buf, 64, "%lld", (long long)e->v.j);
+    }
+    return STR(buf);
+}
+#define BGET(kind, sigch, dflt) \
+    bent *e = bm_find(bm_of(c->self), S(c->args[0].l)); \
+    c->ret = (e && (e->sig == 'L' || e->sig == '[')) ? e->v.kind : (e ? bm_##kind(e) : c->args[1].kind); \
+    (void)dflt
+
+static void Bundle_get(tl_jcall *c)
+{
+    bent *e = bm_find(bm_of(c->self), S(c->args[0].l));
+    c->ret = vl(e ? bm_obj(e) : c->args[1].l);
+}
+static void Bundle_get_null(tl_jcall *c)
+{
+    bent *e = bm_find(bm_of(c->self), S(c->args[0].l));
+    c->ret = vl(bm_obj(e));
+}
+static void Bundle_put(tl_jcall *c)
+{
+    bm_put(bm_of(c->self), S(c->args[0].l), c->args[1].l && c->args[1].l->kind == TL_K_PRIM_ARRAY ? '[' : 'L', c->args[1]);
+}
+static void Bundle_containsKey(tl_jcall *c) { c->ret = vz(bm_find(bm_of(c->self), S(c->args[0].l)) != NULL); }
+static void Bundle_remove(tl_jcall *c)
+{
+    bmap *m = bm_of(c->self);
+    const char *k = S(c->args[0].l);
+    for (int i = 0; i < m->n; i++)
+        if (!strcmp(m->e[i].k, k)) {
+            free(m->e[i].k);
+            memmove(&m->e[i], &m->e[i + 1], (size_t)(m->n - i - 1) * sizeof(bent));
+            m->n--;
+            return;
+        }
+}
+static void Bundle_clear(tl_jcall *c)
+{
+    bmap *m = bm_of(c->self);
+    for (int i = 0; i < m->n; i++) free(m->e[i].k);
+    m->n = 0;
+}
+static void Bundle_size(tl_jcall *c)   { c->ret = vi(bm_of(c->self)->n); }
+static void Bundle_isEmpty(tl_jcall *c){ c->ret = vz(bm_of(c->self)->n == 0); }
+static void Bundle_keySet(tl_jcall *c)
+{
+    bmap *m = bm_of(c->self);
+    jobj *s = make("java/util/HashSet");
+    jvec *v = vec_of(s);
+    for (int i = 0; i < m->n; i++) vec_push(v, STR(m->e[i].k));
+    c->ret = vl(s);
+}
+static void Bundle_putInt(tl_jcall *c)     { bm_put(bm_of(c->self), S(c->args[0].l), 'I', c->args[1]); }
+static void Bundle_putLong(tl_jcall *c)    { bm_put(bm_of(c->self), S(c->args[0].l), 'J', c->args[1]); }
+static void Bundle_putBool(tl_jcall *c)    { bm_put(bm_of(c->self), S(c->args[0].l), 'Z', c->args[1]); }
+static void Bundle_putByte(tl_jcall *c)    { bm_put(bm_of(c->self), S(c->args[0].l), 'B', c->args[1]); }
+static void Bundle_putChar(tl_jcall *c)    { bm_put(bm_of(c->self), S(c->args[0].l), 'C', c->args[1]); }
+static void Bundle_putShort(tl_jcall *c)   { bm_put(bm_of(c->self), S(c->args[0].l), 'S', c->args[1]); }
+static void Bundle_putFloat(tl_jcall *c)   { bm_put(bm_of(c->self), S(c->args[0].l), 'F', c->args[1]); }
+static void Bundle_putDouble(tl_jcall *c)  { bm_put(bm_of(c->self), S(c->args[0].l), 'D', c->args[1]); }
+static void Bundle_putString(tl_jcall *c)  { bm_put(bm_of(c->self), S(c->args[0].l), 'L', c->args[1]); }
+static void Bundle_putCS(tl_jcall *c)      { bm_put(bm_of(c->self), S(c->args[0].l), 'L', c->args[1]); }
+static void Bundle_putBundle(tl_jcall *c)  { bm_put(bm_of(c->self), S(c->args[0].l), 'L', c->args[1]); }
+static void Bundle_getInt(tl_jcall *c)
+{
+    bent *e = bm_find(bm_of(c->self), S(c->args[0].l));
+    c->ret = vi(e ? (int32_t)bm_int(e) : c->args[1].i);
+}
+static void Bundle_getInt0(tl_jcall *c)
+{
+    bent *e = bm_find(bm_of(c->self), S(c->args[0].l));
+    c->ret = vi(e ? (int32_t)bm_int(e) : 0);
+}
+static void Bundle_getLong(tl_jcall *c)
+{
+    bent *e = bm_find(bm_of(c->self), S(c->args[0].l));
+    c->ret = vj(e ? bm_int(e) : c->args[1].j);
+}
+static void Bundle_getLong0(tl_jcall *c)
+{
+    bent *e = bm_find(bm_of(c->self), S(c->args[0].l));
+    c->ret = vj(e ? bm_int(e) : 0);
+}
+static void Bundle_getBool(tl_jcall *c)
+{
+    bent *e = bm_find(bm_of(c->self), S(c->args[0].l));
+    c->ret = vz(e ? bm_int(e) != 0 : c->args[1].z);
+}
+static void Bundle_getBool0(tl_jcall *c)
+{
+    bent *e = bm_find(bm_of(c->self), S(c->args[0].l));
+    c->ret = vz(e && bm_int(e) != 0);
+}
+static void Bundle_getFloat(tl_jcall *c)
+{
+    bent *e = bm_find(bm_of(c->self), S(c->args[0].l));
+    c->ret = vf(e ? (float)bm_real(e) : c->args[1].f);
+}
+static void Bundle_getDouble(tl_jcall *c)
+{
+    bent *e = bm_find(bm_of(c->self), S(c->args[0].l));
+    c->ret = vd(e ? bm_real(e) : c->args[1].d);
+}
+static void Bundle_getDouble0(tl_jcall *c)
+{
+    bent *e = bm_find(bm_of(c->self), S(c->args[0].l));
+    c->ret = vd(e ? bm_real(e) : 0);
+}
+static void Bundle_getByte(tl_jcall *c)
+{
+    bent *e = bm_find(bm_of(c->self), S(c->args[0].l));
+    c->ret = vb(e ? (int8_t)bm_int(e) : c->args[1].b);
+}
+static void Bundle_getChar(tl_jcall *c)
+{
+    bent *e = bm_find(bm_of(c->self), S(c->args[0].l));
+    c->ret = vc(e ? (uint16_t)bm_int(e) : c->args[1].c);
+}
+static void Bundle_getShort(tl_jcall *c)
+{
+    bent *e = bm_find(bm_of(c->self), S(c->args[0].l));
+    c->ret = vs(e ? (int16_t)bm_int(e) : c->args[1].s);
+}
+static void Bundle_getString(tl_jcall *c)
+{
+    bent *e = bm_find(bm_of(c->self), S(c->args[0].l));
+    jobj *s = bm_str(e);
+    c->ret = vl(s ? s : c->args[1].l);
+}
+static void Bundle_getString0(tl_jcall *c)
+{
+    bent *e = bm_find(bm_of(c->self), S(c->args[0].l));
+    c->ret = vl(bm_str(e));
+}
+static void Bundle_getBundle(tl_jcall *c)
+{
+    bent *e = bm_find(bm_of(c->self), S(c->args[0].l));
+    c->ret = vl(e && e->sig == 'L' ? e->v.l : NULL);
+}
+static void Bundle_putAll(tl_jcall *c)
+{
+    bmap *src = bm_of(c->args[0].l), *dst = bm_of(c->self);
+    for (int i = 0; i < src->n; i++) bm_put(dst, src->e[i].k, src->e[i].sig, src->e[i].v);
+}
+static void Bundle_getParcelable(tl_jcall *c)  { Bundle_getBundle(c); }
+static void Bundle_getSerializable(tl_jcall *c){ Bundle_getBundle(c); }
+static void Bundle_getCharSeq(tl_jcall *c)     { Bundle_getString0(c); }
+static void Bundle_putParcelable(tl_jcall *c)  { Bundle_putString(c); }
+static void Bundle_putSerializable(tl_jcall *c){ Bundle_putString(c); }
+static void Bundle_getStringArr(tl_jcall *c)   { Bundle_getBundle(c); }
+static void Bundle_putStringArr(tl_jcall *c)   { Bundle_putString(c); }
+static void Bundle_toString(tl_jcall *c)
+{
+    bmap *m = bm_of(c->self);
+    sbuf *b = calloc(1, sizeof(sbuf));
+    sb_add(b, "Bundle[{");
+    for (int i = 0; i < m->n; i++) {
+        if (i) sb_add(b, ", ");
+        sb_add(b, m->e[i].k);
+        sb_add(b, "=");
+        char t[128]; obj_str(bm_obj(&m->e[i]), t, sizeof(t)); sb_add(b, t);
+    }
+    sb_add(b, "}]");
+    c->ret = vl(STR(b->p ? b->p : ""));
+    free(b->p); free(b);
+}
+static void Bundle_clone(tl_jcall *c)
+{
+    jobj *nb = make("android/os/Bundle");
+    bmap *src = bm_of(c->self), *dst = bm_of(nb);
+    for (int i = 0; i < src->n; i++) bm_put(dst, src->e[i].k, src->e[i].sig, src->e[i].v);
+    c->ret = vl(nb);
+}
+static void Bundle_getIntArr(tl_jcall *c)   { Bundle_getBundle(c); }
+static void Bundle_putIntArr(tl_jcall *c)   { Bundle_putString(c); }
+static void Bundle_getByteArr(tl_jcall *c)  { Bundle_getBundle(c); }
+static void Bundle_putByteArr(tl_jcall *c)  { Bundle_putString(c); }
+static void Bundle_putStringArrList(tl_jcall *c) { Bundle_putString(c); }
+static void Bundle_getStringArrList(tl_jcall *c) { Bundle_getBundle(c); }
+static void Bundle_putIntArrList(tl_jcall *c)    { Bundle_putString(c); }
+static void Bundle_getIntArrList(tl_jcall *c)    { Bundle_getBundle(c); }
+static void Bundle_describeContents(tl_jcall *c) { c->ret = vi(0); }
+static void Bundle_writeToParcel(tl_jcall *c)    { (void)c; }
+
+/* ============================================================== android.content.Intent */
+
+/* Intent keeps its state in fields: action/type Strings, data Uri, component,
+ * flags int, categories HashSet, and an extras Bundle (created on demand). */
+static jobj *intent_extras(jobj *o)
+{
+    jobj *b = tl_jni_get_field(o, "extras", "Landroid/os/Bundle;").l;
+    if (!b) { b = make("android/os/Bundle"); tl_jni_set_field(o, "extras", "Landroid/os/Bundle;", vl(b)); }
+    return b;
+}
+static void Intent_init(tl_jcall *c)        { (void)c; }
+static void Intent_init_action(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "action", "Ljava/lang/String;", c->args[0]);
+}
+static void Intent_init_ctx(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "package", "Ljava/lang/String;", c->args[0]);
+}
+static void Intent_init_cls(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "package", "Ljava/lang/String;", c->args[0]);
+    tl_jni_set_field(c->self, "className", "Ljava/lang/String;", c->args[1]);
+}
+static void Intent_init_other(tl_jcall *c)
+{
+    /* copy constructor */
+    jobj *src = c->args[0].l;
+    if (!src) return;
+    static const char *fs[] = { "action", "type", "package", "className" };
+    for (int i = 0; i < 4; i++) {
+        jvalue v = tl_jni_get_field(src, fs[i], "Ljava/lang/String;");
+        if (v.l) tl_jni_set_field(c->self, fs[i], "Ljava/lang/String;", v);
+    }
+    tl_jni_set_field(c->self, "data", "Landroid/net/Uri;", tl_jni_get_field(src, "data", "Landroid/net/Uri;"));
+    tl_jni_set_field(c->self, "flags", "I", tl_jni_get_field(src, "flags", "I"));
+    jvalue b = tl_jni_get_field(src, "extras", "Landroid/os/Bundle;");
+    if (b.l) {
+        jobj *nb = make("android/os/Bundle");
+        bmap *sm = bm_of(b.l), *dm = bm_of(nb);
+        for (int i = 0; i < sm->n; i++) bm_put(dm, sm->e[i].k, sm->e[i].sig, sm->e[i].v);
+        tl_jni_set_field(c->self, "extras", "Landroid/os/Bundle;", vl(nb));
+    }
+}
+static void Intent_getAction(tl_jcall *c)     { c->ret = tl_jni_get_field(c->self, "action", "Ljava/lang/String;"); }
+static void Intent_setAction(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "action", "Ljava/lang/String;", c->args[0]);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void Intent_getData(tl_jcall *c)       { c->ret = tl_jni_get_field(c->self, "data", "Landroid/net/Uri;"); }
+static void Intent_getDataString(tl_jcall *c)
+{
+    jobj *u = tl_jni_get_field(c->self, "data", "Landroid/net/Uri;").l;
+    c->ret = vl(u ? tl_jni_get_field(u, "uri", "Ljava/lang/String;").l : NULL);
+}
+static void Intent_setData(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "data", "Landroid/net/Uri;", c->args[0]);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void Intent_setDataAndType(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "data", "Landroid/net/Uri;", c->args[0]);
+    tl_jni_set_field(c->self, "type", "Ljava/lang/String;", c->args[1]);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void Intent_getType(tl_jcall *c)       { c->ret = tl_jni_get_field(c->self, "type", "Ljava/lang/String;"); }
+static void Intent_setType(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "type", "Ljava/lang/String;", c->args[0]);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void Intent_getFlags(tl_jcall *c)      { c->ret = vi(get_int(c->self, "flags")); }
+static void Intent_setFlags(tl_jcall *c)
+{
+    set_int(c->self, "flags", c->args[0].i);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void Intent_addFlags(tl_jcall *c)
+{
+    set_int(c->self, "flags", get_int(c->self, "flags") | c->args[0].i);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void Intent_getPackage(tl_jcall *c)    { c->ret = tl_jni_get_field(c->self, "package", "Ljava/lang/String;"); }
+static void Intent_setPackage(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "package", "Ljava/lang/String;", c->args[0]);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void Intent_getComponent(tl_jcall *c)  { c->ret = tl_jni_get_field(c->self, "component", "Landroid/content/ComponentName;"); }
+static void Intent_setComponent(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "component", "Landroid/content/ComponentName;", c->args[0]);
+    jobj *cn = c->args[0].l;
+    if (cn) {
+        tl_jni_set_field(c->self, "package", "Ljava/lang/String;", tl_jni_get_field(cn, "pkg", "Ljava/lang/String;"));
+        tl_jni_set_field(c->self, "className", "Ljava/lang/String;", tl_jni_get_field(cn, "cls", "Ljava/lang/String;"));
+    }
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void Intent_setClass(tl_jcall *c)
+{
+    Intent_init_ctx(c);
+    jvalue n = tl_jni_call(c->args[1].l, "getCanonicalName", "()Ljava/lang/String;", NULL);
+    if (!n.l) n = tl_jni_call(c->args[1].l, "getName", "()Ljava/lang/String;", NULL);
+    tl_jni_set_field(c->self, "className", "Ljava/lang/String;", n);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void Intent_setClassName(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "package", "Ljava/lang/String;", c->args[0]);
+    tl_jni_set_field(c->self, "className", "Ljava/lang/String;", c->args[1]);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void Intent_getExtras(tl_jcall *c)     { c->ret = vl(intent_extras(c->self)); }
+static void Intent_hasExtra(tl_jcall *c)
+{
+    jobj *b = tl_jni_get_field(c->self, "extras", "Landroid/os/Bundle;").l;
+    c->ret = vz(b && bm_find(bm_of(b), S(c->args[0].l)));
+}
+static void Intent_removeExtra(tl_jcall *c)
+{
+    jobj *b = tl_jni_get_field(c->self, "extras", "Landroid/os/Bundle;").l;
+    if (b) { tl_jcall t = { .self = b, .cls = NULL, .args = c->args }; Bundle_remove(&t); }
+}
+static void Intent_replaceExtras(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "extras", "Landroid/os/Bundle;", c->args[0]);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void Intent_putExtras(tl_jcall *c)
+{
+    /* putExtras(Intent) merges, putExtras(Bundle) copies */
+    jobj *o = c->args[0].l;
+    bmap *src = NULL;
+    if (o && !strcmp(tl_jni_class_name(o), "android/content/Intent"))
+        src = bm_of(intent_extras(o));
+    else if (o)
+        src = bm_of(o);
+    if (!src) { c->ret = vl(tl_jni_ref(c->self)); return; }
+    bmap *dst = bm_of(intent_extras(c->self));
+    for (int i = 0; i < src->n; i++) bm_put(dst, src->e[i].k, src->e[i].sig, src->e[i].v);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+
+#define IX_PUT(SUFFIX, KIND) \
+static void Intent_putExtra_##SUFFIX(tl_jcall *c) \
+{ \
+    bm_put(bm_of(intent_extras(c->self)), S(c->args[0].l), KIND, c->args[1]); \
+    c->ret = vl(tl_jni_ref(c->self)); \
+}
+IX_PUT(s, 'L') IX_PUT(i, 'I') IX_PUT(j, 'J') IX_PUT(z, 'Z')
+IX_PUT(f, 'F') IX_PUT(d, 'D') IX_PUT(b, 'B') IX_PUT(c, 'C') IX_PUT(h, 'S')
+
+#define IX_GET(SUFFIX, FIELD, EXPR, DEF) \
+static void Intent_getExtra_##SUFFIX(tl_jcall *c) \
+{ \
+    bent *e = bm_find(bm_of(intent_extras(c->self)), S(c->args[0].l)); \
+    c->ret = e ? (EXPR) : DEF; \
+}
+IX_GET(s, l, e->v.l, c->args[1].l)
+IX_GET(i, i, (int32_t)bm_int(e), c->args[1].i)
+IX_GET(j, j, bm_int(e), c->args[1].j)
+IX_GET(z, z, bm_int(e) != 0, c->args[1].z)
+IX_GET(f, f, (float)bm_real(e), c->args[1].f)
+IX_GET(d, d, bm_real(e), c->args[1].d)
+IX_GET(b, b, (int8_t)bm_int(e), c->args[1].b)
+IX_GET(c, c, (uint16_t)bm_int(e), c->args[1].c)
+IX_GET(h, s, (int16_t)bm_int(e), c->args[1].s)
+
+#define IX_GET0(SUFFIX, EXPR, DEFV) \
+static void Intent_getExtra0_##SUFFIX(tl_jcall *c) \
+{ \
+    bent *e = bm_find(bm_of(intent_extras(c->self)), S(c->args[0].l)); \
+    c->ret = e ? (EXPR) : DEFV; \
+}
+IX_GET0(i, (int32_t)bm_int(e), vi(0))
+IX_GET0(j, bm_int(e), vj(0))
+IX_GET0(z, bm_int(e) != 0, vz(false))
+IX_GET0(f, (float)bm_real(e), vf(0))
+IX_GET0(d, bm_real(e), vd(0))
+IX_GET0(b, (int8_t)bm_int(e), vb(0))
+IX_GET0(c, (uint16_t)bm_int(e), vc(0))
+IX_GET0(h, (int16_t)bm_int(e), vs(0))
+
+static void Intent_addCategory(tl_jcall *c)
+{
+    jobj *cats = tl_jni_get_field(c->self, "categories", "Ljava/util/Set;").l;
+    if (!cats) {
+        cats = make("java/util/HashSet");
+        tl_jni_set_field(c->self, "categories", "Ljava/util/Set;", vl(cats));
+    }
+    vec_push(vec_of(cats), c->args[0].l);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void Intent_hasCategory(tl_jcall *c)
+{
+    jobj *cats = tl_jni_get_field(c->self, "categories", "Ljava/util/Set;").l;
+    if (!cats) { c->ret = vz(false); return; }
+    jvec *v = vec_of(cats);
+    bool f = false;
+    for (int i = 0; i < v->n; i++)
+        if (v->v[i] && c->args[0].l && !strcmp(S(v->v[i]), S(c->args[0].l))) f = true;
+    c->ret = vz(f);
+}
+static void Intent_getCategories(tl_jcall *c)
+{
+    c->ret = tl_jni_get_field(c->self, "categories", "Ljava/util/Set;");
+}
+static void Intent_toURI(tl_jcall *c)
+{
+    sbuf *b = calloc(1, sizeof(sbuf));
+    jobj *a = tl_jni_get_field(c->self, "action", "Ljava/lang/String;").l;
+    sb_add(b, "#Intent;");
+    if (a) { sb_add(b, "action="); sb_add(b, S(a)); sb_add(b, ";"); }
+    jobj *p = tl_jni_get_field(c->self, "package", "Ljava/lang/String;").l;
+    if (p) { sb_add(b, "package="); sb_add(b, S(p)); sb_add(b, ";"); }
+    jobj *cn = tl_jni_get_field(c->self, "className", "Ljava/lang/String;").l;
+    if (cn) { sb_add(b, "component="); sb_add(b, S(cn)); sb_add(b, ";"); }
+    sb_add(b, "end");
+    c->ret = vl(STR(b->p ? b->p : ""));
+    free(b->p); free(b);
+}
+static void Intent_toString(tl_jcall *c) { Intent_toURI(c); }
+static void Intent_createChooser(tl_jcall *c)
+{
+    jobj *ch = make("android/content/Intent");
+    tl_jni_set_field(ch, "action", "Ljava/lang/String;", vl(STR("android.intent.action.CHOOSER")));
+    bm_put(bm_of(intent_extras(ch)), "android.intent.extra.INTENT", 'L', c->args[0]);
+    if (c->args[1].l) bm_put(bm_of(intent_extras(ch)), "android.intent.extra.TITLE", 'L', c->args[1]);
+    c->ret = vl(ch);
+}
+static void Intent_makeMainActivity(tl_jcall *c)
+{
+    jobj *i = make("android/content/Intent");
+    tl_jni_set_field(i, "action", "Ljava/lang/String;", vl(STR("android.intent.action.MAIN")));
+    tl_jni_set_field(i, "component", "Landroid/content/ComponentName;", c->args[0]);
+    c->ret = vl(i);
+}
+static void Intent_resolveActivity(tl_jcall *c) { c->ret = vl(NULL); }
+static void Intent_getScheme(tl_jcall *c)
+{
+    jobj *u = tl_jni_get_field(c->self, "data", "Landroid/net/Uri;").l;
+    if (!u) { c->ret = vl(NULL); return; }
+    const char *s = S(tl_jni_get_field(u, "uri", "Ljava/lang/String;").l);
+    const char *e = strchr(s, ':');
+    if (!e) { c->ret = vl(NULL); return; }
+    char *r = strndup(s, (size_t)(e - s));
+    c->ret = vl(STR(r)); free(r);
+}
+
+/* ============================================================== android.os */
+
+/* SystemProperties: read-only view of a small curated property set + getprop
+ * fallbacks from the environment where sensible. */
+static const char *sysprop(const char *k)
+{
+    if (!strcmp(k, "ro.product.model")) return "iPhone";
+    if (!strcmp(k, "ro.product.manufacturer")) return "Apple";
+    if (!strcmp(k, "ro.product.brand")) return "Apple";
+    if (!strcmp(k, "ro.product.device")) return "iphone";
+    if (!strcmp(k, "ro.build.version.release")) return "13";
+    if (!strcmp(k, "ro.build.version.sdk")) return "33";
+    if (!strcmp(k, "ro.build.version.incremental")) return "1";
+    if (!strcmp(k, "ro.build.fingerprint")) return "Apple/iPhone/iPhone:13/33/1:user/release-keys";
+    if (!strcmp(k, "ro.build.display.id")) return "BetterHusk";
+    if (!strcmp(k, "ro.product.cpu.abi")) return "arm64-v8a";
+    if (!strcmp(k, "ro.product.cpu.abilist")) return "arm64-v8a,armeabi-v7a,armeabi";
+    if (!strcmp(k, "ro.product.cpu.abilist64")) return "arm64-v8a";
+    if (!strcmp(k, "ro.product.cpu.abilist32")) return "armeabi-v7a,armeabi";
+    if (!strcmp(k, "ro.build.characteristics")) return "default";
+    if (!strcmp(k, "ro.kernel.qemu")) return "0";
+    if (!strcmp(k, "ro.hardware")) return "iphone";
+    if (!strcmp(k, "ro.product.board")) return "apple";
+    if (!strcmp(k, "ro.board.platform")) return "apple";
+    if (!strcmp(k, "ro.build.product")) return "iphone";
+    if (!strcmp(k, "ro.product.name")) return "iphone";
+    if (!strcmp(k, "ro.build.tags")) return "release-keys";
+    if (!strcmp(k, "ro.build.type")) return "user";
+    if (!strcmp(k, "ro.build.user")) return "betterhusk";
+    if (!strcmp(k, "ro.build.host")) return "betterhusk";
+    if (!strcmp(k, "ro.build.date")) return "Mon Jan 1 00:00:00 UTC 2024";
+    if (!strcmp(k, "ro.build.date.utc")) return "1704067200";
+    if (!strcmp(k, "ro.build.description")) return "iphone-user 13 33 1 release-keys";
+    if (!strcmp(k, "ro.secure")) return "1";
+    if (!strcmp(k, "ro.debuggable")) return "0";
+    if (!strcmp(k, "persist.sys.timezone")) return "GMT";
+    if (!strcmp(k, "ro.product.locale")) return "en-US";
+    if (!strcmp(k, "ro.product.locale.language")) return "en";
+    if (!strcmp(k, "ro.product.locale.region")) return "US";
+    if (!strcmp(k, "gsm.sim.operator.iso-country")) return "us";
+    if (!strcmp(k, "gsm.operator.iso-country")) return "us";
+    if (!strcmp(k, "wifi.interface")) return "wlan0";
+    if (!strcmp(k, "ro.opengles.version")) return "196610"; /* GLES 3.2 */
+    if (!strcmp(k, "ro.build.PDA")) return "1";
+    if (!strcmp(k, "ro.screenlayout")) return "normal";
+    if (!strcmp(k, "ro.sf.lcd_density")) return "320";
+    if (!strcmp(k, "ro.max.fling_velocity")) return "16000";
+    if (!strcmp(k, "ro.min.fling_velocity")) return "8000";
+    if (!strcmp(k, "qemu.hw.mainkeys")) return "0";
+    if (!strcmp(k, "sys.boot_completed")) return "1";
+    if (!strcmp(k, "init.svc.bootanim")) return "stopped";
+    if (!strcmp(k, "dalvik.vm.heapsize")) return "256m";
+    if (!strcmp(k, "dalvik.vm.heapstartsize")) return "8m";
+    if (!strcmp(k, "dalvik.vm.heapgrowthlimit")) return "192m";
+    if (!strcmp(k, "dalvik.vm.stack-trace-file")) return "/data/anr/traces.txt";
+    if (!strcmp(k, "ro.config.ringtone")) return "Ringtone.ogg";
+    if (!strcmp(k, "ro.config.notification_sound")) return "notification.ogg";
+    if (!strcmp(k, "ro.config.alarm_alert")) return "alarm.ogg";
+    if (!strcmp(k, "ro.build.selinux")) return "1";
+    if (!strcmp(k, "ro.build.version.security_patch")) return "2024-01-01";
+    if (!strcmp(k, "ro.build.version.codename")) return "REL";
+    if (!strcmp(k, "ro.build.version.all_codenames")) return "REL";
+    if (!strcmp(k, "ro.build.version.base_os")) return "";
+    if (!strcmp(k, "ro.build.version.min_supported_target_sdk")) return "23";
+    if (!strcmp(k, "ro.product.first_api_level")) return "29";
+    if (!strcmp(k, "ro.vendor.build.security_patch")) return "2024-01-01";
+    if (!strcmp(k, "ro.zygote")) return "zygote64_32";
+    if (!strcmp(k, "ro.product.ab_ota_partitions")) return "";
+    if (!strcmp(k, "ro.product.pdb_version")) return "";
+    if (!strcmp(k, "net.bt.name")) return "Android";
+    if (!strcmp(k, "ro.bluetooth.a2dp_offload.supported")) return "false";
+    if (!strcmp(k, "ro.vndk.version")) return "33";
+    if (!strcmp(k, "ro.treble.enabled")) return "false";
+    if (!strcmp(k, "ro.logd.size.stats")) return "64K";
+    if (!strcmp(k, "service.sf.present_timestamp")) return "1";
+    return NULL;
+}
+static void SysProp_get(tl_jcall *c)
+{
+    const char *v = sysprop(S(c->args[0].l));
+    c->ret = vl(STR(v ? v : ""));
+}
+static void SysProp_get_def(tl_jcall *c)
+{
+    const char *v = sysprop(S(c->args[0].l));
+    c->ret = vl(v ? STR(v) : c->args[1].l);
+}
+static void SysProp_getInt(tl_jcall *c)
+{
+    const char *v = sysprop(S(c->args[0].l));
+    c->ret = vi(v ? atoi(v) : c->args[1].i);
+}
+static void SysProp_getLong(tl_jcall *c)
+{
+    const char *v = sysprop(S(c->args[0].l));
+    c->ret = vj(v ? atoll(v) : c->args[1].j);
+}
+static void SysProp_getBool(tl_jcall *c)
+{
+    const char *v = sysprop(S(c->args[0].l));
+    c->ret = vz(v ? (!strcmp(v, "1") || !strcmp(v, "true") || !strcmp(v, "y")) : c->args[1].z);
+}
+static void SysProp_set(tl_jcall *c) { (void)c; }
+
+/* android.os.StatFs via statvfs */
+static void statfs_path(jobj *o, struct statvfs *sv)
+{
+    jobj *p = tl_jni_get_field(o, "path", "Ljava/lang/String;").l;
+    statvfs(p ? S(p) : "/", sv);
+}
+static void StatFs_init(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "path", "Ljava/lang/String;", c->args[0]);
+}
+static void StatFs_blockSize(tl_jcall *c)
+{
+    struct statvfs sv; statfs_path(c->self, &sv);
+    c->ret = vi((int)sv.f_frsize);
+}
+static void StatFs_blockSizeLong(tl_jcall *c)
+{
+    struct statvfs sv; statfs_path(c->self, &sv);
+    c->ret = vj((int64_t)sv.f_frsize);
+}
+static void StatFs_blockCount(tl_jcall *c)
+{
+    struct statvfs sv; statfs_path(c->self, &sv);
+    c->ret = vi((int)sv.f_blocks);
+}
+static void StatFs_blockCountLong(tl_jcall *c)
+{
+    struct statvfs sv; statfs_path(c->self, &sv);
+    c->ret = vj((int64_t)sv.f_blocks);
+}
+static void StatFs_availBlocks(tl_jcall *c)
+{
+    struct statvfs sv; statfs_path(c->self, &sv);
+    c->ret = vi((int)sv.f_bavail);
+}
+static void StatFs_availBlocksLong(tl_jcall *c)
+{
+    struct statvfs sv; statfs_path(c->self, &sv);
+    c->ret = vj((int64_t)sv.f_bavail);
+}
+static void StatFs_freeBlocks(tl_jcall *c)
+{
+    struct statvfs sv; statfs_path(c->self, &sv);
+    c->ret = vi((int)sv.f_bfree);
+}
+static void StatFs_freeBlocksLong(tl_jcall *c)
+{
+    struct statvfs sv; statfs_path(c->self, &sv);
+    c->ret = vj((int64_t)sv.f_bfree);
+}
+static void StatFs_availBytes(tl_jcall *c)
+{
+    struct statvfs sv; statfs_path(c->self, &sv);
+    c->ret = vj((int64_t)sv.f_bavail * (int64_t)sv.f_frsize);
+}
+static void StatFs_freeBytes(tl_jcall *c)
+{
+    struct statvfs sv; statfs_path(c->self, &sv);
+    c->ret = vj((int64_t)sv.f_bfree * (int64_t)sv.f_frsize);
+}
+static void StatFs_totalBytes(tl_jcall *c)
+{
+    struct statvfs sv; statfs_path(c->self, &sv);
+    c->ret = vj((int64_t)sv.f_blocks * (int64_t)sv.f_frsize);
+}
+static void StatFs_restat(tl_jcall *c) { (void)c; }
+
+/* android.os.Process */
+static void Proc_myUid(tl_jcall *c)  { c->ret = vi(1000 + (int)getuid()); }
+static void Proc_myPpid(tl_jcall *c) { c->ret = vi((int)getppid()); }
+static void Proc_kill(tl_jcall *c)   { (void)c; }
+static void Proc_getElapsedCpuTime(tl_jcall *c)
+{
+    c->ret = vj((int64_t)clock() * 1000 / CLOCKS_PER_SEC);
+}
+static void Proc_getFreeMemory(tl_jcall *c) { c->ret = vj(512ll * 1024 * 1024); }
+static void Proc_getTotalMemory(tl_jcall *c) { c->ret = vj(2048ll * 1024 * 1024); }
+static void Proc_is64Bit(tl_jcall *c) { c->ret = vz(sizeof(void *) == 8); }
+static void Proc_supportsProcesses(tl_jcall *c) { c->ret = vz(true); }
+static void Proc_getThreadPriority(tl_jcall *c) { c->ret = vi(0); }
+static void Proc_getUidForName(tl_jcall *c) { c->ret = vi(0); }
+static void Proc_getGidForName(tl_jcall *c) { c->ret = vi(0); }
+static void Proc_isSdkSandboxUid(tl_jcall *c) { c->ret = vz(false); }
+static void Proc_isApplicationUid(tl_jcall *c) { c->ret = vz(c->args[0].i >= 10000); }
+static void Proc_sendSignal(tl_jcall *c) { (void)c; }
+static void Proc_getStartElapsedRealtime(tl_jcall *c) { c->ret = vj(0); }
+static void Proc_getStartRequestedElapsedRealtime(tl_jcall *c) { c->ret = vj(0); }
+
+/* android.os.Debug — profiling no-ops with plausible values */
+static void Dbg_getGlobalAllocCount(tl_jcall *c) { c->ret = vi(0); }
+static void Dbg_getGlobalAllocSize(tl_jcall *c) { c->ret = vi(0); }
+static void Dbg_getGlobalFreedCount(tl_jcall *c) { c->ret = vi(0); }
+static void Dbg_getGlobalFreedSize(tl_jcall *c) { c->ret = vi(0); }
+static void Dbg_getNativeHeapSize(tl_jcall *c) { c->ret = vj(128ll * 1024 * 1024); }
+static void Dbg_getNativeHeapAllocatedSize(tl_jcall *c) { c->ret = vj(64ll * 1024 * 1024); }
+static void Dbg_getNativeHeapFreeSize(tl_jcall *c) { c->ret = vj(64ll * 1024 * 1024); }
+static void Dbg_getPss(tl_jcall *c) { c->ret = vj(128 * 1024); }
+static void Dbg_threadCpuTimeNanos(tl_jcall *c)
+{
+    c->ret = vj((int64_t)clock() * 1000000000 / CLOCKS_PER_SEC);
+}
+static void Dbg_waitForDebugger(tl_jcall *c) { (void)c; }
+static void Dbg_waitingForDebugger(tl_jcall *c) { c->ret = vz(false); }
+static void Dbg_isDebuggerConnected(tl_jcall *c) { c->ret = vz(false); }
+static void Dbg_changeDebugPort(tl_jcall *c) { (void)c; }
+static void Dbg_startNativeTracing(tl_jcall *c) { (void)c; }
+static void Dbg_stopNativeTracing(tl_jcall *c) { (void)c; }
+static void Dbg_enableEmulatorTrace(tl_jcall *c) { (void)c; }
+static void Dbg_startMethodTracing(tl_jcall *c) { (void)c; }
+static void Dbg_stopMethodTracing(tl_jcall *c) { (void)c; }
+static void Dbg_getMethodTracingMode(tl_jcall *c) { c->ret = vi(0); }
+static void Dbg_dumpHprofData(tl_jcall *c) { (void)c; }
+static void Dbg_dumpHprofDataDdms(tl_jcall *c) { (void)c; }
+static void Dbg_dumpService(tl_jcall *c) { (void)c; }
+static void Dbg_getRuntimeStat(tl_jcall *c) { c->ret = vl(NULL); }
+static void Dbg_getRuntimeStats(tl_jcall *c) { c->ret = vl(make("java/util/HashMap")); }
+static void Dbg_dumpJavaHeap(tl_jcall *c) { (void)c; }
+static void Dbg_dumpNativeHeap(tl_jcall *c) { (void)c; }
+static void Dbg_dumpReferenceTables(tl_jcall *c) { (void)c; }
+static void Dbg_printLoadedClasses(tl_jcall *c) { (void)c; }
+static void Dbg_getLoadedClassCount(tl_jcall *c) { c->ret = vi(0); }
+static void Dbg_getBinderSentTransactions(tl_jcall *c) { c->ret = vi(0); }
+static void Dbg_getBinderReceivedTransactions(tl_jcall *c) { c->ret = vi(0); }
+static void Dbg_getBinderLocalObjectCount(tl_jcall *c) { c->ret = vi(0); }
+static void Dbg_getBinderProxyObjectCount(tl_jcall *c) { c->ret = vi(0); }
+static void Dbg_getBinderDeathObjectCount(tl_jcall *c) { c->ret = vi(0); }
+
+/* android.os.Parcel: byte-stream with the common write/read pair used by
+ * hand-rolled Parcelable creators. */
+typedef struct { uint8_t *p; size_t n, cap, pos; } parcel;
+static parcel *parcel_of(jobj *o)
+{
+    if (!o->native) o->native = calloc(1, sizeof(parcel));
+    return o->native;
+}
+static void pc_need(parcel *p, size_t n)
+{
+    if (p->pos + n > p->cap) { p->cap = (p->pos + n + 256) * 2; p->p = realloc(p->p, p->cap); }
+}
+static void pc_w(parcel *p, const void *d, size_t n)
+{
+    pc_need(p, n);
+    memcpy(p->p + p->pos, d, n); p->pos += n;
+    if (p->pos > p->n) p->n = p->pos;
+}
+static void pc_r(parcel *p, void *d, size_t n)
+{
+    if (p->pos + n > p->n) { memset(d, 0, n); return; }
+    memcpy(d, p->p + p->pos, n); p->pos += n;
+}
+static void Parcel_obtain(tl_jcall *c) { c->ret = vl(make("android/os/Parcel")); }
+static void Parcel_destroy(tl_jcall *c) { (void)c; }
+static void Parcel_recycle(tl_jcall *c) { (void)c; }
+static void Parcel_dataSize(tl_jcall *c) { c->ret = vi((int)parcel_of(c->self)->n); }
+static void Parcel_dataAvail(tl_jcall *c)
+{
+    parcel *p = parcel_of(c->self);
+    c->ret = vi((int)(p->n - p->pos));
+}
+static void Parcel_dataPos(tl_jcall *c) { c->ret = vi((int)parcel_of(c->self)->pos); }
+static void Parcel_dataCapacity(tl_jcall *c) { c->ret = vi((int)parcel_of(c->self)->cap); }
+static void Parcel_setDataPosition(tl_jcall *c) { parcel_of(c->self)->pos = (size_t)c->args[0].i; }
+static void Parcel_setDataSize(tl_jcall *c) { parcel_of(c->self)->n = (size_t)c->args[0].i; }
+static void Parcel_setDataCapacity(tl_jcall *c)
+{
+    parcel *p = parcel_of(c->self);
+    if ((size_t)c->args[0].i > p->cap) { p->cap = (size_t)c->args[0].i; p->p = realloc(p->p, p->cap); }
+}
+static void Parcel_writeInt(tl_jcall *c) { int32_t v = c->args[0].i; pc_w(parcel_of(c->self), &v, 4); }
+static void Parcel_readInt(tl_jcall *c) { int32_t v = 0; pc_r(parcel_of(c->self), &v, 4); c->ret = vi(v); }
+static void Parcel_writeLong(tl_jcall *c) { int64_t v = c->args[0].j; pc_w(parcel_of(c->self), &v, 8); }
+static void Parcel_readLong(tl_jcall *c) { int64_t v = 0; pc_r(parcel_of(c->self), &v, 8); c->ret = vj(v); }
+static void Parcel_writeFloat(tl_jcall *c) { float v = c->args[0].f; pc_w(parcel_of(c->self), &v, 4); }
+static void Parcel_readFloat(tl_jcall *c) { float v = 0; pc_r(parcel_of(c->self), &v, 4); c->ret = vf(v); }
+static void Parcel_writeDouble(tl_jcall *c) { double v = c->args[0].d; pc_w(parcel_of(c->self), &v, 8); }
+static void Parcel_readDouble(tl_jcall *c) { double v = 0; pc_r(parcel_of(c->self), &v, 8); c->ret = vd(v); }
+static void Parcel_writeByte(tl_jcall *c) { uint8_t v = (uint8_t)c->args[0].b; pc_w(parcel_of(c->self), &v, 1); }
+static void Parcel_readByte(tl_jcall *c) { uint8_t v = 0; pc_r(parcel_of(c->self), &v, 1); c->ret = vb((int8_t)v); }
+static void Parcel_writeString(tl_jcall *c)
+{
+    const char *s = c->args[0].l ? S(c->args[0].l) : NULL;
+    parcel *p = parcel_of(c->self);
+    int32_t n = s ? (int32_t)strlen(s) : -1;
+    pc_w(p, &n, 4);
+    if (s) pc_w(p, s, (size_t)n);
+}
+static void Parcel_readString(tl_jcall *c)
+{
+    parcel *p = parcel_of(c->self);
+    int32_t n = 0; pc_r(p, &n, 4);
+    if (n < 0 || n > 1 << 20) { c->ret = vl(NULL); return; }
+    char *s = malloc((size_t)n + 1);
+    pc_r(p, s, (size_t)n); s[n] = 0;
+    c->ret = vl(STR(s)); free(s);
+}
+static void Parcel_writeByteArray(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    parcel *p = parcel_of(c->self);
+    int32_t n = a ? (int32_t)a->arr.len : -1;
+    pc_w(p, &n, 4);
+    if (a) pc_w(p, a->arr.data, (size_t)n);
+}
+static void Parcel_createByteArray(tl_jcall *c)
+{
+    parcel *p = parcel_of(c->self);
+    int32_t n = 0; pc_r(p, &n, 4);
+    if (n < 0 || n > 1 << 24) { c->ret = vl(NULL); return; }
+    jobj *a = tl_jni_new_prim_array('B', (uint32_t)n);
+    pc_r(p, a->arr.data, (size_t)n);
+    c->ret = vl(a);
+}
+static void Parcel_writeValue(tl_jcall *c)
+{
+    parcel *p = parcel_of(c->self);
+    jobj *o = c->args[0].l;
+    if (!o) { int32_t t = 0; pc_w(p, &t, 4); return; }
+    const char *cn = tl_jni_class_name(o);
+    if (o->kind == TL_K_STRING) {
+        int32_t t = 1; pc_w(p, &t, 4);
+        const char *s = S(o); int32_t n = (int32_t)strlen(s);
+        pc_w(p, &n, 4); pc_w(p, s, (size_t)n);
+    } else if (!strcmp(cn, "java/lang/Integer")) {
+        int32_t t = 2, v = (int32_t)int_of(o); pc_w(p, &t, 4); pc_w(p, &v, 4);
+    } else if (!strcmp(cn, "java/lang/Long")) {
+        int32_t t = 3; int64_t v = int_of(o); pc_w(p, &t, 4); pc_w(p, &v, 8);
+    } else if (!strcmp(cn, "java/lang/Float")) {
+        int32_t t = 4; float v = (float)num_of(o); pc_w(p, &t, 4); pc_w(p, &v, 4);
+    } else if (!strcmp(cn, "java/lang/Double")) {
+        int32_t t = 5; double v = num_of(o); pc_w(p, &t, 4); pc_w(p, &v, 8);
+    } else if (!strcmp(cn, "java/lang/Boolean")) {
+        int32_t t = 6, v = (int32_t)int_of(o); pc_w(p, &t, 4); pc_w(p, &v, 4);
+    } else { int32_t t = 0; pc_w(p, &t, 4); }
+}
+static void Parcel_readValue(tl_jcall *c)
+{
+    parcel *p = parcel_of(c->self);
+    int32_t t = 0; pc_r(p, &t, 4);
+    switch (t) {
+    case 1: {
+        int32_t n = 0; pc_r(p, &n, 4);
+        if (n < 0 || n > 1 << 20) { c->ret = vl(NULL); return; }
+        char *s = malloc((size_t)n + 1);
+        pc_r(p, s, (size_t)n); s[n] = 0;
+        c->ret = vl(STR(s)); free(s); return;
+    }
+    case 2: { int32_t v = 0; pc_r(p, &v, 4); c->ret = vl(box_int(v)); return; }
+    case 3: { int64_t v = 0; pc_r(p, &v, 8); c->ret = vl(box_long(v)); return; }
+    case 4: { float v = 0; pc_r(p, &v, 4); c->ret = vl(box_float(v)); return; }
+    case 5: { double v = 0; pc_r(p, &v, 8); c->ret = vl(box_double(v)); return; }
+    case 6: { int32_t v = 0; pc_r(p, &v, 4); c->ret = vl(box_bool(v)); return; }
+    default: c->ret = vl(NULL);
+    }
+}
+static void Parcel_writeBundle(tl_jcall *c) { (void)c; }
+static void Parcel_readBundle(tl_jcall *c) { c->ret = vl(make("android/os/Bundle")); }
+static void Parcel_marshall(tl_jcall *c)
+{
+    parcel *p = parcel_of(c->self);
+    jobj *a = tl_jni_new_prim_array('B', (uint32_t)p->n);
+    memcpy(a->arr.data, p->p, p->n);
+    c->ret = vl(a);
+}
+static void Parcel_unmarshall(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    parcel *p = parcel_of(c->self);
+    if (!a) return;
+    int off = c->args[1].i, len = c->args[2].i;
+    pc_need(p, (size_t)len);
+    memcpy(p->p, (char *)a->arr.data + off, (size_t)len);
+    p->n = (size_t)len; p->pos = 0;
+}
+static void Parcel_appendFrom(tl_jcall *c) { (void)c; }
+static void Parcel_hasFileDescriptors(tl_jcall *c) { c->ret = vz(false); }
+static void Parcel_enforceInterface(tl_jcall *c) { (void)c; }
+static void Parcel_readParcelable(tl_jcall *c) { c->ret = vl(NULL); }
+static void Parcel_writeParcelable(tl_jcall *c) { (void)c; }
+static void Parcel_readSerializable(tl_jcall *c) { c->ret = vl(NULL); }
+static void Parcel_writeSerializable(tl_jcall *c) { (void)c; }
+static void Parcel_readStrongBinder(tl_jcall *c) { c->ret = vl(NULL); }
+static void Parcel_writeStrongBinder(tl_jcall *c) { (void)c; }
+static void Parcel_readException(tl_jcall *c) { (void)c; }
+static void Parcel_writeException(tl_jcall *c) { (void)c; }
+static void Parcel_readArrayList(tl_jcall *c) { c->ret = vl(make("java/util/ArrayList")); }
+static void Parcel_readHashMap(tl_jcall *c) { c->ret = vl(make("java/util/HashMap")); }
+static void Parcel_readSparseArray(tl_jcall *c) { c->ret = vl(make("android/util/SparseArray")); }
+static void Parcel_writeSparseArray(tl_jcall *c) { (void)c; }
+static void Parcel_writeMap(tl_jcall *c) { (void)c; }
+static void Parcel_writeList(tl_jcall *c) { (void)c; }
+static void Parcel_writeArray(tl_jcall *c) { (void)c; }
+static void Parcel_readArray(tl_jcall *c) { c->ret = vl(NULL); }
+static void Parcel_readList(tl_jcall *c) { (void)c; }
+
+/* ============================================================== android.net */
+
+/* Uri: field "uri" holds the source string; parse lazily into components. */
+typedef struct {
+    char *scheme, *authority, *host, *path, *query, *fragment;
+    int port;
+} uparts;
+static uparts *up_of(jobj *o)
+{
+    if (o->native) return o->native;
+    uparts *u = calloc(1, sizeof(uparts));
+    u->port = -1;
+    jobj *sj = tl_jni_get_field(o, "uri", "Ljava/lang/String;").l;
+    const char *s = sj ? S(sj) : "";
+    const char *p = s, *e;
+    /* scheme */
+    e = strstr(p, "://");
+    const char *c1 = strchr(p, ':');
+    if (e || (c1 && (strchr(p, '/') == NULL || c1 < strchr(p, '/')))) {
+        const char *send = e ? e : c1;
+        u->scheme = strndup(p, (size_t)(send - p));
+        p = e ? e + 3 : c1 + 1;
+    }
+    /* fragment */
+    char *work = strdup(p);
+    char *frag = strchr(work, '#');
+    if (frag) { *frag = 0; u->fragment = strdup(frag + 1); }
+    /* query */
+    char *q = strchr(work, '?');
+    if (q) { *q = 0; u->query = strdup(q + 1); }
+    /* authority + path: if scheme present, next '/' starts path */
+    if (u->scheme && !strchr(s, ':') || (u->scheme && strstr(s, "://"))) {
+        char *sl = strchr(work, '/');
+        if (sl) {
+            u->authority = strndup(work, (size_t)(sl - work));
+            u->path = strdup(sl);
+        } else {
+            u->authority = strdup(work);
+            u->path = strdup("");
+        }
+        if (u->authority) {
+            char *at = strchr(u->authority, '@');
+            char *hn = at ? at + 1 : u->authority;
+            char *port = strrchr(hn, ':');
+            if (port && isdigit((uint8_t)port[1])) {
+                u->port = atoi(port + 1);
+                u->host = strndup(hn, (size_t)(port - hn));
+            } else u->host = strdup(hn);
+        }
+    } else {
+        u->path = strdup(work);
+    }
+    free(work);
+    o->native = u;
+    return u;
+}
+static void Uri_parse(tl_jcall *c)
+{
+    jobj *u = make("android/net/Uri");
+    tl_jni_set_field(u, "uri", "Ljava/lang/String;", c->args[0]);
+    c->ret = vl(u);
+}
+static void Uri_toString(tl_jcall *c)    { c->ret = tl_jni_get_field(c->self, "uri", "Ljava/lang/String;"); }
+static void Uri_getScheme(tl_jcall *c)   { c->ret = vl(up_of(c->self)->scheme ? STR(up_of(c->self)->scheme) : NULL); }
+static void Uri_getAuthority(tl_jcall *c){ c->ret = vl(up_of(c->self)->authority ? STR(up_of(c->self)->authority) : NULL); }
+static void Uri_getHost(tl_jcall *c)     { c->ret = vl(up_of(c->self)->host ? STR(up_of(c->self)->host) : NULL); }
+static void Uri_getPort(tl_jcall *c)     { c->ret = vi(up_of(c->self)->port); }
+static void Uri_getPath(tl_jcall *c)     { c->ret = vl(up_of(c->self)->path ? STR(up_of(c->self)->path) : NULL); }
+static void Uri_getQuery(tl_jcall *c)    { c->ret = vl(up_of(c->self)->query ? STR(up_of(c->self)->query) : NULL); }
+static void Uri_getFragment(tl_jcall *c) { c->ret = vl(up_of(c->self)->fragment ? STR(up_of(c->self)->fragment) : NULL); }
+static void Uri_getEncodedPath(tl_jcall *c) { Uri_getPath(c); }
+static void Uri_getEncodedQuery(tl_jcall *c) { Uri_getQuery(c); }
+static void Uri_getEncodedFragment(tl_jcall *c) { Uri_getFragment(c); }
+static void Uri_getLastPathSegment(tl_jcall *c)
+{
+    uparts *u = up_of(c->self);
+    if (!u->path || !*u->path) { c->ret = vl(NULL); return; }
+    const char *s = strrchr(u->path, '/');
+    c->ret = vl(STR(s ? s + 1 : u->path));
+}
+static void Uri_getPathSegments(tl_jcall *c)
+{
+    uparts *u = up_of(c->self);
+    jobj *l = make("java/util/ArrayList");
+    jvec *v = vec_of(l);
+    if (u->path) {
+        char *w = strdup(u->path), *save = NULL;
+        for (char *t = strtok_r(w, "/", &save); t; t = strtok_r(NULL, "/", &save))
+            vec_push(v, STR(t));
+        free(w);
+    }
+    c->ret = vl(l);
+}
+static int uri_hexd(int ch)
+{
+    if (ch >= '0' && ch <= '9') return ch - '0';
+    if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+    if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
+    return -1;
+}
+static char *uri_dec(const char *s, bool plus)
+{
+    if (!s) return NULL;
+    sbuf *b = calloc(1, sizeof(sbuf));
+    for (; *s; s++) {
+        if (*s == '%' && uri_hexd((uint8_t)s[1]) >= 0 && uri_hexd((uint8_t)s[2]) >= 0) {
+            char ch = (char)(uri_hexd((uint8_t)s[1]) * 16 + uri_hexd((uint8_t)s[2]));
+            sb_putc(b, ch); s += 2;
+        } else if (plus && *s == '+') sb_putc(b, ' ');
+        else sb_putc(b, *s);
+    }
+    char *r = b->p ? b->p : strdup(""); free(b);
+    return r;
+}
+static void Uri_decode(tl_jcall *c)
+{
+    char *d = uri_dec(c->args[0].l ? S(c->args[0].l) : NULL, false);
+    c->ret = vl(d ? STR(d) : NULL); free(d);
+}
+static void Uri_getQueryParameter(tl_jcall *c)
+{
+    uparts *u = up_of(c->self);
+    const char *key = S(c->args[0].l);
+    if (!u->query) { c->ret = vl(NULL); return; }
+    char *w = strdup(u->query), *save = NULL;
+    for (char *t = strtok_r(w, "&", &save); t; t = strtok_r(NULL, "&", &save)) {
+        char *eq = strchr(t, '=');
+        if (!eq) continue;
+        *eq = 0;
+        char *kd = uri_dec(t, true);
+        if (!strcmp(kd, key)) {
+            char *vd = uri_dec(eq + 1, true);
+            c->ret = vl(STR(vd));
+            free(kd); free(vd); free(w);
+            return;
+        }
+        free(kd);
+    }
+    free(w);
+    c->ret = vl(NULL);
+}
+static void Uri_getQueryParameterNames(tl_jcall *c)
+{
+    uparts *u = up_of(c->self);
+    jobj *s = make("java/util/HashSet");
+    jvec *v = vec_of(s);
+    if (u->query) {
+        char *w = strdup(u->query), *save = NULL;
+        for (char *t = strtok_r(w, "&", &save); t; t = strtok_r(NULL, "&", &save)) {
+            char *eq = strchr(t, '='); if (eq) *eq = 0;
+            char *kd = uri_dec(t, true);
+            vec_push(v, STR(kd)); free(kd);
+        }
+        free(w);
+    }
+    c->ret = vl(s);
+}
+static void Uri_getBooleanQueryParameter(tl_jcall *c)
+{
+    tl_jcall t = { .self = c->self, .cls = c->cls, .args = c->args };
+    Uri_getQueryParameter(&t);
+    jobj *o = t.ret.l;
+    bool dflt = c->args[1].z;
+    if (!o) { c->ret = vz(dflt); return; }
+    const char *s = S(o);
+    c->ret = vz(!strcasecmp(s, "true") || !strcmp(s, "1"));
+}
+static void Uri_buildUpon(tl_jcall *c)
+{
+    jobj *b = make("android/net/Uri$Builder");
+    tl_jni_set_field(b, "uri", "Ljava/lang/String;", tl_jni_get_field(c->self, "uri", "Ljava/lang/String;"));
+    c->ret = vl(b);
+}
+static void UB_scheme(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "scheme", "Ljava/lang/String;", c->args[0]);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void UB_authority(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "authority", "Ljava/lang/String;", c->args[0]);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void UB_path(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "path", "Ljava/lang/String;", c->args[0]);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void UB_appendPath(tl_jcall *c)
+{
+    jobj *old = tl_jni_get_field(c->self, "path", "Ljava/lang/String;").l;
+    sbuf *b = calloc(1, sizeof(sbuf));
+    if (old) sb_add(b, S(old));
+    if (!b->n || b->p[b->n - 1] != '/') sb_putc(b, '/');
+    if (c->args[0].l) sb_add(b, S(c->args[0].l));
+    tl_jni_set_field(c->self, "path", "Ljava/lang/String;", vl(STR(b->p ? b->p : "")));
+    free(b->p); free(b);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void UB_appendQueryParameter(tl_jcall *c)
+{
+    jobj *old = tl_jni_get_field(c->self, "query", "Ljava/lang/String;").l;
+    sbuf *b = calloc(1, sizeof(sbuf));
+    if (old && *S(old)) { sb_add(b, S(old)); sb_putc(b, '&'); }
+    if (c->args[0].l) sb_add(b, S(c->args[0].l));
+    sb_putc(b, '=');
+    if (c->args[1].l) sb_add(b, S(c->args[1].l));
+    tl_jni_set_field(c->self, "query", "Ljava/lang/String;", vl(STR(b->p ? b->p : "")));
+    free(b->p); free(b);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void UB_fragment(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "fragment", "Ljava/lang/String;", c->args[0]);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void UB_clearQuery(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "query", "Ljava/lang/String;", vl(NULL));
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void UB_build(tl_jcall *c)
+{
+    jobj *sch = tl_jni_get_field(c->self, "scheme", "Ljava/lang/String;").l;
+    jobj *au  = tl_jni_get_field(c->self, "authority", "Ljava/lang/String;").l;
+    jobj *pa  = tl_jni_get_field(c->self, "path", "Ljava/lang/String;").l;
+    jobj *qu  = tl_jni_get_field(c->self, "query", "Ljava/lang/String;").l;
+    jobj *fr  = tl_jni_get_field(c->self, "fragment", "Ljava/lang/String;").l;
+    jobj *orig = tl_jni_get_field(c->self, "uri", "Ljava/lang/String;").l;
+    if (!sch && !au && !pa && !qu && !fr) {
+        jobj *u = make("android/net/Uri");
+        tl_jni_set_field(u, "uri", "Ljava/lang/String;", vl(orig));
+        c->ret = vl(u); return;
+    }
+    sbuf *b = calloc(1, sizeof(sbuf));
+    if (sch) { sb_add(b, S(sch)); sb_add(b, "://"); }
+    if (au) sb_add(b, S(au));
+    if (pa) sb_add(b, S(pa));
+    if (qu) { sb_putc(b, '?'); sb_add(b, S(qu)); }
+    if (fr) { sb_putc(b, '#'); sb_add(b, S(fr)); }
+    jobj *u = make("android/net/Uri");
+    tl_jni_set_field(u, "uri", "Ljava/lang/String;", vl(STR(b->p ? b->p : "")));
+    free(b->p); free(b);
+    c->ret = vl(u);
+}
+static void Uri_fromFile(tl_jcall *c)
+{
+    jobj *u = make("android/net/Uri");
+    jobj *p = tl_jni_get_field(c->args[0].l, "path", "Ljava/lang/String;").l;
+    sbuf *b = calloc(1, sizeof(sbuf));
+    sb_add(b, "file://");
+    if (p) sb_add(b, S(p));
+    tl_jni_set_field(u, "uri", "Ljava/lang/String;", vl(STR(b->p ? b->p : "")));
+    free(b->p); free(b);
+    c->ret = vl(u);
+}
+static void Uri_withAppendedPath(tl_jcall *c)
+{
+    jobj *u = make("android/net/Uri");
+    sbuf *b = calloc(1, sizeof(sbuf));
+    jobj *o = tl_jni_get_field(c->args[0].l, "uri", "Ljava/lang/String;").l;
+    if (o) sb_add(b, S(o));
+    if (b->n && b->p[b->n - 1] != '/') sb_putc(b, '/');
+    if (c->args[1].l) sb_add(b, S(c->args[1].l));
+    tl_jni_set_field(u, "uri", "Ljava/lang/String;", vl(STR(b->p ? b->p : "")));
+    free(b->p); free(b);
+    c->ret = vl(u);
+}
+static void Uri_isAbsolute(tl_jcall *c) { c->ret = vz(up_of(c->self)->scheme != NULL); }
+static void Uri_isRelative(tl_jcall *c) { c->ret = vz(up_of(c->self)->scheme == NULL); }
+static void Uri_isHierarchical(tl_jcall *c) { c->ret = vz(true); }
+static void Uri_isOpaque(tl_jcall *c) { c->ret = vz(false); }
+static void Uri_hashCode(tl_jcall *c)
+{
+    const char *s = S(tl_jni_get_field(c->self, "uri", "Ljava/lang/String;").l);
+    int32_t h = 0;
+    for (; *s; s++) h = 31 * h + (uint8_t)*s;
+    c->ret = vi(h);
+}
+static void Uri_equals(tl_jcall *c)
+{
+    jobj *o = c->args[0].l;
+    if (!o || strcmp(tl_jni_class_name(o), "android/net/Uri")) { c->ret = vz(false); return; }
+    const char *a = S(tl_jni_get_field(c->self, "uri", "Ljava/lang/String;").l);
+    const char *b = S(tl_jni_get_field(o, "uri", "Ljava/lang/String;").l);
+    c->ret = vz(!strcmp(a, b));
+}
+static void Uri_normalizeScheme(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void Uri_compareTo(tl_jcall *c)
+{
+    jobj *o = c->args[0].l;
+    if (!o) { c->ret = vi(0); return; }
+    const char *a = S(tl_jni_get_field(c->self, "uri", "Ljava/lang/String;").l);
+    const char *b = S(tl_jni_get_field(o, "uri", "Ljava/lang/String;").l);
+    c->ret = vi(strcmp(a, b));
+}
+static void Uri_getEncodedAuthority(tl_jcall *c) { Uri_getAuthority(c); }
+static void Uri_getEncodedUserInfo(tl_jcall *c) { c->ret = vl(NULL); }
+static void Uri_getUserInfo(tl_jcall *c) { c->ret = vl(NULL); }
+static void Uri_checkSafe(tl_jcall *c) { (void)c; }
+
+/* java.net.InetAddress + android.net Wi-Fi/Connectivity/Telephony */
+static void Inet_getByName(tl_jcall *c)
+{
+    jobj *a = make("java/net/InetAddress");
+    tl_jni_set_field(a, "hostName", "Ljava/lang/String;", c->args[0]);
+    set_int(a, "family", 2);
+    c->ret = vl(a);
+}
+static void Inet_getLocalHost(tl_jcall *c)
+{
+    jobj *a = make("java/net/InetAddress");
+    char h[256] = "localhost";
+    gethostname(h, sizeof(h) - 1);
+    set_str(a, "hostName", h);
+    set_int(a, "family", 2);
+    c->ret = vl(a);
+}
+static void Inet_getLoopback(tl_jcall *c)
+{
+    jobj *a = make("java/net/InetAddress");
+    set_str(a, "hostName", "localhost");
+    set_int(a, "family", 2);
+    c->ret = vl(a);
+}
+static void Inet_getByAddress(tl_jcall *c)
+{
+    jobj *a = make("java/net/InetAddress");
+    set_str(a, "hostName", "");
+    set_int(a, "family", 2);
+    c->ret = vl(a);
+}
+static void Inet_getAllByName(tl_jcall *c)
+{
+    tl_jcall t = { .self = NULL, .args = c->args };
+    Inet_getByName(&t);
+    jobj *arr = tl_jni_new_obj_array(C("java/net/InetAddress"), 1);
+    arr->oarr.v[0] = t.ret.l;
+    c->ret = vl(arr);
+}
+static void Inet_getHostAddress(tl_jcall *c) { c->ret = vl(STR("127.0.0.1")); }
+static void Inet_getHostName(tl_jcall *c)
+{
+    jobj *h = tl_jni_get_field(c->self, "hostName", "Ljava/lang/String;").l;
+    c->ret = vl(h ? h : STR("localhost"));
+}
+static void Inet_getCanonicalHostName(tl_jcall *c) { Inet_getHostName(c); }
+static void Inet_getAddress(tl_jcall *c)
+{
+    jobj *a = tl_jni_new_prim_array('B', 4);
+    ((uint8_t *)a->arr.data)[0] = 127; ((uint8_t *)a->arr.data)[3] = 1;
+    c->ret = vl(a);
+}
+static void Inet_isLoopback(tl_jcall *c) { c->ret = vz(true); }
+static void Inet_isAnyLocal(tl_jcall *c) { c->ret = vz(false); }
+static void Inet_isMulticast(tl_jcall *c) { c->ret = vz(false); }
+static void Inet_isLinkLocal(tl_jcall *c) { c->ret = vz(false); }
+static void Inet_isSiteLocal(tl_jcall *c) { c->ret = vz(false); }
+static void Inet_isReachable(tl_jcall *c) { c->ret = vz(true); }
+static void Inet_isReachableT(tl_jcall *c) { c->ret = vz(true); }
+static void Inet_toString(tl_jcall *c)
+{
+    jobj *h = tl_jni_get_field(c->self, "hostName", "Ljava/lang/String;").l;
+    char b[600]; snprintf(b, sizeof(b), "%s/127.0.0.1", h ? S(h) : "");
+    c->ret = vl(STR(b));
+}
+static void Inet_equals(tl_jcall *c) { c->ret = vz(c->args[0].l == c->self); }
+static void Inet_hashCode(tl_jcall *c) { c->ret = vi(0x7f000001); }
+static void NI_getNetworkInterfaces(tl_jcall *c)
+{
+    jobj *l = make("java/util/ArrayList");
+    jobj *n = make("java/net/NetworkInterface");
+    set_str(n, "name", "lo0");
+    set_int(n, "index", 1);
+    vec_push(vec_of(l), n);
+    jvalue e = tl_jni_call(l, "iterator", "()Ljava/util/Iterator;", NULL);
+    /* Collections.enumeration over the list */
+    jobj *en = make("java/util/Collections$1");
+    tl_jni_set_field(en, "it", "Ljava/util/Iterator;", e);
+    c->ret = vl(en);
+}
+static void NI_getName(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "name", "Ljava/lang/String;"); }
+static void NI_getDisplayName(tl_jcall *c) { NI_getName(c); }
+static void NI_getIndex(tl_jcall *c) { c->ret = vi(get_int(c->self, "index")); }
+static void NI_isUp(tl_jcall *c) { c->ret = vz(true); }
+static void NI_isLoopback(tl_jcall *c) { c->ret = vz(get_int(c->self, "index") == 1); }
+static void NI_isVirtual(tl_jcall *c) { c->ret = vz(false); }
+static void NI_getInetAddresses(tl_jcall *c)
+{
+    jobj *l = make("java/util/ArrayList");
+    tl_jcall t = { .self = NULL };
+    Inet_getLoopback(&t);
+    vec_push(vec_of(l), t.ret.l);
+    jvalue e = tl_jni_call(l, "iterator", "()Ljava/util/Iterator;", NULL);
+    jobj *en = make("java/util/Collections$1");
+    tl_jni_set_field(en, "it", "Ljava/util/Iterator;", e);
+    c->ret = vl(en);
+}
+static void NI_getHardwareAddress(tl_jcall *c)
+{
+    c->ret = vl(tl_jni_new_prim_array('B', 6));
+}
+static void NI_getMTU(tl_jcall *c) { c->ret = vi(1500); }
+static void NI_supportsMulticast(tl_jcall *c) { c->ret = vz(false); }
+static void NI_getInterfaceAddresses(tl_jcall *c) { c->ret = vl(make("java/util/ArrayList")); }
+static void NI_getSubInterfaces(tl_jcall *c) { c->ret = vl(make("java/util/ArrayList")); }
+static void NI_toString(tl_jcall *c) { NI_getName(c); }
+static void Enum_hasMoreElements(tl_jcall *c)
+{
+    jobj *it = tl_jni_get_field(c->self, "it", "Ljava/util/Iterator;").l;
+    c->ret = it ? tl_jni_call(it, "hasNext", "()Z", NULL) : vz(false);
+}
+static void Enum_nextElement(tl_jcall *c)
+{
+    jobj *it = tl_jni_get_field(c->self, "it", "Ljava/util/Iterator;").l;
+    c->ret = it ? tl_jni_call(it, "next", "()Ljava/lang/Object;", NULL) : vl(NULL);
+}
+static void Colls_enumeration(tl_jcall *c)
+{
+    jvalue e = tl_jni_call(c->args[0].l, "iterator", "()Ljava/util/Iterator;", NULL);
+    jobj *en = make("java/util/Collections$1");
+    tl_jni_set_field(en, "it", "Ljava/util/Iterator;", e);
+    c->ret = vl(en);
+}
+
+/* Wi-Fi/Connectivity/Telephony — plausible "connected wifi" answers so
+ * net-checking code proceeds instead of erroring out. */
+static void WifiMan_getConnectionInfo(tl_jcall *c)
+{
+    jobj *w = make("android/net/wifi/WifiInfo");
+    set_str(w, "ssid", "\"BetterHusk\"");
+    set_str(w, "bssid", "02:00:00:00:00:00");
+    set_str(w, "mac", "02:00:00:00:00:00");
+    set_int(w, "rssi", -40);
+    set_int(w, "speed", 866);
+    set_int(w, "netId", 0);
+    set_bool(w, "hidden", false);
+    c->ret = vl(w);
+}
+static void WifiInfo_getSSID(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "ssid", "Ljava/lang/String;"); }
+static void WifiInfo_getBSSID(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "bssid", "Ljava/lang/String;"); }
+static void WifiInfo_getMacAddress(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "mac", "Ljava/lang/String;"); }
+static void WifiInfo_getRssi(tl_jcall *c) { c->ret = vi(get_int(c->self, "rssi")); }
+static void WifiInfo_getLinkSpeed(tl_jcall *c) { c->ret = vi(get_int(c->self, "speed")); }
+static void WifiInfo_getNetworkId(tl_jcall *c) { c->ret = vi(get_int(c->self, "netId")); }
+static void WifiInfo_getIpAddress(tl_jcall *c) { c->ret = vi(0x0A000001); /* 10.0.0.1 LE */ }
+static void WifiInfo_getHiddenSSID(tl_jcall *c) { c->ret = vz(false); }
+static void WifiInfo_getFrequency(tl_jcall *c) { c->ret = vi(5200); }
+static void WifiInfo_getSupplicantState(tl_jcall *c)
+{
+    jobj *s = make("android/net/wifi/SupplicantState");
+    set_str(s, "name", "COMPLETED");
+    set_int(s, "ordinal", 9);
+    c->ret = vl(s);
+}
+static void WifiInfo_toString(tl_jcall *c)
+{
+    c->ret = vl(STR("SSID: \"BetterHusk\", BSSID: 02:00:00:00:00:00, rssi: -40, speed: 866Mbps"));
+}
+static void WifiMan_isWifiEnabled(tl_jcall *c) { c->ret = vz(true); }
+static void WifiMan_setWifiEnabled(tl_jcall *c) { c->ret = vz(true); }
+static void WifiMan_getWifiState(tl_jcall *c) { c->ret = vi(3); /* WIFI_STATE_ENABLED */ }
+static void WifiMan_getScanResults(tl_jcall *c) { c->ret = vl(make("java/util/ArrayList")); }
+static void WifiMan_startScan(tl_jcall *c) { c->ret = vz(true); }
+static void WifiMan_is5GHz(tl_jcall *c) { c->ret = vz(true); }
+static void WifiMan_reconnect(tl_jcall *c) { c->ret = vz(true); }
+static void WifiMan_disconnect(tl_jcall *c) { c->ret = vz(true); }
+static void WifiMan_getDhcpInfo(tl_jcall *c)
+{
+    jobj *d = make("android/net/DhcpInfo");
+    set_int(d, "ipAddress", 0x0A000001);
+    set_int(d, "gateway", 0x0A000001);
+    set_int(d, "netmask", 0xFFFFFF00);
+    set_int(d, "dns1", 0x08080808);
+    set_int(d, "dns2", 0x08080404);
+    c->ret = vl(d);
+}
+static void DhcpInfo_toString(tl_jcall *c) { c->ret = vl(STR("ipaddr 10.0.0.1 gateway 10.0.0.1 netmask 255.255.255.0")); }
+static void ConnMan_getActiveNetworkInfo(tl_jcall *c)
+{
+    jobj *n = make("android/net/NetworkInfo");
+    set_int(n, "type", 1); /* TYPE_WIFI */
+    set_str(n, "typeName", "WIFI");
+    set_str(n, "subtypeName", "");
+    set_int(n, "state", 2); /* CONNECTED */
+    set_bool(n, "connected", true);
+    set_bool(n, "available", true);
+    set_str(n, "reason", "");
+    set_str(n, "extraInfo", "\"BetterHusk\"");
+    c->ret = vl(n);
+}
+static void ConnMan_getNetworkInfo(tl_jcall *c) { ConnMan_getActiveNetworkInfo(c); }
+static void ConnMan_getAllNetworkInfo(tl_jcall *c)
+{
+    jobj *arr = tl_jni_new_obj_array(C("android/net/NetworkInfo"), 1);
+    tl_jcall t = { .self = c->self };
+    ConnMan_getActiveNetworkInfo(&t);
+    arr->oarr.v[0] = t.ret.l;
+    c->ret = vl(arr);
+}
+static void ConnMan_getActiveNetwork(tl_jcall *c)
+{
+    jobj *n = make("android/net/Network");
+    set_long(n, "netId", 100);
+    c->ret = vl(n);
+}
+static void ConnMan_isActiveNetworkMetered(tl_jcall *c) { c->ret = vz(false); }
+static void ConnMan_getNetworkCapabilities(tl_jcall *c)
+{
+    c->ret = vl(make("android/net/NetworkCapabilities"));
+}
+static void NetCap_hasTransport(tl_jcall *c) { c->ret = vz(c->args[0].i == 1 || c->args[0].i == 0); }
+static void NetCap_hasCapability(tl_jcall *c) { c->ret = vz(true); }
+static void NetCap_getLinkDownstream(tl_jcall *c) { c->ret = vi(1048576); }
+static void NetCap_getLinkUpstream(tl_jcall *c) { c->ret = vi(1048576); }
+static void NetInfo_getType(tl_jcall *c) { c->ret = vi(get_int(c->self, "type")); }
+static void NetInfo_getTypeName(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "typeName", "Ljava/lang/String;"); }
+static void NetInfo_getSubtype(tl_jcall *c) { c->ret = vi(0); }
+static void NetInfo_getSubtypeName(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "subtypeName", "Ljava/lang/String;"); }
+static void NetInfo_isConnected(tl_jcall *c) { c->ret = vz(true); }
+static void NetInfo_isConnectedOrConnecting(tl_jcall *c) { c->ret = vz(true); }
+static void NetInfo_isAvailable(tl_jcall *c) { c->ret = vz(true); }
+static void NetInfo_isFailover(tl_jcall *c) { c->ret = vz(false); }
+static void NetInfo_isRoaming(tl_jcall *c) { c->ret = vz(false); }
+static void NetInfo_getState(tl_jcall *c)
+{
+    jobj *s = make("android/net/NetworkInfo$State");
+    set_str(s, "name", "CONNECTED");
+    set_int(s, "ordinal", 2);
+    c->ret = vl(s);
+}
+static void NetInfo_getDetailedState(tl_jcall *c)
+{
+    jobj *s = make("android/net/NetworkInfo$DetailedState");
+    set_str(s, "name", "CONNECTED");
+    set_int(s, "ordinal", 4);
+    c->ret = vl(s);
+}
+static void NetInfo_getReason(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "reason", "Ljava/lang/String;"); }
+static void NetInfo_getExtraInfo(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "extraInfo", "Ljava/lang/String;"); }
+static void NetInfo_toString(tl_jcall *c) { c->ret = vl(STR("NetworkInfo: type: WIFI[], state: CONNECTED/CONNECTED")); }
+static void Telephony_getDeviceId(tl_jcall *c) { c->ret = vl(STR("000000000000000")); }
+static void Telephony_getImei(tl_jcall *c) { Telephony_getDeviceId(c); }
+static void Telephony_getMeid(tl_jcall *c) { c->ret = vl(NULL); }
+static void Telephony_getSubscriberId(tl_jcall *c) { c->ret = vl(NULL); }
+static void Telephony_getLine1Number(tl_jcall *c) { c->ret = vl(NULL); }
+static void Telephony_getSimSerialNumber(tl_jcall *c) { c->ret = vl(NULL); }
+static void Telephony_getSimOperator(tl_jcall *c) { c->ret = vl(STR("")); }
+static void Telephony_getSimOperatorName(tl_jcall *c) { c->ret = vl(STR("")); }
+static void Telephony_getSimCountryIso(tl_jcall *c) { c->ret = vl(STR("us")); }
+static void Telephony_getSimState(tl_jcall *c) { c->ret = vi(5); }
+static void Telephony_getNetworkOperator(tl_jcall *c) { c->ret = vl(STR("")); }
+static void Telephony_getNetworkOperatorName(tl_jcall *c) { c->ret = vl(STR("")); }
+static void Telephony_getNetworkCountryIso(tl_jcall *c) { c->ret = vl(STR("us")); }
+static void Telephony_getNetworkType(tl_jcall *c) { c->ret = vi(13); }
+static void Telephony_getPhoneType(tl_jcall *c) { c->ret = vi(1); }
+static void Telephony_getDataState(tl_jcall *c) { c->ret = vi(2); }
+static void Telephony_getDataNetworkType(tl_jcall *c) { c->ret = vi(13); }
+static void Telephony_getVoiceNetworkType(tl_jcall *c) { c->ret = vi(13); }
+static void Telephony_isNetworkRoaming(tl_jcall *c) { c->ret = vz(false); }
+static void Telephony_hasIccCard(tl_jcall *c) { c->ret = vz(true); }
+static void Telephony_getCellLocation(tl_jcall *c) { c->ret = vl(NULL); }
+static void Telephony_getAllCellInfo(tl_jcall *c) { c->ret = vl(NULL); }
+static void Telephony_listen(tl_jcall *c) { (void)c; }
+static void Telephony_getDeviceSoftwareVersion(tl_jcall *c) { c->ret = vl(NULL); }
+static void Telephony_isVoiceCapable(tl_jcall *c) { c->ret = vz(true); }
+static void Telephony_isSmsCapable(tl_jcall *c) { c->ret = vz(true); }
+static void Telephony_getCallState(tl_jcall *c) { c->ret = vi(0); }
+static void Telephony_getDataActivity(tl_jcall *c) { c->ret = vi(0); }
+
+/* ============================================================== android.graphics */
+
+static void Rect_init(tl_jcall *c) { (void)c; }
+static void Rect_init4(tl_jcall *c)
+{
+    set_int(c->self, "left", c->args[0].i); set_int(c->self, "top", c->args[1].i);
+    set_int(c->self, "right", c->args[2].i); set_int(c->self, "bottom", c->args[3].i);
+}
+static void Rect_initR(tl_jcall *c)
+{
+    jobj *o = c->args[0].l;
+    if (o) Rect_init4(&(tl_jcall){ .self = c->self,
+        .args = (jvalue[]){ vi(get_int(o,"left")), vi(get_int(o,"top")), vi(get_int(o,"right")), vi(get_int(o,"bottom")) } });
+}
+static void Rect_set(tl_jcall *c)
+{
+    set_int(c->self, "left", c->args[0].i); set_int(c->self, "top", c->args[1].i);
+    set_int(c->self, "right", c->args[2].i); set_int(c->self, "bottom", c->args[3].i);
+}
+static void Rect_setR(tl_jcall *c) { Rect_initR(c); }
+static void Rect_width(tl_jcall *c)  { c->ret = vi(get_int(c->self, "right") - get_int(c->self, "left")); }
+static void Rect_height(tl_jcall *c) { c->ret = vi(get_int(c->self, "bottom") - get_int(c->self, "top")); }
+static void Rect_centerX(tl_jcall *c){ c->ret = vi((get_int(c->self, "left") + get_int(c->self, "right")) / 2); }
+static void Rect_centerY(tl_jcall *c){ c->ret = vi((get_int(c->self, "top") + get_int(c->self, "bottom")) / 2); }
+static void Rect_exactCenterX(tl_jcall *c){ c->ret = vf((get_int(c->self, "left") + get_int(c->self, "right")) / 2.0f); }
+static void Rect_exactCenterY(tl_jcall *c){ c->ret = vf((get_int(c->self, "top") + get_int(c->self, "bottom")) / 2.0f); }
+static void Rect_isEmpty(tl_jcall *c)
+{
+    c->ret = vz(get_int(c->self, "left") >= get_int(c->self, "right") || get_int(c->self, "top") >= get_int(c->self, "bottom"));
+}
+static void Rect_contains(tl_jcall *c)
+{
+    c->ret = vz(c->args[0].i >= get_int(c->self, "left") && c->args[0].i < get_int(c->self, "right") &&
+                c->args[1].i >= get_int(c->self, "top") && c->args[1].i < get_int(c->self, "bottom"));
+}
+static void Rect_containsR(tl_jcall *c)
+{
+    c->ret = vz(c->args[0].i >= get_int(c->self, "left") && c->args[2].i <= get_int(c->self, "right") &&
+                c->args[1].i >= get_int(c->self, "top") && c->args[3].i <= get_int(c->self, "bottom"));
+}
+static void Rect_intersects(tl_jcall *c)
+{
+    c->ret = vz(get_int(c->self, "left") < c->args[2].i && c->args[0].i < get_int(c->self, "right") &&
+                get_int(c->self, "top") < c->args[3].i && c->args[1].i < get_int(c->self, "bottom"));
+}
+static void Rect_intersectsR(tl_jcall *c)
+{
+    jobj *a = c->args[0].l, *b = c->args[1].l;
+    c->ret = vz(a && b &&
+        get_int(a,"left") < get_int(b,"right") && get_int(b,"left") < get_int(a,"right") &&
+        get_int(a,"top") < get_int(b,"bottom") && get_int(b,"top") < get_int(a,"bottom"));
+}
+static void Rect_intersect(tl_jcall *c)
+{
+    int l = get_int(c->self,"left") > c->args[0].i ? get_int(c->self,"left") : c->args[0].i;
+    int t = get_int(c->self,"top") > c->args[1].i ? get_int(c->self,"top") : c->args[1].i;
+    int r = get_int(c->self,"right") < c->args[2].i ? get_int(c->self,"right") : c->args[2].i;
+    int b = get_int(c->self,"bottom") < c->args[3].i ? get_int(c->self,"bottom") : c->args[3].i;
+    bool ok = l < r && t < b;
+    if (ok) { set_int(c->self,"left",l); set_int(c->self,"top",t); set_int(c->self,"right",r); set_int(c->self,"bottom",b); }
+    c->ret = vz(ok);
+}
+static void Rect_union(tl_jcall *c)
+{
+    int l = get_int(c->self,"left"), t = get_int(c->self,"top"), r = get_int(c->self,"right"), b = get_int(c->self,"bottom");
+    if (c->args[0].i < l) l = c->args[0].i; if (c->args[1].i < t) t = c->args[1].i;
+    if (c->args[2].i > r) r = c->args[2].i; if (c->args[3].i > b) b = c->args[3].i;
+    set_int(c->self,"left",l); set_int(c->self,"top",t); set_int(c->self,"right",r); set_int(c->self,"bottom",b);
+}
+static void Rect_unionR(tl_jcall *c)
+{
+    jobj *o = c->args[0].l;
+    if (!o) return;
+    jvalue a[4] = { vi(get_int(o,"left")), vi(get_int(o,"top")), vi(get_int(o,"right")), vi(get_int(o,"bottom")) };
+    tl_jcall t = { .self = c->self, .args = a }; Rect_union(&t);
+}
+static void Rect_offset(tl_jcall *c)
+{
+    set_int(c->self, "left", get_int(c->self,"left") + c->args[0].i);
+    set_int(c->self, "right", get_int(c->self,"right") + c->args[0].i);
+    set_int(c->self, "top", get_int(c->self,"top") + c->args[1].i);
+    set_int(c->self, "bottom", get_int(c->self,"bottom") + c->args[1].i);
+}
+static void Rect_offsetTo(tl_jcall *c)
+{
+    int dx = c->args[0].i - get_int(c->self,"left"), dy = c->args[1].i - get_int(c->self,"top");
+    jvalue a[2] = { vi(dx), vi(dy) };
+    tl_jcall t = { .self = c->self, .args = a }; Rect_offset(&t);
+}
+static void Rect_inset(tl_jcall *c)
+{
+    set_int(c->self, "left", get_int(c->self,"left") + c->args[0].i);
+    set_int(c->self, "right", get_int(c->self,"right") - c->args[0].i);
+    set_int(c->self, "top", get_int(c->self,"top") + c->args[1].i);
+    set_int(c->self, "bottom", get_int(c->self,"bottom") - c->args[1].i);
+}
+static void Rect_setEmpty(tl_jcall *c)
+{
+    set_int(c->self,"left",0); set_int(c->self,"top",0); set_int(c->self,"right",0); set_int(c->self,"bottom",0);
+}
+static void Rect_sort(tl_jcall *c)
+{
+    int l = get_int(c->self,"left"), r = get_int(c->self,"right");
+    int t = get_int(c->self,"top"), b = get_int(c->self,"bottom");
+    if (l > r) { set_int(c->self,"left",r); set_int(c->self,"right",l); }
+    if (t > b) { set_int(c->self,"top",b); set_int(c->self,"bottom",t); }
+}
+static void Rect_toString(tl_jcall *c)
+{
+    char b[80];
+    snprintf(b, 80, "Rect(%d, %d - %d, %d)", get_int(c->self,"left"), get_int(c->self,"top"), get_int(c->self,"right"), get_int(c->self,"bottom"));
+    c->ret = vl(STR(b));
+}
+static void Rect_toShortString(tl_jcall *c)
+{
+    char b[80];
+    snprintf(b, 80, "[%d,%d][%d,%d]", get_int(c->self,"left"), get_int(c->self,"top"), get_int(c->self,"right"), get_int(c->self,"bottom"));
+    c->ret = vl(STR(b));
+}
+static void Rect_equals(tl_jcall *c)
+{
+    jobj *o = c->args[0].l;
+    c->ret = vz(o && get_int(c->self,"left") == get_int(o,"left") && get_int(c->self,"top") == get_int(o,"top") &&
+                 get_int(c->self,"right") == get_int(o,"right") && get_int(c->self,"bottom") == get_int(o,"bottom"));
+}
+static void Rect_hashCode(tl_jcall *c)
+{
+    c->ret = vi(get_int(c->self,"left") ^ get_int(c->self,"top")*31 ^ get_int(c->self,"right")*61 ^ get_int(c->self,"bottom")*97);
+}
+static void Rect_flattenToString(tl_jcall *c) { Rect_toString(c); }
+static void Rect_unflattenFromString(tl_jcall *c) { c->ret = vl(make("android/graphics/Rect")); }
+static void Rect_describeContents(tl_jcall *c) { c->ret = vi(0); }
+static void Rect_writeToParcel(tl_jcall *c) { (void)c; }
+static void Rect_readFromParcel(tl_jcall *c) { (void)c; }
+static void Rect_scale(tl_jcall *c)
+{
+    float s = c->args[0].f;
+    set_int(c->self,"left",(int)(get_int(c->self,"left")*s+0.5f));
+    set_int(c->self,"right",(int)(get_int(c->self,"right")*s+0.5f));
+    set_int(c->self,"top",(int)(get_int(c->self,"top")*s+0.5f));
+    set_int(c->self,"bottom",(int)(get_int(c->self,"bottom")*s+0.5f));
+}
+
+static void Color_argb(tl_jcall *c)
+{
+    c->ret = vi((c->args[0].i << 24) | (c->args[1].i << 16) | (c->args[2].i << 8) | c->args[3].i);
+}
+static void Color_rgb(tl_jcall *c)
+{
+    c->ret = vi(0xFF000000 | (c->args[0].i << 16) | (c->args[1].i << 8) | c->args[2].i);
+}
+static void Color_alpha(tl_jcall *c) { c->ret = vi((c->args[0].i >> 24) & 0xFF); }
+static void Color_red(tl_jcall *c)   { c->ret = vi((c->args[0].i >> 16) & 0xFF); }
+static void Color_green(tl_jcall *c) { c->ret = vi((c->args[0].i >> 8) & 0xFF); }
+static void Color_blue(tl_jcall *c)  { c->ret = vi(c->args[0].i & 0xFF); }
+static void Color_alphaF(tl_jcall *c) { c->ret = vf(((c->args[0].i >> 24) & 0xFF) / 255.0f); }
+static void Color_redF(tl_jcall *c)   { c->ret = vf(((c->args[0].i >> 16) & 0xFF) / 255.0f); }
+static void Color_greenF(tl_jcall *c) { c->ret = vf(((c->args[0].i >> 8) & 0xFF) / 255.0f); }
+static void Color_blueF(tl_jcall *c)  { c->ret = vf((c->args[0].i & 0xFF) / 255.0f); }
+static void Color_luminance(tl_jcall *c)
+{
+    int i = c->args[0].i;
+    float r = ((i >> 16) & 0xFF) / 255.0f, g = ((i >> 8) & 0xFF) / 255.0f, b = (i & 0xFF) / 255.0f;
+    c->ret = vf(0.2126f * r + 0.7152f * g + 0.0722f * b);
+}
+static void Color_parseColor(tl_jcall *c)
+{
+    const char *s = S(c->args[0].l);
+    if (!s) { c->ret = vi(0); return; }
+    if (s[0] == '#') {
+        uint64_t v = strtoull(s + 1, NULL, 16);
+        size_t n = strlen(s + 1);
+        if (n == 6) v |= 0xFF000000ull;
+        else if (n == 3) {
+            uint32_t r = (v >> 8) & 0xF, g = (v >> 4) & 0xF, b = v & 0xF;
+            v = 0xFF000000 | (r*17<<16) | (g*17<<8) | b*17;
+        } else if (n == 4) {
+            uint32_t a = (v >> 12) & 0xF, r = (v >> 8) & 0xF, g = (v >> 4) & 0xF, b = v & 0xF;
+            v = (a*17<<24) | (r*17<<16) | (g*17<<8) | b*17;
+        }
+        c->ret = vi((int32_t)v); return;
+    }
+    static const struct { const char *n; int32_t v; } named[] = {
+        {"black",0xFF000000},{"white",0xFFFFFFFF},{"red",0xFFFF0000},{"green",0xFF00FF00},
+        {"blue",0xFF0000FF},{"yellow",0xFFFFFF00},{"cyan",0xFF00FFFF},{"magenta",0xFFFF00FF},
+        {"gray",0xFF888888},{"grey",0xFF888888},{"darkgray",0xFF444444},{"darkgrey",0xFF444444},
+        {"lightgray",0xFFCCCCCC},{"lightgrey",0xFFCCCCCC},{"transparent",0},{"dkgray",0xFF444444},
+        {"ltgray",0xFFCCCCCC},{"aqua",0xFF00FFFF},{"fuchsia",0xFFFF00FF},{"lime",0xFF00FF00},
+        {"maroon",0xFF800000},{"navy",0xFF000080},{"olive",0xFF808000},{"purple",0xFF800080},
+        {"silver",0xFFC0C0C0},{"teal",0xFF008080},{"orange",0xFFFFA500}
+    };
+    for (size_t i = 0; i < sizeof(named)/sizeof(named[0]); i++)
+        if (!strcasecmp(s, named[i].n)) { c->ret = vi(named[i].v); return; }
+    tl_jni_throw("java/lang/IllegalArgumentException", "unknown color");
+}
+static void Color_valueOf(tl_jcall *c)
+{
+    jobj *o = make("android/graphics/Color");
+    set_int(o, "value", c->args[0].i);
+    c->ret = vl(o);
+}
+static void Color_toArgb(tl_jcall *c) { c->ret = vi(get_int(c->self, "value")); }
+static void Color_HSVToColor(tl_jcall *c)
+{
+    jobj *hsv = c->args[1].l;
+    float *f = hsv->arr.data;
+    float h = f[0], s_ = f[1], v = f[2];
+    int hi = ((int)(h / 60.0f)) % 6;
+    float fr = h / 60.0f - (int)(h / 60.0f);
+    float p = v * (1 - s_), q = v * (1 - s_ * fr), t = v * (1 - s_ * (1 - fr));
+    float r, g, b;
+    switch (hi < 0 ? hi + 6 : hi) {
+    case 0: r=v; g=t; b=p; break; case 1: r=q; g=v; b=p; break;
+    case 2: r=p; g=v; b=t; break; case 3: r=p; g=q; b=v; break;
+    case 4: r=t; g=p; b=v; break; default: r=v; g=p; b=q;
+    }
+    int a = hsv->arr.len > 3 ? (int)(f[3] * 255) : c->args[0].i;
+    c->ret = vi((a<<24) | ((int)(r*255)<<16) | ((int)(g*255)<<8) | (int)(b*255));
+}
+static void Color_RGBToHSV(tl_jcall *c)
+{
+    float r = c->args[0].i / 255.0f, g = c->args[1].i / 255.0f, b = c->args[2].i / 255.0f;
+    jobj *hsv = c->args[3].l;
+    float mx = r > g ? (r > b ? r : b) : (g > b ? g : b);
+    float mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
+    float d = mx - mn, h = 0;
+    if (d > 0) {
+        if (mx == r) h = fmodf((g - b) / d, 6.0f);
+        else if (mx == g) h = (b - r) / d + 2;
+        else h = (r - g) / d + 4;
+        h *= 60; if (h < 0) h += 360;
+    }
+    float *f = hsv->arr.data;
+    f[0] = h; f[1] = mx > 0 ? d / mx : 0; f[2] = mx;
+}
+static void Color_colorToHSV(tl_jcall *c)
+{
+    int i = c->args[0].i;
+    jvalue a[4] = { vi((i>>16)&0xFF), vi((i>>8)&0xFF), vi(i&0xFF), c->args[1] };
+    tl_jcall t = { .args = a }; Color_RGBToHSV(&t);
+}
+
+/* Paint: field-backed style/color/flags. */
+static void Paint_init(tl_jcall *c) { set_int(c->self, "flags", 1); }
+static void Paint_initF(tl_jcall *c) { set_int(c->self, "flags", c->args[0].i); }
+static void Paint_initP(tl_jcall *c)
+{
+    jobj *o = c->args[0].l;
+    if (o) {
+        tl_jni_set_field(c->self, "color", "I", tl_jni_get_field(o, "color", "I"));
+        tl_jni_set_field(c->self, "flags", "I", tl_jni_get_field(o, "flags", "I"));
+        set_float(c->self, "textSize", tl_jni_get_field(o, "textSize", "F").f);
+        set_float(c->self, "strokeWidth", tl_jni_get_field(o, "strokeWidth", "F").f);
+    }
+}
+static void Paint_setColor(tl_jcall *c) { set_int(c->self, "color", c->args[0].i); }
+static void Paint_getColor(tl_jcall *c) { c->ret = vi(get_int(c->self, "color")); }
+static void Paint_setAlpha(tl_jcall *c) { set_int(c->self, "alpha", c->args[0].i); }
+static void Paint_getAlpha(tl_jcall *c) { c->ret = vi(get_int(c->self, "alpha")); }
+static void Paint_setStyle(tl_jcall *c)
+{
+    jobj *s = c->args[0].l;
+    if (s) set_int(c->self, "style", get_int(s, "ordinal"));
+}
+static void Paint_getStyle(tl_jcall *c)
+{
+    jobj *s = make("android/graphics/Paint$Style");
+    int o = get_int(c->self, "style");
+    static const char *names[] = {"FILL","STROKE","FILL_AND_STROKE"};
+    set_int(s, "ordinal", o); set_str(s, "name", names[o >= 0 && o < 3 ? o : 0]);
+    c->ret = vl(s);
+}
+static void Paint_setStrokeWidth(tl_jcall *c) { set_float(c->self, "strokeWidth", c->args[0].f); }
+static void Paint_getStrokeWidth(tl_jcall *c) { c->ret = vf(get_flt(c->self, "strokeWidth")); }
+static void Paint_setTextSize(tl_jcall *c) { set_float(c->self, "textSize", c->args[0].f); }
+static void Paint_getTextSize(tl_jcall *c) { c->ret = vf(get_flt(c->self, "textSize")); }
+static void Paint_setAntiAlias(tl_jcall *c) { if (c->args[0].z) set_int(c->self, "flags", get_int(c->self,"flags")|1); else set_int(c->self, "flags", get_int(c->self,"flags")&~1); }
+static void Paint_isAntiAlias(tl_jcall *c) { c->ret = vz(get_int(c->self, "flags") & 1); }
+static void Paint_setDither(tl_jcall *c) { if (c->args[0].z) set_int(c->self, "flags", get_int(c->self,"flags")|4); else set_int(c->self, "flags", get_int(c->self,"flags")&~4); }
+static void Paint_isDither(tl_jcall *c) { c->ret = vz(get_int(c->self, "flags") & 4); }
+static void Paint_setFilterBitmap(tl_jcall *c) { if (c->args[0].z) set_int(c->self, "flags", get_int(c->self,"flags")|2); else set_int(c->self, "flags", get_int(c->self,"flags")&~2); }
+static void Paint_isFilterBitmap(tl_jcall *c) { c->ret = vz(get_int(c->self, "flags") & 2); }
+static void Paint_setFlags(tl_jcall *c) { set_int(c->self, "flags", c->args[0].i); }
+static void Paint_getFlags(tl_jcall *c) { c->ret = vi(get_int(c->self, "flags")); }
+static void Paint_setARGB(tl_jcall *c)
+{
+    set_int(c->self, "color", (c->args[0].i<<24)|(c->args[1].i<<16)|(c->args[2].i<<8)|c->args[3].i);
+}
+static void Paint_setTypeface(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "typeface", "Landroid/graphics/Typeface;", c->args[0]);
+    c->ret = c->args[0];
+}
+static void Paint_getTypeface(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "typeface", "Landroid/graphics/Typeface;"); }
+static void Paint_measureText(tl_jcall *c)
+{
+    const char *s = c->args[0].l ? S(c->args[0].l) : "";
+    float ts = get_flt(c->self, "textSize");
+    c->ret = vf((float)strlen(s) * (ts > 0 ? ts : 12.0f) * 0.6f);
+}
+static void Paint_measureTextRange(tl_jcall *c) { Paint_measureText(c); }
+static void Paint_getTextBounds(tl_jcall *c)
+{
+    const char *s = c->args[0].l ? S(c->args[0].l) : "";
+    int a = c->args[1].i, e = c->args[2].i;
+    jobj *r = c->args[3].l;
+    if (r && a >= 0 && e > a && e <= (int)strlen(s)) {
+        float ts = get_flt(c->self, "textSize"); if (ts <= 0) ts = 12.0f;
+        set_int(r, "left", 0); set_int(r, "top", -(int)ts);
+        set_int(r, "right", (int)((e - a) * ts * 0.6f)); set_int(r, "bottom", (int)(ts * 0.25f));
+    }
+}
+static void Paint_setUnderlineText(tl_jcall *c) { set_bool(c->self, "underline", c->args[0].z); }
+static void Paint_isUnderlineText(tl_jcall *c) { c->ret = vz(get_int(c->self, "underline")); }
+static void Paint_setStrikeThruText(tl_jcall *c) { set_bool(c->self, "strike", c->args[0].z); }
+static void Paint_isStrikeThruText(tl_jcall *c) { c->ret = vz(get_int(c->self, "strike")); }
+static void Paint_setFakeBoldText(tl_jcall *c) { set_bool(c->self, "fakeBold", c->args[0].z); }
+static void Paint_isFakeBoldText(tl_jcall *c) { c->ret = vz(get_int(c->self, "fakeBold")); }
+static void Paint_setTextSkewX(tl_jcall *c) { set_float(c->self, "skewX", c->args[0].f); }
+static void Paint_getTextSkewX(tl_jcall *c) { c->ret = vf(get_flt(c->self, "skewX")); }
+static void Paint_setTextScaleX(tl_jcall *c) { set_float(c->self, "scaleX", c->args[0].f); }
+static void Paint_getTextScaleX(tl_jcall *c) { c->ret = vf(get_flt(c->self, "scaleX") ? get_flt(c->self, "scaleX") : 1.0f); }
+static void Paint_setShadowLayer(tl_jcall *c) { set_float(c->self, "shadowR", c->args[0].f); }
+static void Paint_clearShadowLayer(tl_jcall *c) { set_float(c->self, "shadowR", 0); }
+static void Paint_setTextAlign(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (a) set_int(c->self, "align", get_int(a, "ordinal"));
+}
+static void Paint_getTextAlign(tl_jcall *c)
+{
+    jobj *a = make("android/graphics/Paint$Align");
+    int o = get_int(c->self, "align");
+    static const char *names[] = {"LEFT","CENTER","RIGHT"};
+    set_int(a, "ordinal", o); set_str(a, "name", names[o >= 0 && o < 3 ? o : 0]);
+    c->ret = vl(a);
+}
+static void Paint_setXfermode(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "xfermode", "Landroid/graphics/Xfermode;", c->args[0]);
+    c->ret = c->args[0];
+}
+static void Paint_getXfermode(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "xfermode", "Landroid/graphics/Xfermode;"); }
+static void Paint_setShader(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "shader", "Landroid/graphics/Shader;", c->args[0]);
+    c->ret = c->args[0];
+}
+static void Paint_getShader(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "shader", "Landroid/graphics/Shader;"); }
+static void Paint_setColorFilter(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "colorFilter", "Landroid/graphics/ColorFilter;", c->args[0]);
+    c->ret = c->args[0];
+}
+static void Paint_getColorFilter(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "colorFilter", "Landroid/graphics/ColorFilter;"); }
+static void Paint_setPathEffect(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "pathEffect", "Landroid/graphics/PathEffect;", c->args[0]);
+    c->ret = c->args[0];
+}
+static void Paint_getPathEffect(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "pathEffect", "Landroid/graphics/PathEffect;"); }
+static void Paint_setMaskFilter(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "maskFilter", "Landroid/graphics/MaskFilter;", c->args[0]);
+    c->ret = c->args[0];
+}
+static void Paint_setStrokeCap(tl_jcall *c)
+{
+    jobj *o = c->args[0].l;
+    if (o) set_int(c->self, "cap", get_int(o, "ordinal"));
+}
+static void Paint_getStrokeCap(tl_jcall *c)
+{
+    jobj *o = make("android/graphics/Paint$Cap");
+    int i = get_int(c->self, "cap");
+    static const char *names[] = {"BUTT","ROUND","SQUARE"};
+    set_int(o, "ordinal", i); set_str(o, "name", names[i >= 0 && i < 3 ? i : 0]);
+    c->ret = vl(o);
+}
+static void Paint_setStrokeJoin(tl_jcall *c)
+{
+    jobj *o = c->args[0].l;
+    if (o) set_int(c->self, "join", get_int(o, "ordinal"));
+}
+static void Paint_getStrokeJoin(tl_jcall *c)
+{
+    jobj *o = make("android/graphics/Paint$Join");
+    int i = get_int(c->self, "join");
+    static const char *names[] = {"MITER","ROUND","BEVEL"};
+    set_int(o, "ordinal", i); set_str(o, "name", names[i >= 0 && i < 3 ? i : 0]);
+    c->ret = vl(o);
+}
+static void Paint_setStrokeMiter(tl_jcall *c) { set_float(c->self, "miter", c->args[0].f); }
+static void Paint_getStrokeMiter(tl_jcall *c) { c->ret = vf(get_flt(c->self, "miter")); }
+static void Paint_reset(tl_jcall *c) { set_int(c->self, "flags", 0); set_int(c->self, "color", 0xFF000000); }
+static void Paint_set(tl_jcall *c) { Paint_initP(c); }
+static void Paint_descent(tl_jcall *c) { c->ret = vf(get_flt(c->self, "textSize") * 0.25f); }
+static void Paint_ascent(tl_jcall *c) { c->ret = vf(-get_flt(c->self, "textSize")); }
+static void Paint_getFontMetrics(tl_jcall *c)
+{
+    jobj *fm = c->args[0].l;
+    float ts = get_flt(c->self, "textSize"); if (ts <= 0) ts = 12;
+    if (fm) {
+        set_float(fm, "top", -ts); set_float(fm, "ascent", -ts);
+        set_float(fm, "descent", ts * 0.25f); set_float(fm, "bottom", ts * 0.3f);
+        set_float(fm, "leading", 0);
+    }
+    c->ret = vf(ts * 1.3f);
+}
+static void Paint_breakText(tl_jcall *c)
+{
+    const char *s = c->args[0].l ? S(c->args[0].l) : "";
+    float avail = c->args[2].f, ts = get_flt(c->self, "textSize"); if (ts <= 0) ts = 12;
+    int n = (int)strlen(s), fit = (int)(avail / (ts * 0.6f));
+    if (c->args[3].l && c->args[3].l->kind == TL_K_PRIM_ARRAY)
+        ((float *)c->args[3].l->arr.data)[0] = fit * ts * 0.6f;
+    c->ret = vi(fit > n ? n : fit);
+}
+static void Paint_getTextWidths(tl_jcall *c)
+{
+    const char *s = c->args[0].l ? S(c->args[0].l) : "";
+    jobj *w = c->args[1].l;
+    float ts = get_flt(c->self, "textSize"); if (ts <= 0) ts = 12;
+    int n = (int)strlen(s), m = w ? (int)w->arr.len : 0;
+    for (int i = 0; i < n && i < m; i++) ((float *)w->arr.data)[i] = ts * 0.6f;
+    c->ret = vi(n < m ? n : m);
+}
+static void Typeface_create(tl_jcall *c)
+{
+    jobj *t = make("android/graphics/Typeface");
+    if (c->args[0].l && c->args[0].l->kind == TL_K_STRING)
+        set_str(t, "name", S(c->args[0].l));
+    set_int(t, "style", c->args[1].i);
+    c->ret = vl(t);
+}
+static void Typeface_createFromAsset(tl_jcall *c)
+{
+    jobj *t = make("android/graphics/Typeface");
+    if (c->args[1].l) set_str(t, "name", S(c->args[1].l));
+    c->ret = vl(t);
+}
+static void Typeface_createFromFile(tl_jcall *c) { Typeface_createFromAsset(c); }
+static void Typeface_defaultFromStyle(tl_jcall *c)
+{
+    jobj *t = make("android/graphics/Typeface");
+    set_int(t, "style", c->args[0].i);
+    c->ret = vl(t);
+}
+static void Typeface_getStyle(tl_jcall *c) { c->ret = vi(get_int(c->self, "style")); }
+static void Typeface_isBold(tl_jcall *c) { c->ret = vz(get_int(c->self, "style") & 1); }
+static void Typeface_isItalic(tl_jcall *c) { c->ret = vz(get_int(c->self, "style") & 2); }
+static void Typeface_getDEFAULT(tl_jcall *c)
+{
+    static jobj *d;
+    if (!d) d = tl_jni_ref(make("android/graphics/Typeface"));
+    c->ret = vl(tl_jni_ref(d));
+}
+static void Typeface_getDEFAULTBOLD(tl_jcall *c)
+{
+    static jobj *d;
+    if (!d) { d = tl_jni_ref(make("android/graphics/Typeface")); set_int(d, "style", 1); }
+    c->ret = vl(tl_jni_ref(d));
+}
+
+/* Matrix: 9 floats in "values" field (float[]). */
+static float *mat_of(jobj *o)
+{
+    jobj *a = tl_jni_get_field(o, "values", "[F").l;
+    if (!a) {
+        a = tl_jni_new_prim_array('F', 9);
+        float *f = a->arr.data;
+        f[0]=f[4]=f[8]=1.0f;
+        tl_jni_set_field(o, "values", "[F", vl(a));
+    }
+    return a->arr.data;
+}
+static void Matrix_init(tl_jcall *c) { mat_of(c->self); }
+static void Matrix_initM(tl_jcall *c)
+{
+    float *d = mat_of(c->self);
+    if (c->args[0].l) memcpy(d, mat_of(c->args[0].l), 36);
+}
+static void Matrix_reset(tl_jcall *c)
+{
+    float *f = mat_of(c->self);
+    memset(f, 0, 36); f[0]=f[4]=f[8]=1.0f;
+}
+static void Matrix_set(tl_jcall *c)
+{
+    if (c->args[0].l) memcpy(mat_of(c->self), mat_of(c->args[0].l), 36);
+}
+static void Matrix_isIdentity(tl_jcall *c)
+{
+    float *f = mat_of(c->self);
+    c->ret = vz(f[0]==1&&f[1]==0&&f[2]==0&&f[3]==0&&f[4]==1&&f[5]==0&&f[6]==0&&f[7]==0&&f[8]==1);
+}
+static void mat_mul(float *r, const float *a, const float *b)
+{
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++)
+            r[i*3+j] = a[i*3+0]*b[0*3+j] + a[i*3+1]*b[1*3+j] + a[i*3+2]*b[2*3+j];
+}
+static void Matrix_setConcat(tl_jcall *c)
+{
+    float r[9];
+    mat_mul(r, mat_of(c->args[0].l), mat_of(c->args[1].l));
+    memcpy(mat_of(c->self), r, 36);
+    c->ret = vz(true);
+}
+static void Matrix_preConcat(tl_jcall *c)
+{
+    float r[9];
+    mat_mul(r, mat_of(c->args[0].l), mat_of(c->self));
+    memcpy(mat_of(c->self), r, 36);
+    c->ret = vz(true);
+}
+static void Matrix_postConcat(tl_jcall *c)
+{
+    float r[9];
+    mat_mul(r, mat_of(c->self), mat_of(c->args[0].l));
+    memcpy(mat_of(c->self), r, 36);
+    c->ret = vz(true);
+}
+static void mat_tr(tl_jcall *c, bool pre, float sx, float sy, float px, float py, float deg)
+{
+    float *f = mat_of(c->self), t[9] = {0}, r[9];
+    t[0]=t[4]=t[8]=1.0f;
+    if (deg == deg) { /* rotation mode */
+        float rd = deg * (float)M_PI / 180.0f, cs = cosf(rd), sn = sinf(rd);
+        t[0]=cs; t[1]=-sn; t[3]=sn; t[4]=cs;
+        if (px || py) { t[2]=px-px*cs+py*sn; t[5]=py-px*sn-py*cs; }
+    } else {
+        t[0]=sx; t[4]=sy; t[2]=px; t[5]=py;
+    }
+    if (pre) mat_mul(r, t, f); else mat_mul(r, f, t);
+    memcpy(f, r, 36);
+    c->ret = vz(true);
+}
+static void Matrix_setTranslate(tl_jcall *c)
+{
+    float *f = mat_of(c->self); memset(f,0,36); f[0]=f[4]=f[8]=1;
+    f[2]=c->args[0].f; f[5]=c->args[1].f;
+}
+static void Matrix_preTranslate(tl_jcall *c)  { mat_tr(c, true, 0,0, c->args[0].f, c->args[1].f, NAN); }
+static void Matrix_postTranslate(tl_jcall *c) { mat_tr(c, false, 0,0, c->args[0].f, c->args[1].f, NAN); }
+static void Matrix_setScale(tl_jcall *c)
+{
+    float *f = mat_of(c->self); memset(f,0,36); f[8]=1;
+    f[0]=c->args[0].f; f[4]=c->args[1].f;
+}
+static void Matrix_setScaleP(tl_jcall *c)
+{
+    float *f = mat_of(c->self); memset(f,0,36); f[8]=1;
+    float sx=c->args[0].f, sy=c->args[1].f, px=c->args[2].f, py=c->args[3].f;
+    f[0]=sx; f[4]=sy; f[2]=px-px*sx; f[5]=py-py*sy;
+}
+static void Matrix_preScale(tl_jcall *c)  { float *f=mat_of(c->self),t[9]={0},r[9]; t[0]=c->args[0].f;t[4]=c->args[1].f;t[8]=1; mat_mul(r,t,f); memcpy(f,r,36); c->ret=vz(true); }
+static void Matrix_postScale(tl_jcall *c) { float *f=mat_of(c->self),t[9]={0},r[9]; t[0]=c->args[0].f;t[4]=c->args[1].f;t[8]=1; mat_mul(r,f,t); memcpy(f,r,36); c->ret=vz(true); }
+static void Matrix_preScaleP(tl_jcall *c)
+{
+    float px=c->args[2].f, py=c->args[3].f;
+    float *f=mat_of(c->self),t[9]={0},r[9];
+    t[0]=c->args[0].f;t[4]=c->args[1].f;t[8]=1;t[2]=px-px*c->args[0].f;t[5]=py-py*c->args[1].f;
+    mat_mul(r,t,f); memcpy(f,r,36); c->ret=vz(true);
+}
+static void Matrix_postScaleP(tl_jcall *c)
+{
+    float px=c->args[2].f, py=c->args[3].f;
+    float *f=mat_of(c->self),t[9]={0},r[9];
+    t[0]=c->args[0].f;t[4]=c->args[1].f;t[8]=1;t[2]=px-px*c->args[0].f;t[5]=py-py*c->args[1].f;
+    mat_mul(r,f,t); memcpy(f,r,36); c->ret=vz(true);
+}
+static void mat_rot(jobj *o, bool pre, float deg, float px, float py)
+{
+    float rd = deg * (float)M_PI / 180.0f, cs = cosf(rd), sn = sinf(rd);
+    float *f = mat_of(o), t[9] = {0}, r[9];
+    t[0]=cs; t[1]=-sn; t[3]=sn; t[4]=cs; t[8]=1;
+    if (px || py) { t[2]=px-px*cs+py*sn; t[5]=py-px*sn-py*cs; }
+    if (pre) mat_mul(r, t, f); else mat_mul(r, f, t);
+    memcpy(f, r, 36);
+}
+static void Matrix_setRotate(tl_jcall *c)
+{
+    Matrix_reset(c); mat_rot(c->self, true, c->args[0].f, 0, 0);
+}
+static void Matrix_setRotateP(tl_jcall *c)
+{
+    Matrix_reset(c); mat_rot(c->self, true, c->args[0].f, c->args[1].f, c->args[2].f);
+}
+static void Matrix_preRotate(tl_jcall *c)  { mat_rot(c->self, true, c->args[0].f, 0, 0); c->ret = vz(true); }
+static void Matrix_postRotate(tl_jcall *c) { mat_rot(c->self, false, c->args[0].f, 0, 0); c->ret = vz(true); }
+static void Matrix_preRotateP(tl_jcall *c)  { mat_rot(c->self, true, c->args[0].f, c->args[1].f, c->args[2].f); c->ret = vz(true); }
+static void Matrix_postRotateP(tl_jcall *c) { mat_rot(c->self, false, c->args[0].f, c->args[1].f, c->args[2].f); c->ret = vz(true); }
+static void Matrix_setSinCos(tl_jcall *c)
+{
+    float *f = mat_of(c->self); memset(f,0,36);
+    f[0]=c->args[1].f; f[1]=-c->args[0].f; f[3]=c->args[0].f; f[4]=c->args[1].f; f[8]=1;
+}
+static void Matrix_setSkew(tl_jcall *c)
+{
+    float *f = mat_of(c->self); memset(f,0,36);
+    f[0]=f[4]=f[8]=1; f[1]=c->args[0].f; f[3]=c->args[1].f;
+}
+static void Matrix_invert(tl_jcall *c)
+{
+    float *f = mat_of(c->self);
+    jobj *inv = c->args[0].l;
+    float det = f[0]*(f[4]*f[8]-f[5]*f[7]) - f[1]*(f[3]*f[8]-f[5]*f[6]) + f[2]*(f[3]*f[7]-f[4]*f[6]);
+    if (!inv || det == 0) { c->ret = vz(false); return; }
+    float *o = mat_of(inv);
+    o[0]=(f[4]*f[8]-f[5]*f[7])/det; o[1]=(f[2]*f[7]-f[1]*f[8])/det; o[2]=(f[1]*f[5]-f[2]*f[4])/det;
+    o[3]=(f[5]*f[6]-f[3]*f[8])/det; o[4]=(f[0]*f[8]-f[2]*f[6])/det; o[5]=(f[2]*f[3]-f[0]*f[5])/det;
+    o[6]=(f[3]*f[7]-f[4]*f[6])/det; o[7]=(f[1]*f[6]-f[0]*f[7])/det; o[8]=(f[0]*f[4]-f[1]*f[3])/det;
+    c->ret = vz(true);
+}
+static void Matrix_mapPoints(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (!a || a->kind != TL_K_PRIM_ARRAY) return;
+    float *f = mat_of(c->self), *p = a->arr.data;
+    for (uint32_t i = 0; i + 1 < a->arr.len; i += 2) {
+        float x = p[i], y = p[i+1];
+        float w = f[6]*x + f[7]*y + f[8];
+        p[i]   = (f[0]*x + f[1]*y + f[2]) / (w ? w : 1);
+        p[i+1] = (f[3]*x + f[4]*y + f[5]) / (w ? w : 1);
+    }
+}
+static void Matrix_mapVectors(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (!a || a->kind != TL_K_PRIM_ARRAY) return;
+    float *f = mat_of(c->self), *p = a->arr.data;
+    for (uint32_t i = 0; i + 1 < a->arr.len; i += 2) {
+        float x = p[i], y = p[i+1];
+        p[i]   = f[0]*x + f[1]*y;
+        p[i+1] = f[3]*x + f[4]*y;
+    }
+}
+static void Matrix_mapRect(tl_jcall *c)
+{
+    jobj *r = c->args[0].l;
+    if (!r) { c->ret = vz(false); return; }
+    float *f = mat_of(c->self);
+    float l=get_flt(r,"left"),t=get_flt(r,"top"),rt=get_flt(r,"right"),b=get_flt(r,"bottom");
+    float pts[8] = {l,t,rt,t,rt,b,l,b};
+    for (int i = 0; i < 8; i += 2) {
+        float x=pts[i],y=pts[i+1];
+        pts[i]=f[0]*x+f[1]*y+f[2]; pts[i+1]=f[3]*x+f[4]*y+f[5];
+    }
+    float nl=pts[0],nt=pts[1],nr=pts[0],nb=pts[1];
+    for (int i = 2; i < 8; i += 2) {
+        if(pts[i]<nl)nl=pts[i]; if(pts[i]>nr)nr=pts[i];
+        if(pts[i+1]<nt)nt=pts[i+1]; if(pts[i+1]>nb)nb=pts[i+1];
+    }
+    set_float(r,"left",nl); set_float(r,"top",nt); set_float(r,"right",nr); set_float(r,"bottom",nb);
+    c->ret = vz(true);
+}
+static void Matrix_getValues(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (a && a->kind == TL_K_PRIM_ARRAY && a->arr.len >= 9)
+        memcpy(a->arr.data, mat_of(c->self), 36);
+}
+static void Matrix_setValues(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (a && a->kind == TL_K_PRIM_ARRAY && a->arr.len >= 9)
+        memcpy(mat_of(c->self), a->arr.data, 36);
+}
+static void Matrix_toString(tl_jcall *c)
+{
+    float *f = mat_of(c->self);
+    c->ret = vl(STR(b));
+}
+static void Matrix_equals(tl_jcall *c)
+{
+    jobj *o = c->args[0].l;
+    c->ret = vz(o && !memcmp(mat_of(c->self), mat_of(o), 36));
+}
+static void Matrix_hashCode(tl_jcall *c)
+{
+    float *f = mat_of(c->self); int32_t h = 0;
+    for (int i = 0; i < 9; i++) { int32_t b; memcpy(&b,&f[i],4); h = h*31 + b; }
+    c->ret = vi(h);
+}
+static void Matrix_toShortString(tl_jcall *c) { Matrix_toString(c); }
+
+/* Point / PointF / RectF — plain field math. */
+static void Point_init(tl_jcall *c) { (void)c; }
+static void Point_init2(tl_jcall *c)
+{
+    set_int(c->self, "x", c->args[0].i); set_int(c->self, "y", c->args[1].i);
+}
+static void Point_set(tl_jcall *c)
+{
+    set_int(c->self, "x", c->args[0].i); set_int(c->self, "y", c->args[1].i);
+}
+static void Point_negate(tl_jcall *c)
+{
+    set_int(c->self, "x", -get_int(c->self,"x")); set_int(c->self, "y", -get_int(c->self,"y"));
+}
+static void Point_offset(tl_jcall *c)
+{
+    set_int(c->self, "x", get_int(c->self,"x") + c->args[0].i);
+    set_int(c->self, "y", get_int(c->self,"y") + c->args[1].i);
+}
+static void Point_equals(tl_jcall *c)
+{
+    jobj *o = c->args[0].l;
+    c->ret = vz(o && get_int(c->self,"x") == get_int(o,"x") && get_int(c->self,"y") == get_int(o,"y"));
+}
+static void Point_hashCode(tl_jcall *c)
+{
+    c->ret = vi(get_int(c->self,"x") * 31 + get_int(c->self,"y"));
+}
+static void Point_toString(tl_jcall *c)
+{
+    char b[48]; snprintf(b,48,"Point(%d, %d)",get_int(c->self,"x"),get_int(c->self,"y"));
+    c->ret = vl(STR(b));
+}
+static void PointF_set(tl_jcall *c)
+{
+    set_float(c->self, "x", c->args[0].f); set_float(c->self, "y", c->args[1].f);
+}
+static void PointF_length(tl_jcall *c)
+{
+    float x = get_flt(c->self,"x"), y = get_flt(c->self,"y");
+    c->ret = vf(sqrtf(x*x + y*y));
+}
+static void PointF_length2(tl_jcall *c)
+{
+    c->ret = vf(sqrtf(c->args[0].f*c->args[0].f + c->args[1].f*c->args[1].f));
+}
+static void PointF_offset(tl_jcall *c)
+{
+    set_float(c->self, "x", get_flt(c->self,"x") + c->args[0].f);
+    set_float(c->self, "y", get_flt(c->self,"y") + c->args[1].f);
+}
+static void PointF_negate(tl_jcall *c)
+{
+    set_float(c->self, "x", -get_flt(c->self,"x")); set_float(c->self, "y", -get_flt(c->self,"y"));
+}
+static void PointF_equals(tl_jcall *c)
+{
+    jobj *o = c->args[0].l;
+    c->ret = vz(o && get_flt(c->self,"x") == get_flt(o,"x") && get_flt(c->self,"y") == get_flt(o,"y"));
+}
+static void PointF_toString(tl_jcall *c)
+{
+    char b[48]; snprintf(b,48,"PointF(%g, %g)",(double)get_flt(c->self,"x"),(double)get_flt(c->self,"y"));
+    c->ret = vl(STR(b));
+}
+static void RectF_init(tl_jcall *c) { (void)c; }
+static void RectF_init4(tl_jcall *c)
+{
+    set_float(c->self,"left",c->args[0].f); set_float(c->self,"top",c->args[1].f);
+    set_float(c->self,"right",c->args[2].f); set_float(c->self,"bottom",c->args[3].f);
+}
+static void RectF_set(tl_jcall *c)
+{
+    set_float(c->self,"left",c->args[0].f); set_float(c->self,"top",c->args[1].f);
+    set_float(c->self,"right",c->args[2].f); set_float(c->self,"bottom",c->args[3].f);
+}
+static void RectF_setR(tl_jcall *c)
+{
+    jobj *o = c->args[0].l;
+    if (o) {
+        set_float(c->self,"left",get_flt(o,"left")); set_float(c->self,"top",get_flt(o,"top"));
+        set_float(c->self,"right",get_flt(o,"right")); set_float(c->self,"bottom",get_flt(o,"bottom"));
+    }
+}
+static void RectF_setRect(tl_jcall *c)
+{
+    jobj *o = c->args[0].l;
+    if (o) {
+        set_float(c->self,"left",(float)get_int(o,"left")); set_float(c->self,"top",(float)get_int(o,"top"));
+        set_float(c->self,"right",(float)get_int(o,"right")); set_float(c->self,"bottom",(float)get_int(o,"bottom"));
+    }
+}
+static void RectF_width(tl_jcall *c) { c->ret = vf(get_flt(c->self,"right") - get_flt(c->self,"left")); }
+static void RectF_height(tl_jcall *c) { c->ret = vf(get_flt(c->self,"bottom") - get_flt(c->self,"top")); }
+static void RectF_centerX(tl_jcall *c) { c->ret = vf((get_flt(c->self,"left")+get_flt(c->self,"right"))/2); }
+static void RectF_centerY(tl_jcall *c) { c->ret = vf((get_flt(c->self,"top")+get_flt(c->self,"bottom"))/2); }
+static void RectF_isEmpty(tl_jcall *c)
+{
+    c->ret = vz(get_flt(c->self,"left") >= get_flt(c->self,"right") || get_flt(c->self,"top") >= get_flt(c->self,"bottom"));
+}
+static void RectF_contains(tl_jcall *c)
+{
+    c->ret = vz(c->args[0].f >= get_flt(c->self,"left") && c->args[0].f < get_flt(c->self,"right") &&
+                c->args[1].f >= get_flt(c->self,"top") && c->args[1].f < get_flt(c->self,"bottom"));
+}
+static void RectF_containsR(tl_jcall *c)
+{
+    c->ret = vz(c->args[0].f >= get_flt(c->self,"left") && c->args[2].f <= get_flt(c->self,"right") &&
+                c->args[1].f >= get_flt(c->self,"top") && c->args[3].f <= get_flt(c->self,"bottom"));
+}
+static void RectF_intersects(tl_jcall *c)
+{
+    jobj *a = c->args[0].l, *b = c->args[1].l;
+    c->ret = vz(a && b &&
+        get_flt(a,"left") < get_flt(b,"right") && get_flt(b,"left") < get_flt(a,"right") &&
+        get_flt(a,"top") < get_flt(b,"bottom") && get_flt(b,"top") < get_flt(a,"bottom"));
+}
+static void RectF_offset(tl_jcall *c)
+{
+    set_float(c->self,"left",get_flt(c->self,"left")+c->args[0].f);
+    set_float(c->self,"right",get_flt(c->self,"right")+c->args[0].f);
+    set_float(c->self,"top",get_flt(c->self,"top")+c->args[1].f);
+    set_float(c->self,"bottom",get_flt(c->self,"bottom")+c->args[1].f);
+}
+static void RectF_offsetTo(tl_jcall *c)
+{
+    float dx=c->args[0].f-get_flt(c->self,"left"), dy=c->args[1].f-get_flt(c->self,"top");
+    jvalue a[2]={vf(dx),vf(dy)}; tl_jcall t={.self=c->self,.args=a}; RectF_offset(&t);
+}
+static void RectF_inset(tl_jcall *c)
+{
+    set_float(c->self,"left",get_flt(c->self,"left")+c->args[0].f);
+    set_float(c->self,"right",get_flt(c->self,"right")-c->args[0].f);
+    set_float(c->self,"top",get_flt(c->self,"top")+c->args[1].f);
+    set_float(c->self,"bottom",get_flt(c->self,"bottom")-c->args[1].f);
+}
+static void RectF_union(tl_jcall *c)
+{
+    float l=get_flt(c->self,"left"),t=get_flt(c->self,"top"),r=get_flt(c->self,"right"),b=get_flt(c->self,"bottom");
+    if(c->args[0].f<l)l=c->args[0].f; if(c->args[1].f<t)t=c->args[1].f;
+    if(c->args[2].f>r)r=c->args[2].f; if(c->args[3].f>b)b=c->args[3].f;
+    set_float(c->self,"left",l);set_float(c->self,"top",t);set_float(c->self,"right",r);set_float(c->self,"bottom",b);
+}
+static void RectF_unionR(tl_jcall *c)
+{
+    jobj *o = c->args[0].l;
+    if (!o) return;
+    jvalue a[4]={vf(get_flt(o,"left")),vf(get_flt(o,"top")),vf(get_flt(o,"right")),vf(get_flt(o,"bottom"))};
+    tl_jcall t={.self=c->self,.args=a}; RectF_union(&t);
+}
+static void RectF_setEmpty(tl_jcall *c)
+{
+    set_float(c->self,"left",0);set_float(c->self,"top",0);set_float(c->self,"right",0);set_float(c->self,"bottom",0);
+}
+static void RectF_sort(tl_jcall *c)
+{
+    float l=get_flt(c->self,"left"),r=get_flt(c->self,"right");
+    float t=get_flt(c->self,"top"),b=get_flt(c->self,"bottom");
+    if(l>r){set_float(c->self,"left",r);set_float(c->self,"right",l);}
+    if(t>b){set_float(c->self,"top",b);set_float(c->self,"bottom",t);}
+}
+static void RectF_round(tl_jcall *c)
+{
+    jobj *o = c->args[0].l;
+    if (!o) return;
+    set_int(o,"left",(int)floorf(get_flt(c->self,"left")));
+    set_int(o,"top",(int)floorf(get_flt(c->self,"top")));
+    set_int(o,"right",(int)ceilf(get_flt(c->self,"right")));
+    set_int(o,"bottom",(int)ceilf(get_flt(c->self,"bottom")));
+}
+static void RectF_roundOut(tl_jcall *c) { RectF_round(c); }
+static void RectF_toString(tl_jcall *c)
+{
+    char b[100];
+    snprintf(b,100,"RectF(%g, %g, %g, %g)",(double)get_flt(c->self,"left"),(double)get_flt(c->self,"top"),
+        (double)get_flt(c->self,"right"),(double)get_flt(c->self,"bottom"));
+    c->ret = vl(STR(b));
+}
+static void RectF_equals(tl_jcall *c)
+{
+    jobj *o = c->args[0].l;
+    c->ret = vz(o && get_flt(c->self,"left")==get_flt(o,"left") && get_flt(c->self,"top")==get_flt(o,"top") &&
+                 get_flt(c->self,"right")==get_flt(o,"right") && get_flt(c->self,"bottom")==get_flt(o,"bottom"));
+}
+static void RectF_hashCode(tl_jcall *c)
+{
+    c->ret = vi((int)(get_flt(c->self,"left")*7+get_flt(c->self,"top")*13+get_flt(c->self,"right")*17+get_flt(c->self,"bottom")*29));
+}
+
+/* ============================================================== org.json */
+
+/* JSONObject: jvec of {key,value} pairs in native; JSONArray: jvec of values.
+ * JsonTok/parser kept in C so JSON.parse-heavy games get real behaviour. */
+typedef struct { char *k; jobj *v; } jent;
+typedef struct { jent *e; int n, cap; } jobjmap;
+static jobjmap *jm_of(jobj *o)
+{
+    if (!o->native) o->native = calloc(1, sizeof(jobjmap));
+    return o->native;
+}
+static int jm_find(jobjmap *m, const char *k)
+{
+    for (int i = 0; i < m->n; i++) if (!strcmp(m->e[i].k, k)) return i;
+    return -1;
+}
+static void jm_put(jobjmap *m, const char *k, jobj *v)
+{
+    int i = jm_find(m, k);
+    if (i < 0) {
+        if (m->n == m->cap) m->e = realloc(m->e, (size_t)(m->cap = m->cap ? m->cap*2 : 8) * sizeof(jent));
+        i = m->n++;
+        m->e[i].k = strdup(k);
+    }
+    m->e[i].v = v;
+}
+static void jm_del(jobjmap *m, const char *k)
+{
+    int i = jm_find(m, k);
+    if (i < 0) return;
+    free(m->e[i].k);
+    memmove(m->e + i, m->e + i + 1, (size_t)(m->n - i - 1) * sizeof(jent));
+    m->n--;
+}
+static jvec *ja_of(jobj *o) { return vec_of(o); }
+
+/* JSON NULL sentinel */
+static jobj *json_null(void)
+{
+    static jobj *n;
+    if (!n) { n = tl_jni_ref(make("org/json/JSONObject$Null")); }
+    return tl_jni_ref(n);
+}
+static bool is_jnull(jobj *o) { return o && !strcmp(tl_jni_class_name(o), "org/json/JSONObject$Null"); }
+
+typedef struct { const char *s, *p; } jscan;
+static void jws(jscan *x) { while (*x->p == ' ' || *x->p == '\t' || *x->p == '\n' || *x->p == '\r') x->p++; }
+static jobj *jvalue_parse(jscan *x);
+static char *jstring_parse(jscan *x)
+{
+    if (*x->p != '"') return NULL;
+    x->p++;
+    sbuf *b = calloc(1, sizeof(sbuf));
+    while (*x->p && *x->p != '"') {
+        if (*x->p == '\\') {
+            x->p++;
+            switch (*x->p) {
+            case 'n': sb_putc(b, '\n'); break;
+            case 't': sb_putc(b, '\t'); break;
+            case 'r': sb_putc(b, '\r'); break;
+            case 'b': sb_putc(b, '\b'); break;
+            case 'f': sb_putc(b, '\f'); break;
+            case 'u': {
+                int v = 0;
+                for (int i = 0; i < 4 && x->p[1]; i++) {
+                    x->p++;
+                    int d = x->p[0] >= '0' && x->p[0] <= '9' ? x->p[0]-'0' :
+                            x->p[0] >= 'a' && x->p[0] <= 'f' ? x->p[0]-'a'+10 :
+                            x->p[0] >= 'A' && x->p[0] <= 'F' ? x->p[0]-'A'+10 : 0;
+                    v = v*16 + d;
+                }
+                if (v < 0x80) sb_putc(b, (char)v);
+                else if (v < 0x800) { sb_putc(b, (char)(0xC0|(v>>6))); sb_putc(b, (char)(0x80|(v&63))); }
+                else { sb_putc(b, (char)(0xE0|(v>>12))); sb_putc(b, (char)(0x80|((v>>6)&63))); sb_putc(b, (char)(0x80|(v&63))); }
+                break;
+            }
+            case '/': sb_putc(b, '/'); break;
+            default: sb_putc(b, *x->p);
+            }
+            x->p++;
+        } else sb_putc(b, *x->p++);
+    }
+    if (*x->p == '"') x->p++;
+    char *r = b->p ? b->p : strdup("");
+    free(b);
+    return r;
+}
+static jobj *jnumber_parse(jscan *x)
+{
+    const char *start = x->p;
+    while (*x->p && strchr("-+0123456789.eE", *x->p)) x->p++;
+    char *t = strndup(start, (size_t)(x->p - start));
+    jobj *r;
+    if (strchr(t, '.') || strchr(t, 'e') || strchr(t, 'E')) r = box_double(strtod(t, NULL));
+    else r = box_long(strtoll(t, NULL, 10));
+    free(t);
+    return r;
+}
+static jobj *jobject_parse(jscan *x)
+{
+    x->p++; /* { */
+    jobj *o = make("org/json/JSONObject");
+    jobjmap *m = jm_of(o);
+    jws(x);
+    if (*x->p == '}') { x->p++; return o; }
+    while (*x->p) {
+        jws(x);
+        if (*x->p != '"') break;
+        char *k = jstring_parse(x);
+        jws(x);
+        if (*x->p == ':') x->p++;
+        jws(x);
+        jobj *v = jvalue_parse(x);
+        jm_put(m, k, v ? v : json_null());
+        free(k);
+        jws(x);
+        if (*x->p == ',') { x->p++; continue; }
+        if (*x->p == '}') { x->p++; break; }
+        break;
+    }
+    return o;
+}
+static jobj *jarray_parse(jscan *x)
+{
+    x->p++; /* [ */
+    jobj *a = make("org/json/JSONArray");
+    jvec *v = vec_of(a);
+    jws(x);
+    if (*x->p == ']') { x->p++; return a; }
+    while (*x->p) {
+        jws(x);
+        jobj *e = jvalue_parse(x);
+        vec_push(v, e ? e : json_null());
+        jws(x);
+        if (*x->p == ',') { x->p++; continue; }
+        if (*x->p == ']') { x->p++; break; }
+        break;
+    }
+    return a;
+}
+static jobj *jvalue_parse(jscan *x)
+{
+    jws(x);
+    switch (*x->p) {
+    case '{': return jobject_parse(x);
+    case '[': return jarray_parse(x);
+    case '"': {
+        char *s = jstring_parse(x);
+        jobj *r = STR(s ? s : "");
+        free(s);
+        return r;
+    }
+    case 't': if (!strncmp(x->p, "true", 4)) { x->p += 4; return box_bool(1); } return NULL;
+    case 'f': if (!strncmp(x->p, "false", 5)) { x->p += 5; return box_bool(0); } return NULL;
+    case 'n': if (!strncmp(x->p, "null", 4)) { x->p += 4; return json_null(); } return NULL;
+    case 0: return NULL;
+    default: return jnumber_parse(x);
+    }
+}
+static jobj *json_parse(const char *s)
+{
+    if (!s) return NULL;
+    jscan x = { s, s };
+    return jvalue_parse(&x);
+}
+
+static void JO_init(tl_jcall *c) { jm_of(c->self); }
+static void JO_init_str(tl_jcall *c)
+{
+    jobj *o = json_parse(c->args[0].l ? S(c->args[0].l) : "{}");
+    if (o && o->native) {
+        jobjmap *src = o->native, *dst = jm_of(c->self);
+        *dst = *src;
+        free(src);
+        o->native = NULL;
+    }
+}
+static void JO_init_map(tl_jcall *c)
+{
+    jobjmap *m = jm_of(c->self);
+    jobj *src = c->args[0].l;
+    if (!src) return;
+    jvalue ks = tl_jni_call(src, "keySet", "()Ljava/util/Set;", NULL);
+    if (!ks.l) return;
+    jvalue it = tl_jni_call(ks.l, "iterator", "()Ljava/util/Iterator;", NULL);
+    while (it.l && tl_jni_call(it.l, "hasNext", "()Z", NULL).z) {
+        jobj *k = tl_jni_call(it.l, "next", "()Ljava/lang/Object;", NULL).l;
+        jvalue v = tl_jni_call(src, "get", "(Ljava/lang/Object;)Ljava/lang/Object;", &k);
+        if (k && k->kind == TL_K_STRING) jm_put(m, S(k), v.l);
+    }
+}
+static void JO_init_tok(tl_jcall *c)
+{
+    /* JSONObject(JSONTokener): read its "s" + "pos" fields, parse rest */
+    jobj *t = c->args[0].l;
+    if (!t) { jm_of(c->self); return; }
+    jvalue sv = tl_jni_get_field(t, "s", "Ljava/lang/String;");
+    if (!sv.l) { jm_of(c->self); return; }
+    jobj *o = json_parse(S(sv.l));
+    if (o && o->native) {
+        jobjmap *src = o->native, *dst = jm_of(c->self);
+        *dst = *src; free(src); o->native = NULL;
+    }
+}
+static void JO_put(tl_jcall *c)
+{
+    jm_put(jm_of(c->self), S(c->args[0].l), c->args[1].l ? c->args[1].l : json_null());
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void JO_put_bool(tl_jcall *c) { jm_put(jm_of(c->self), S(c->args[0].l), box_bool(c->args[1].z)); c->ret = vl(tl_jni_ref(c->self)); }
+static void JO_put_int(tl_jcall *c)  { jm_put(jm_of(c->self), S(c->args[0].l), box_int(c->args[1].i)); c->ret = vl(tl_jni_ref(c->self)); }
+static void JO_put_long(tl_jcall *c) { jm_put(jm_of(c->self), S(c->args[0].l), box_long(c->args[1].j)); c->ret = vl(tl_jni_ref(c->self)); }
+static void JO_put_double(tl_jcall *c){ jm_put(jm_of(c->self), S(c->args[0].l), box_double(c->args[1].d)); c->ret = vl(tl_jni_ref(c->self)); }
+static void JO_putOpt(tl_jcall *c)   { JO_put(c); }
+static void JO_putOnce(tl_jcall *c)  { JO_put(c); }
+static jobj *jo_get(jobj *o, const char *k)
+{
+    jobjmap *m = jm_of(o);
+    int i = jm_find(m, k);
+    return i >= 0 ? m->e[i].v : NULL;
+}
+static void JO_get(tl_jcall *c)
+{
+    jobj *v = jo_get(c->self, S(c->args[0].l));
+    if (!v) { tl_jni_throw("org/json/JSONException", "no value"); return; }
+    c->ret = vl(v);
+}
+static void JO_opt(tl_jcall *c)
+{
+    jobj *v = jo_get(c->self, S(c->args[0].l));
+    c->ret = vl(v && !is_jnull(v) ? v : NULL);
+}
+static void JO_has(tl_jcall *c) { c->ret = vz(jo_get(c->self, S(c->args[0].l)) != NULL); }
+static void JO_isNull(tl_jcall *c)
+{
+    jobj *v = jo_get(c->self, S(c->args[0].l));
+    c->ret = vz(!v || is_jnull(v));
+}
+static void JO_remove(tl_jcall *c)
+{
+    jobjmap *m = jm_of(c->self);
+    int i = jm_find(m, S(c->args[0].l));
+    jobj *v = NULL;
+    if (i >= 0) {
+        v = m->e[i].v; free(m->e[i].k);
+        memmove(&m->e[i], &m->e[i+1], (size_t)(m->n - i - 1) * sizeof(jent));
+        m->n--;
+    }
+    c->ret = vl(v);
+}
+static void JO_length(tl_jcall *c) { c->ret = vi(jm_of(c->self)->n); }
+static void JO_keys(tl_jcall *c)
+{
+    jobjmap *m = jm_of(c->self);
+    jobj *l = make("java/util/ArrayList");
+    jvec *v = vec_of(l);
+    for (int i = 0; i < m->n; i++) vec_push(v, STR(m->e[i].k));
+    c->ret = tl_jni_call(l, "iterator", "()Ljava/util/Iterator;", NULL);
+}
+static void JO_keySet(tl_jcall *c)
+{
+    jobjmap *m = jm_of(c->self);
+    jobj *s = make("java/util/HashSet");
+    jvec *v = vec_of(s);
+    for (int i = 0; i < m->n; i++) vec_push(v, STR(m->e[i].k));
+    c->ret = vl(s);
+}
+static void JO_names(tl_jcall *c)
+{
+    jobjmap *m = jm_of(c->self);
+    if (!m->n) { c->ret = vl(NULL); return; }
+    jobj *a = make("org/json/JSONArray");
+    jvec *v = vec_of(a);
+    for (int i = 0; i < m->n; i++) vec_push(v, STR(m->e[i].k));
+    c->ret = vl(a);
+}
+static void JO_getString(tl_jcall *c)
+{
+    jobj *v = jo_get(c->self, S(c->args[0].l));
+    if (!v) { tl_jni_throw("org/json/JSONException", "no value"); return; }
+    if (v->kind == TL_K_STRING) { c->ret = vl(v); return; }
+    char b[128]; obj_str(v, b, sizeof(b));
+    c->ret = vl(STR(b));
+}
+static void JO_optString(tl_jcall *c)
+{
+    jobj *v = jo_get(c->self, S(c->args[0].l));
+    if (!v || is_jnull(v)) { c->ret = vl(c->args[1].l ? c->args[1].l : STR("")); return; }
+    if (v->kind == TL_K_STRING) { c->ret = vl(v); return; }
+    char b[128]; obj_str(v, b, sizeof(b));
+    c->ret = vl(STR(b));
+}
+static void JO_optString0(tl_jcall *c)
+{
+    jobj *v = jo_get(c->self, S(c->args[0].l));
+    if (!v || is_jnull(v)) { c->ret = vl(STR("")); return; }
+    if (v->kind == TL_K_STRING) { c->ret = vl(v); return; }
+    char b[128]; obj_str(v, b, sizeof(b));
+    c->ret = vl(STR(b));
+}
+static void JO_getInt(tl_jcall *c)
+{
+    jobj *v = jo_get(c->self, S(c->args[0].l));
+    if (!v) { tl_jni_throw("org/json/JSONException", "no value"); return; }
+    if (v->kind == TL_K_STRING) c->ret = vi(atoi(S(v)));
+    else c->ret = vi((int32_t)int_of(v));
+}
+static void JO_optInt(tl_jcall *c)
+{
+    jobj *v = jo_get(c->self, S(c->args[0].l));
+    if (!v || is_jnull(v)) { c->ret = c->args[1]; return; }
+    c->ret = vi(v->kind == TL_K_STRING ? atoi(S(v)) : (int32_t)int_of(v));
+}
+static void JO_optInt0(tl_jcall *c)
+{
+    jobj *v = jo_get(c->self, S(c->args[0].l));
+    c->ret = vi(v && !is_jnull(v) ? (v->kind == TL_K_STRING ? atoi(S(v)) : (int32_t)int_of(v)) : 0);
+}
+static void JO_getLong(tl_jcall *c)
+{
+    jobj *v = jo_get(c->self, S(c->args[0].l));
+    if (!v) { tl_jni_throw("org/json/JSONException", "no value"); return; }
+    c->ret = vj(v->kind == TL_K_STRING ? atoll(S(v)) : int_of(v));
+}
+static void JO_optLong(tl_jcall *c)
+{
+    jobj *v = jo_get(c->self, S(c->args[0].l));
+    if (!v || is_jnull(v)) { c->ret = c->args[1]; return; }
+    c->ret = vj(v->kind == TL_K_STRING ? atoll(S(v)) : int_of(v));
+}
+static void JO_optLong0(tl_jcall *c)
+{
+    jobj *v = jo_get(c->self, S(c->args[0].l));
+    c->ret = vj(v && !is_jnull(v) ? (v->kind == TL_K_STRING ? atoll(S(v)) : int_of(v)) : 0);
+}
+static void JO_getDouble(tl_jcall *c)
+{
+    jobj *v = jo_get(c->self, S(c->args[0].l));
+    if (!v) { tl_jni_throw("org/json/JSONException", "no value"); return; }
+    c->ret = vd(v->kind == TL_K_STRING ? strtod(S(v), NULL) : num_of(v));
+}
+static void JO_optDouble(tl_jcall *c)
+{
+    jobj *v = jo_get(c->self, S(c->args[0].l));
+    if (!v || is_jnull(v)) { c->ret = c->args[1]; return; }
+    c->ret = vd(v->kind == TL_K_STRING ? strtod(S(v), NULL) : num_of(v));
+}
+static void JO_optDouble0(tl_jcall *c)
+{
+    jobj *v = jo_get(c->self, S(c->args[0].l));
+    c->ret = vd(v && !is_jnull(v) ? (v->kind == TL_K_STRING ? strtod(S(v), NULL) : num_of(v)) : 0);
+}
+static void JO_getBoolean(tl_jcall *c)
+{
+    jobj *v = jo_get(c->self, S(c->args[0].l));
+    if (!v) { tl_jni_throw("org/json/JSONException", "no value"); return; }
+    c->ret = vz(v->kind == TL_K_STRING ? !strcasecmp(S(v), "true") : int_of(v) != 0);
+}
+static void JO_optBoolean(tl_jcall *c)
+{
+    jobj *v = jo_get(c->self, S(c->args[0].l));
+    if (!v || is_jnull(v)) { c->ret = c->args[1]; return; }
+    c->ret = vz(v->kind == TL_K_STRING ? !strcasecmp(S(v), "true") : int_of(v) != 0);
+}
+static void JO_optBoolean0(tl_jcall *c)
+{
+    jobj *v = jo_get(c->self, S(c->args[0].l));
+    c->ret = vz(v && !is_jnull(v) && (v->kind == TL_K_STRING ? !strcasecmp(S(v), "true") : int_of(v) != 0));
+}
+static void JO_getJSONObject(tl_jcall *c)
+{
+    jobj *v = jo_get(c->self, S(c->args[0].l));
+    if (!v || is_jnull(v)) { tl_jni_throw("org/json/JSONException", "no value"); return; }
+    c->ret = vl(v);
+}
+static void JO_optJSONObject(tl_jcall *c)
+{
+    jobj *v = jo_get(c->self, S(c->args[0].l));
+    c->ret = vl(v && !is_jnull(v) && !strcmp(tl_jni_class_name(v), "org/json/JSONObject") ? v : NULL);
+}
+static void JO_getJSONArray(tl_jcall *c)
+{
+    jobj *v = jo_get(c->self, S(c->args[0].l));
+    if (!v || is_jnull(v)) { tl_jni_throw("org/json/JSONException", "no value"); return; }
+    c->ret = vl(v);
+}
+static void JO_optJSONArray(tl_jcall *c)
+{
+    jobj *v = jo_get(c->self, S(c->args[0].l));
+    c->ret = vl(v && !is_jnull(v) && !strcmp(tl_jni_class_name(v), "org/json/JSONArray") ? v : NULL);
+}
+
+/* serialize */
+static void jser(sbuf *b, jobj *v);
+static void jser_str(sbuf *b, const char *s)
+{
+    sb_putc(b, '"');
+    for (; *s; s++) {
+        switch (*s) {
+        case '"': sb_add(b, "\\\""); break;
+        case '\\': sb_add(b, "\\\\"); break;
+        case '\n': sb_add(b, "\n"); break;
+        case '\r': sb_add(b, "\r"); break;
+        case '\t': sb_add(b, "\t"); break;
+        case '\b': sb_add(b, "\b"); break;
+        case '\f': sb_add(b, "\f"); break;
+        default:
+            if ((uint8_t)*s < 0x20) { char t[8]; snprintf(t, 8, "\u%04x", (uint8_t)*s); sb_add(b, t); }
+            else sb_putc(b, *s);
+        }
+    }
+    sb_putc(b, '"');
+}
+static void jser(sbuf *b, jobj *v)
+{
+    if (!v || is_jnull(v)) { sb_add(b, "null"); return; }
+    const char *cn = tl_jni_class_name(v);
+    if (v->kind == TL_K_STRING) { jser_str(b, S(v)); return; }
+    if (!strcmp(cn, "org/json/JSONObject")) {
+        jobjmap *m = jm_of(v);
+        sb_putc(b, '{');
+        for (int i = 0; i < m->n; i++) {
+            if (i) sb_putc(b, ',');
+            jser_str(b, m->e[i].k);
+            sb_putc(b, ':');
+            jser(b, m->e[i].v);
+        }
+        sb_putc(b, '}');
+        return;
+    }
+    if (!strcmp(cn, "org/json/JSONArray")) {
+        jvec *a = ja_of(v);
+        sb_putc(b, '[');
+        for (int i = 0; i < a->n; i++) { if (i) sb_putc(b, ','); jser(b, a->v[i]); }
+        sb_putc(b, ']');
+        return;
+    }
+    if (!strcmp(cn, "java/lang/Boolean")) { sb_add(b, int_of(v) ? "true" : "false"); return; }
+    if (!strcmp(cn, "java/lang/Double") || !strcmp(cn, "java/lang/Float")) {
+        double d = num_of(v);
+        if (d == (double)(int64_t)d && d < 1e15 && d > -1e15) {
+            char t[32]; snprintf(t, 32, "%lld", (long long)(int64_t)d); sb_add(b, t);
+        } else { char t[32]; snprintf(t, 32, "%g", d); sb_add(b, t); }
+        return;
+    }
+    if (!strcmp(cn, "java/lang/Integer") || !strcmp(cn, "java/lang/Long") ||
+        !strcmp(cn, "java/lang/Short") || !strcmp(cn, "java/lang/Byte")) {
+        char t[32]; snprintf(t, 32, "%lld", (long long)int_of(v)); sb_add(b, t);
+        return;
+    }
+    char t[256]; obj_str(v, t, sizeof(t));
+    jser_str(b, t);
+}
+static void JO_toString(tl_jcall *c)
+{
+    sbuf *b = calloc(1, sizeof(sbuf));
+    jser(b, c->self);
+    c->ret = vl(STR(b->p ? b->p : "{}"));
+    free(b->p); free(b);
+}
+static void JO_toStringInd(tl_jcall *c) { JO_toString(c); }
+
+/* JSONArray */
+static void JA_init(tl_jcall *c) { vec_of(c->self); }
+static void JA_init_str(tl_jcall *c)
+{
+    jobj *o = json_parse(c->args[0].l ? S(c->args[0].l) : "[]");
+    if (o && o->native) {
+        jvec *src = o->native, *dst = vec_of(c->self);
+        *dst = *src; free(src); o->native = NULL;
+    }
+}
+static void JA_init_coll(tl_jcall *c)
+{
+    jvec *dst = vec_of(c->self);
+    jobj *src = c->args[0].l;
+    if (!src) return;
+    jvalue it = tl_jni_call(src, "iterator", "()Ljava/util/Iterator;", NULL);
+    while (it.l && tl_jni_call(it.l, "hasNext", "()Z", NULL).z)
+        vec_push(dst, tl_jni_call(it.l, "next", "()Ljava/lang/Object;", NULL).l);
+}
+static void JA_init_tok(tl_jcall *c) { JA_init_str(c); }
+static void JA_length(tl_jcall *c) { c->ret = vi(ja_of(c->self)->n); }
+static void JA_get(tl_jcall *c)
+{
+    jvec *a = ja_of(c->self);
+    int i = c->args[0].i;
+    if (i < 0 || i >= a->n) { tl_jni_throw("org/json/JSONException", "index out of bounds"); return; }
+    c->ret = vl(a->v[i]);
+}
+static void JA_opt(tl_jcall *c)
+{
+    jvec *a = ja_of(c->self);
+    int i = c->args[0].i;
+    c->ret = vl(i >= 0 && i < a->n && !is_jnull(a->v[i]) ? a->v[i] : NULL);
+}
+static void JA_put(tl_jcall *c)
+{
+    jvec *a = ja_of(c->self);
+    vec_push(a, c->args[0].l ? c->args[0].l : json_null());
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void JA_put_bool(tl_jcall *c) { vec_push(ja_of(c->self), box_bool(c->args[0].z)); c->ret = vl(tl_jni_ref(c->self)); }
+static void JA_put_int(tl_jcall *c)  { vec_push(ja_of(c->self), box_int(c->args[0].i)); c->ret = vl(tl_jni_ref(c->self)); }
+static void JA_put_long(tl_jcall *c) { vec_push(ja_of(c->self), box_long(c->args[0].j)); c->ret = vl(tl_jni_ref(c->self)); }
+static void JA_put_double(tl_jcall *c){ vec_push(ja_of(c->self), box_double(c->args[0].d)); c->ret = vl(tl_jni_ref(c->self)); }
+static void JA_put_at(tl_jcall *c)
+{
+    jvec *a = ja_of(c->self);
+    int i = c->args[0].i;
+    while (a->n <= i) vec_push(a, json_null());
+    a->v[i] = c->args[1].l ? c->args[1].l : json_null();
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void JA_remove(tl_jcall *c)
+{
+    jvec *a = ja_of(c->self);
+    int i = c->args[0].i;
+    if (i >= 0 && i < a->n) {
+        memmove(&a->v[i], &a->v[i+1], (size_t)(a->n - i - 1) * sizeof(jobj *));
+        a->n--;
+    }
+    c->ret = vl(NULL);
+}
+static void JA_getString(tl_jcall *c)
+{
+    jvec *a = ja_of(c->self);
+    int i = c->args[0].i;
+    if (i < 0 || i >= a->n) { tl_jni_throw("org/json/JSONException", "index"); return; }
+    jobj *v = a->v[i];
+    if (v->kind == TL_K_STRING) { c->ret = vl(v); return; }
+    char b[128]; obj_str(v, b, sizeof(b));
+    c->ret = vl(STR(b));
+}
+static void JA_optString(tl_jcall *c)
+{
+    jvec *a = ja_of(c->self);
+    int i = c->args[0].i;
+    jobj *v = (i >= 0 && i < a->n) ? a->v[i] : NULL;
+    if (!v || is_jnull(v)) { c->ret = vl(c->args[1].l ? c->args[1].l : STR("")); return; }
+    if (v->kind == TL_K_STRING) { c->ret = vl(v); return; }
+    char b[128]; obj_str(v, b, sizeof(b));
+    c->ret = vl(STR(b));
+}
+static void JA_optString0(tl_jcall *c)
+{
+    jvec *a = ja_of(c->self);
+    int i = c->args[0].i;
+    jobj *v = (i >= 0 && i < a->n) ? a->v[i] : NULL;
+    if (!v || is_jnull(v)) { c->ret = vl(STR("")); return; }
+    if (v->kind == TL_K_STRING) { c->ret = vl(v); return; }
+    char b[128]; obj_str(v, b, sizeof(b));
+    c->ret = vl(STR(b));
+}
+static void JA_getInt(tl_jcall *c)
+{
+    jvec *a = ja_of(c->self); int i = c->args[0].i;
+    if (i < 0 || i >= a->n) { tl_jni_throw("org/json/JSONException", "index"); return; }
+    jobj *v = a->v[i];
+    c->ret = vi(v->kind == TL_K_STRING ? atoi(S(v)) : (int32_t)int_of(v));
+}
+static void JA_optInt(tl_jcall *c)
+{
+    jvec *a = ja_of(c->self); int i = c->args[0].i;
+    jobj *v = (i >= 0 && i < a->n) ? a->v[i] : NULL;
+    c->ret = vi(v && !is_jnull(v) ? (v->kind == TL_K_STRING ? atoi(S(v)) : (int32_t)int_of(v)) : c->args[1].i);
+}
+static void JA_optInt0(tl_jcall *c)
+{
+    jvec *a = ja_of(c->self); int i = c->args[0].i;
+    jobj *v = (i >= 0 && i < a->n) ? a->v[i] : NULL;
+    c->ret = vi(v && !is_jnull(v) ? (v->kind == TL_K_STRING ? atoi(S(v)) : (int32_t)int_of(v)) : 0);
+}
+static void JA_getLong(tl_jcall *c)
+{
+    jvec *a = ja_of(c->self); int i = c->args[0].i;
+    if (i < 0 || i >= a->n) { tl_jni_throw("org/json/JSONException", "index"); return; }
+    jobj *v = a->v[i];
+    c->ret = vj(v->kind == TL_K_STRING ? atoll(S(v)) : int_of(v));
+}
+static void JA_optLong(tl_jcall *c)
+{
+    jvec *a = ja_of(c->self); int i = c->args[0].i;
+    jobj *v = (i >= 0 && i < a->n) ? a->v[i] : NULL;
+    c->ret = vj(v && !is_jnull(v) ? (v->kind == TL_K_STRING ? atoll(S(v)) : int_of(v)) : c->args[1].j);
+}
+static void JA_optLong0(tl_jcall *c)
+{
+    jvec *a = ja_of(c->self); int i = c->args[0].i;
+    jobj *v = (i >= 0 && i < a->n) ? a->v[i] : NULL;
+    c->ret = vj(v && !is_jnull(v) ? (v->kind == TL_K_STRING ? atoll(S(v)) : int_of(v)) : 0);
+}
+static void JA_getDouble(tl_jcall *c)
+{
+    jvec *a = ja_of(c->self); int i = c->args[0].i;
+    if (i < 0 || i >= a->n) { tl_jni_throw("org/json/JSONException", "index"); return; }
+    jobj *v = a->v[i];
+    c->ret = vd(v->kind == TL_K_STRING ? strtod(S(v), NULL) : num_of(v));
+}
+static void JA_optDouble(tl_jcall *c)
+{
+    jvec *a = ja_of(c->self); int i = c->args[0].i;
+    jobj *v = (i >= 0 && i < a->n) ? a->v[i] : NULL;
+    c->ret = vd(v && !is_jnull(v) ? (v->kind == TL_K_STRING ? strtod(S(v), NULL) : num_of(v)) : c->args[1].d);
+}
+static void JA_optDouble0(tl_jcall *c)
+{
+    jvec *a = ja_of(c->self); int i = c->args[0].i;
+    jobj *v = (i >= 0 && i < a->n) ? a->v[i] : NULL;
+    c->ret = vd(v && !is_jnull(v) ? (v->kind == TL_K_STRING ? strtod(S(v), NULL) : num_of(v)) : 0);
+}
+static void JA_getBoolean(tl_jcall *c)
+{
+    jvec *a = ja_of(c->self); int i = c->args[0].i;
+    if (i < 0 || i >= a->n) { tl_jni_throw("org/json/JSONException", "index"); return; }
+    jobj *v = a->v[i];
+    c->ret = vz(v->kind == TL_K_STRING ? !strcasecmp(S(v), "true") : int_of(v) != 0);
+}
+static void JA_optBoolean(tl_jcall *c)
+{
+    jvec *a = ja_of(c->self); int i = c->args[0].i;
+    jobj *v = (i >= 0 && i < a->n) ? a->v[i] : NULL;
+    c->ret = vz(v && !is_jnull(v) && (v->kind == TL_K_STRING ? !strcasecmp(S(v), "true") : int_of(v) != 0));
+}
+static void JA_getJSONObject(tl_jcall *c)
+{
+    jvec *a = ja_of(c->self); int i = c->args[0].i;
+    if (i < 0 || i >= a->n) { tl_jni_throw("org/json/JSONException", "index"); return; }
+    c->ret = vl(a->v[i]);
+}
+static void JA_optJSONObject(tl_jcall *c)
+{
+    jvec *a = ja_of(c->self); int i = c->args[0].i;
+    jobj *v = (i >= 0 && i < a->n) ? a->v[i] : NULL;
+    c->ret = vl(v && !is_jnull(v) && !strcmp(tl_jni_class_name(v), "org/json/JSONObject") ? v : NULL);
+}
+static void JA_getJSONArray(tl_jcall *c)
+{
+    jvec *a = ja_of(c->self); int i = c->args[0].i;
+    if (i < 0 || i >= a->n) { tl_jni_throw("org/json/JSONException", "index"); return; }
+    c->ret = vl(a->v[i]);
+}
+static void JA_optJSONArray(tl_jcall *c)
+{
+    jvec *a = ja_of(c->self); int i = c->args[0].i;
+    jobj *v = (i >= 0 && i < a->n) ? a->v[i] : NULL;
+    c->ret = vl(v && !is_jnull(v) && !strcmp(tl_jni_class_name(v), "org/json/JSONArray") ? v : NULL);
+}
+static void JA_isNull(tl_jcall *c)
+{
+    jvec *a = ja_of(c->self); int i = c->args[0].i;
+    c->ret = vz(i < 0 || i >= a->n || !a->v[i] || is_jnull(a->v[i]));
+}
+static void JA_toString(tl_jcall *c)
+{
+    sbuf *b = calloc(1, sizeof(sbuf));
+    jser(b, c->self);
+    c->ret = vl(STR(b->p ? b->p : "[]"));
+    free(b->p); free(b);
+}
+static void JA_toStringInd(tl_jcall *c) { JA_toString(c); }
+static void JA_join(tl_jcall *c)
+{
+    const char *sep = S(c->args[0].l);
+    jvec *a = ja_of(c->self);
+    sbuf *b = calloc(1, sizeof(sbuf));
+    for (int i = 0; i < a->n; i++) {
+        if (i) sb_add(b, sep);
+        char t[128]; obj_str(a->v[i], t, sizeof(t)); sb_add(b, t);
+    }
+    c->ret = vl(STR(b->p ? b->p : ""));
+    free(b->p); free(b);
+}
+static void JA_toJSONObject(tl_jcall *c)
+{
+    jobj *names = c->args[0].l;
+    if (!names || !names->native) { c->ret = vl(NULL); return; }
+    jvec *nm = names->native, *a = ja_of(c->self);
+    jobj *o = make("org/json/JSONObject");
+    for (int i = 0; i < nm->n && i < a->n; i++)
+        if (nm->v[i] && nm->v[i]->kind == TL_K_STRING) jm_put(jm_of(o), S(nm->v[i]), a->v[i]);
+    c->ret = vl(o);
+}
+static void JO_toJSONArray(tl_jcall *c)
+{
+    jobjmap *m = jm_of(c->self);
+    jobj *a = make("org/json/JSONArray");
+    jvec *v = vec_of(a);
+    jobj *names = c->args[0].l;
+    if (names && names->native) {
+        jvec *nm = names->native;
+        for (int i = 0; i < nm->n; i++) {
+            int idx = nm->v[i] && nm->v[i]->kind == TL_K_STRING ? jm_find(m, S(nm->v[i])) : -1;
+            vec_push(v, idx >= 0 ? m->e[idx].v : json_null());
+        }
+    }
+    c->ret = vl(a);
+}
+static void JN_equals(tl_jcall *c) { c->ret = vz(c->args[0].l == NULL || is_jnull(c->args[0].l)); }
+static void JN_toString(tl_jcall *c) { c->ret = vl(STR("null")); }
+static void JN_hashCode(tl_jcall *c) { c->ret = vi(0); }
+static void JTok_init(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "s", "Ljava/lang/String;", c->args[0]);
+    set_int(c->self, "pos", 0);
+}
+static void JTok_nextValue(tl_jcall *c)
+{
+    jobj *sv = tl_jni_get_field(c->self, "s", "Ljava/lang/String;").l;
+    int pos = get_int(c->self, "pos");
+    if (!sv) { c->ret = vl(NULL); return; }
+    jscan x = { S(sv.l), S(sv.l) + pos };
+    jobj *v = jvalue_parse(&x);
+    set_int(c->self, "pos", (int)(x.p - x.s));
+    c->ret = vl(v);
+}
+static void JTok_more(tl_jcall *c)
+{
+    jobj *sv = tl_jni_get_field(c->self, "s", "Ljava/lang/String;").l;
+    if (!sv) { c->ret = vz(false); return; }
+    const char *p = S(sv.l) + get_int(c->self, "pos");
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+    c->ret = vz(*p && *p != '}');
+}
+static void JTok_nextClean(tl_jcall *c)
+{
+    jobj *sv = tl_jni_get_field(c->self, "s", "Ljava/lang/String;").l;
+    if (!sv) { c->ret = vl(NULL); return; }
+    const char *p = S(sv.l) + get_int(c->self, "pos");
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+    if (*p == '"') {
+        jscan x = { S(sv.l), p };
+        char *s = jstring_parse(&x);
+        set_int(c->self, "pos", (int)(x.p - x.s));
+        c->ret = vl(STR(s ? s : "")); free(s);
+        return;
+    }
+    c->ret = vl(NULL);
+}
+static void JTok_skipPast(tl_jcall *c) { (void)c; }
+static void JTok_back(tl_jcall *c) { (void)c; }
+static void JTok_next(tl_jcall *c)
+{
+    jobj *sv = tl_jni_get_field(c->self, "s", "Ljava/lang/String;").l;
+    int pos = get_int(c->self, "pos");
+    const char *s = sv ? S(sv.l) : "";
+    c->ret = vc(s[pos] ? (uint16_t)s[pos] : 0);
+    if (s[pos]) set_int(c->self, "pos", pos + 1);
+}
+static void JE_init(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "detailMessage", "Ljava/lang/String;", c->args[0]);
+}
+
+/* ============================================================== java.security / javax.crypto */
+#ifdef __APPLE__
+#include <CommonCrypto/CommonDigest.h>
+#include <CommonCrypto/CommonHMAC.h>
+#define HUSK_CC 1
+#endif
+
+/* MessageDigest: name -> {init,update,digest} over CommonCrypto contexts. */
+typedef struct {
+    char algo[16];
+#ifdef HUSK_CC
+    union { CC_MD5_CTX md5; CC_SHA1_CTX s1; CC_SHA256_CTX s256; CC_SHA512_CTX s512; CC_SHA224_CTX s224; CC_SHA384_CTX s384; } u;
+    int which; /* 1=md5 2=sha1 3=sha256 4=sha512 5=sha224 6=sha384 */
+    sbuf acc;  /* buffered input for one-shot impls */
+#endif
+} dgst;
+static dgst *dg_of(jobj *o)
+{
+    if (!o->native) o->native = calloc(1, sizeof(dgst));
+    return o->native;
+}
+static int dg_init(dgst *d, const char *algo)
+{
+    memset(d, 0, sizeof(*d));
+    snprintf(d->algo, sizeof(d->algo), "%s", algo);
+#ifdef HUSK_CC
+    if (!strcasecmp(algo, "MD5") || !strcasecmp(algo, "MD-5")) { d->which = 1; CC_MD5_Init(&d->u.md5); return 1; }
+    if (!strcasecmp(algo, "SHA-1") || !strcasecmp(algo, "SHA1") || !strcasecmp(algo, "SHA")) { d->which = 2; CC_SHA1_Init(&d->u.s1); return 1; }
+    if (!strcasecmp(algo, "SHA-256") || !strcasecmp(algo, "SHA256")) { d->which = 3; CC_SHA256_Init(&d->u.s256); return 1; }
+    if (!strcasecmp(algo, "SHA-512") || !strcasecmp(algo, "SHA512")) { d->which = 4; CC_SHA512_Init(&d->u.s512); return 1; }
+    if (!strcasecmp(algo, "SHA-224") || !strcasecmp(algo, "SHA224")) { d->which = 5; CC_SHA224_Init(&d->u.s224); return 1; }
+    if (!strcasecmp(algo, "SHA-384") || !strcasecmp(algo, "SHA384")) { d->which = 6; CC_SHA384_Init(&d->u.s384); return 1; }
+#endif
+    /* unknown: buffer and return a deterministic pseudo-hash so code proceeds */
+    d->which = 0;
+    return 1;
+}
+static void dg_upd(dgst *d, const void *p, size_t n)
+{
+#ifdef HUSK_CC
+    switch (d->which) {
+    case 1: CC_MD5_Update(&d->u.md5, p, (CC_LONG)n); return;
+    case 2: CC_SHA1_Update(&d->u.s1, p, (CC_LONG)n); return;
+    case 3: CC_SHA256_Update(&d->u.s256, p, (CC_LONG)n); return;
+    case 4: CC_SHA512_Update(&d->u.s512, p, (CC_LONG)n); return;
+    case 5: CC_SHA224_Update(&d->u.s224, p, (CC_LONG)n); return;
+    case 6: CC_SHA384_Update(&d->u.s384, p, (CC_LONG)n); return;
+    }
+#endif
+    sb_add_n(&d->acc, p, n);
+}
+static int dg_fin(dgst *d, uint8_t *out)
+{
+#ifdef HUSK_CC
+    switch (d->which) {
+    case 1: CC_MD5_Final(out, &d->u.md5); return CC_MD5_DIGEST_LENGTH;
+    case 2: CC_SHA1_Final(out, &d->u.s1); return CC_SHA1_DIGEST_LENGTH;
+    case 3: CC_SHA256_Final(out, &d->u.s256); return CC_SHA256_DIGEST_LENGTH;
+    case 4: CC_SHA512_Final(out, &d->u.s512); return CC_SHA512_DIGEST_LENGTH;
+    case 5: CC_SHA224_Final(out, &d->u.s224); return CC_SHA224_DIGEST_LENGTH;
+    case 6: CC_SHA384_Final(out, &d->u.s384); return CC_SHA384_DIGEST_LENGTH;
+    }
+#endif
+    /* FNV-1a expanded into 32 bytes — deterministic, not cryptographic */
+    uint64_t h = 1469598103934665603ull;
+    for (size_t i = 0; i < d->acc.n; i++) { h ^= (uint8_t)d->acc.p[i]; h *= 1099511628211ull; }
+    for (int i = 0; i < 4; i++) {
+        h ^= h >> 13; h *= 0x5bd1e995;
+        memcpy(out + i * 8, &h, 8);
+    }
+    return 32;
+}
+static void MD_getInstance(tl_jcall *c)
+{
+    jobj *m = make("java/security/MessageDigest");
+    dg_init(dg_of(m), S(c->args[0].l));
+    c->ret = vl(m);
+}
+static void MD_update(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (a && a->kind == TL_K_PRIM_ARRAY) dg_upd(dg_of(c->self), a->arr.data, a->arr.len);
+    else if (a) { uint8_t b = (uint8_t)a->b; dg_upd(dg_of(c->self), &b, 1); }
+}
+static void MD_update1(tl_jcall *c)
+{
+    uint8_t b = (uint8_t)c->args[0].i;
+    dg_upd(dg_of(c->self), &b, 1);
+}
+static void MD_updateRange(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (a && a->kind == TL_K_PRIM_ARRAY) {
+        int off = c->args[1].i, n = c->args[2].i;
+        if (off < 0) off = 0;
+        if (off + n > (int)a->arr.len) n = (int)a->arr.len - off;
+        if (n > 0) dg_upd(dg_of(c->self), (char *)a->arr.data + off, (size_t)n);
+    }
+}
+static jobj *md_digest_of(jobj *o)
+{
+    uint8_t out[64];
+    int n = dg_fin(dg_of(o), out);
+    jobj *a = tl_jni_new_prim_array('B', (uint32_t)n);
+    memcpy(a->arr.data, out, (size_t)n);
+    return a;
+}
+static void MD_digest(tl_jcall *c) { c->ret = vl(md_digest_of(c->self)); }
+static void MD_digestIn(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    uint8_t out[64];
+    int n = dg_fin(dg_of(c->self), out);
+    if (a && a->kind == TL_K_PRIM_ARRAY) memcpy(a->arr.data, out, a->arr.len < (uint32_t)n ? a->arr.len : (uint32_t)n);
+    c->ret = vi(n);
+}
+static void MD_digestOf(tl_jcall *c)
+{
+    MD_update(c);
+    c->ret = vl(md_digest_of(c->self));
+}
+static void MD_reset(tl_jcall *c)
+{
+    dgst *d = dg_of(c->self);
+    char algo[16]; snprintf(algo, 16, "%s", d->algo);
+    dg_init(d, algo);
+}
+static void MD_getAlgorithm(tl_jcall *c) { c->ret = vl(STR(dg_of(c->self)->algo)); }
+static void MD_getDigestLength(tl_jcall *c)
+{
+    dgst *d = dg_of(c->self);
+    int n = 32;
+#ifdef HUSK_CC
+    n = d->which == 1 ? CC_MD5_DIGEST_LENGTH : d->which == 2 ? CC_SHA1_DIGEST_LENGTH :
+        d->which == 3 ? CC_SHA256_DIGEST_LENGTH : d->which == 5 ? CC_SHA224_DIGEST_LENGTH :
+        d->which == 6 ? CC_SHA384_DIGEST_LENGTH : CC_SHA512_DIGEST_LENGTH;
+#endif
+    c->ret = vi(n);
+}
+static void MD_isEqual(tl_jcall *c)
+{
+    jobj *a = c->args[0].l, *b = c->args[1].l;
+    c->ret = vz(a && b && a->kind == TL_K_PRIM_ARRAY && b->kind == TL_K_PRIM_ARRAY &&
+        a->arr.len == b->arr.len && !memcmp(a->arr.data, b->arr.data, a->arr.len));
+}
+static void MD_clone(tl_jcall *c)
+{
+    jobj *m = make("java/security/MessageDigest");
+    *dg_of(m) = *dg_of(c->self);
+    c->ret = vl(m);
+}
+
+/* javax.crypto.Mac via CommonHMAC */
+typedef struct {
+    int algo; /* 0=sha1 1=sha256 2=md5 */
+    sbuf key, data;
+} macst;
+static macst *mac_of(jobj *o)
+{
+    if (!o->native) o->native = calloc(1, sizeof(macst));
+    return o->native;
+}
+static void Mac_getInstance(tl_jcall *c)
+{
+    jobj *m = make("javax/crypto/Mac");
+    macst *s = mac_of(m);
+    const char *a = S(c->args[0].l);
+    s->algo = strcasestr(a, "256") ? 1 : strcasestr(a, "MD5") ? 2 : 0;
+    set_str(m, "algo", a);
+    c->ret = vl(m);
+}
+static void Mac_init(tl_jcall *c)
+{
+    macst *s = mac_of(c->self);
+    s->data.n = 0;
+    jobj *k = c->args[0].l;
+    s->key.n = 0;
+    jobj *enc = k ? tl_jni_get_field(k, "encoded", "[B").l : NULL;
+    if (enc && enc->kind == TL_K_PRIM_ARRAY) sb_add_n(&s->key, enc->arr.data, enc->arr.len);
+}
+static void Mac_update(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (a && a->kind == TL_K_PRIM_ARRAY) sb_add_n(&mac_of(c->self)->data, a->arr.data, a->arr.len);
+}
+static void Mac_update1(tl_jcall *c)
+{
+    char b = (char)c->args[0].b;
+    sb_add_n(&mac_of(c->self)->data, &b, 1);
+}
+static void Mac_updateRange(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (a && a->kind == TL_K_PRIM_ARRAY) {
+        int off = c->args[1].i, n = c->args[2].i;
+        if (off < 0) off = 0;
+        if (off + n > (int)a->arr.len) n = (int)a->arr.len - off;
+        if (n > 0) sb_add_n(&mac_of(c->self)->data, (char *)a->arr.data + off, (size_t)n);
+    }
+}
+static jobj *mac_result(jobj *o)
+{
+    macst *s = mac_of(o);
+    uint8_t out[64];
+    size_t n = 20;
+#ifdef HUSK_CC
+    CCHmacAlgorithm alg = s->algo == 1 ? kCCHmacAlgSHA256 : s->algo == 2 ? kCCHmacAlgMD5 : kCCHmacAlgSHA1;
+    CCHmac(alg, s->key.p ? s->key.p : "", s->key.n, s->data.p ? s->data.p : "", s->data.n, out);
+    n = s->algo == 1 ? CC_SHA256_DIGEST_LENGTH : s->algo == 2 ? CC_MD5_DIGEST_LENGTH : CC_SHA1_DIGEST_LENGTH;
+#else
+    uint64_t h = 1469598103934665603ull;
+    for (size_t i = 0; i < s->key.n; i++) { h ^= (uint8_t)s->key.p[i]; h *= 1099511628211ull; }
+    for (size_t i = 0; i < s->data.n; i++) { h ^= (uint8_t)s->data.p[i]; h *= 1099511628211ull; }
+    memcpy(out, &h, 8); memcpy(out + 8, &h, 8); memcpy(out + 16, &h, 4); n = 20;
+#endif
+    jobj *a = tl_jni_new_prim_array('B', (uint32_t)n);
+    memcpy(a->arr.data, out, n);
+    return a;
+}
+static void Mac_doFinal(tl_jcall *c) { c->ret = vl(mac_result(c->self)); }
+static void Mac_doFinalIn(tl_jcall *c)
+{
+    Mac_update(c);
+    c->ret = vl(mac_result(c->self));
+}
+static void Mac_reset(tl_jcall *c) { mac_of(c->self)->data.n = 0; }
+static void Mac_getAlgorithm(tl_jcall *c)
+{
+    jobj *a = tl_jni_get_field(c->self, "algo", "Ljava/lang/String;").l;
+    c->ret = vl(a ? a : STR("HmacSHA1"));
+}
+static void Mac_getMacLength(tl_jcall *c)
+{
+    macst *s = mac_of(c->self);
+    c->ret = vi(s->algo == 1 ? 32 : s->algo == 2 ? 16 : 20);
+}
+static void Mac_clone(tl_jcall *c)
+{
+    jobj *m = make("javax/crypto/Mac");
+    macst *s = mac_of(m), *o = mac_of(c->self);
+    s->algo = o->algo;
+    sb_add_n(&s->key, o->key.p ? o->key.p : "", o->key.n);
+    c->ret = vl(m);
+}
+
+/* SecretKeySpec / KeyGenerator / SecureRandom */
+static void SKS_init(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "encoded", "[B", c->args[0]);
+    if (c->args[1].l) tl_jni_set_field(c->self, "algo", "Ljava/lang/String;", c->args[1]);
+}
+static void SKS_init2(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (a && a->kind == TL_K_PRIM_ARRAY) {
+        int off = c->args[1].i, n = c->args[2].i;
+        jobj *sub = tl_jni_new_prim_array('B', (uint32_t)(n > 0 ? n : 0));
+        memcpy(sub->arr.data, (char *)a->arr.data + off, (size_t)(n > 0 ? n : 0));
+        tl_jni_set_field(c->self, "encoded", "[B", vl(sub));
+    }
+    if (c->args[3].l) tl_jni_set_field(c->self, "algo", "Ljava/lang/String;", c->args[3]);
+}
+static void Key_getEncoded(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "encoded", "[B"); }
+static void Key_getAlgorithm(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "algo", "Ljava/lang/String;"); }
+static void Key_getFormat(tl_jcall *c) { c->ret = vl(STR("RAW")); }
+static void KG_getInstance(tl_jcall *c)
+{
+    jobj *k = make("javax/crypto/KeyGenerator");
+    if (c->args[0].l) set_str(k, "algo", S(c->args[0].l));
+    c->ret = vl(k);
+}
+static void KG_init(tl_jcall *c) { set_int(c->self, "ksize", c->args[0].i); }
+static void KG_generateKey(tl_jcall *c)
+{
+    jobj *k = make("javax/crypto/spec/SecretKeySpec");
+    int n = get_int(c->self, "ksize") / 8;
+    if (n <= 0) n = 16;
+    jobj *b = tl_jni_new_prim_array('B', (uint32_t)n);
+    arc4random_buf(b->arr.data, b->arr.len);
+    tl_jni_set_field(k, "encoded", "[B", vl(b));
+    jobj *a = tl_jni_get_field(c->self, "algo", "Ljava/lang/String;").l;
+    if (a) tl_jni_set_field(k, "algo", "Ljava/lang/String;", vl(a));
+    c->ret = vl(k);
+}
+static void SR_nextBytes(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (a && a->kind == TL_K_PRIM_ARRAY) arc4random_buf(a->arr.data, a->arr.len);
+}
+static void SR_setSeedB(tl_jcall *c) { (void)c; }
+static void SR_setSeedJ(tl_jcall *c) { (void)c; }
+static void SR_nextInt(tl_jcall *c) { c->ret = vi((int32_t)arc4random()); }
+static void SR_nextLong(tl_jcall *c) { c->ret = vj(((int64_t)arc4random() << 32) | arc4random()); }
+static void SR_getInstance(tl_jcall *c) { c->ret = vl(make("java/security/SecureRandom")); }
+static void SR_getSeed(tl_jcall *c)
+{
+    jobj *a = tl_jni_new_prim_array('B', (uint32_t)c->args[0].i);
+    arc4random_buf(a->arr.data, a->arr.len);
+    c->ret = vl(a);
+}
+static void SR_generateSeed(tl_jcall *c) { SR_getSeed(c); }
+static void SR_getInstanceStrong(tl_jcall *c) { SR_getInstance(c); }
+
+/* Cipher: identity transform for now (passthrough), keeps protocol code alive */
+static void Cipher_getInstance(tl_jcall *c)
+{
+    jobj *ci = make("javax/crypto/Cipher");
+    if (c->args[0].l) set_str(ci, "transformation", S(c->args[0].l));
+    c->ret = vl(ci);
+}
+static void Cipher_init(tl_jcall *c)
+{
+    set_int(c->self, "mode", c->args[0].i);
+    if (c->args[1].l) tl_jni_set_field(c->self, "key", "Ljava/security/Key;", c->args[1]);
+    if (c->args[2].l) tl_jni_set_field(c->self, "params", "Ljava/security/spec/AlgorithmParameterSpec;", c->args[2]);
+}
+static void Cipher_update(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    c->ret = vl(a ? tl_jni_ref(a) : NULL);
+}
+static void Cipher_updateRange(tl_jcall *c) { Cipher_update(c); }
+static void Cipher_doFinal(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    c->ret = vl(a ? tl_jni_ref(a) : tl_jni_new_prim_array('B', 0));
+}
+static void Cipher_doFinal0(tl_jcall *c) { c->ret = vl(tl_jni_new_prim_array('B', 0)); }
+static void Cipher_getBlockSize(tl_jcall *c) { c->ret = vi(16); }
+static void Cipher_getOutputSize(tl_jcall *c) { c->ret = c->args[0]; }
+static void Cipher_getIV(tl_jcall *c) { c->ret = vl(tl_jni_new_prim_array('B', 16)); }
+static void Cipher_getAlgorithm(tl_jcall *c)
+{
+    jobj *t = tl_jni_get_field(c->self, "transformation", "Ljava/lang/String;").l;
+    c->ret = vl(t ? t : STR("AES"));
+}
+static void Cipher_getMaxAllowedKeyLength(tl_jcall *c) { c->ret = vi(2147483647); }
+static void Cipher_getMaxAllowedParameterSpec(tl_jcall *c) { c->ret = vl(NULL); }
+static void Cipher_getParameters(tl_jcall *c) { c->ret = vl(NULL); }
+static void Cipher_getExemptionMechanism(tl_jcall *c) { c->ret = vl(NULL); }
+static void Cipher_wrap(tl_jcall *c) { c->ret = vl(tl_jni_new_prim_array('B', 0)); }
+static void Cipher_unwrap(tl_jcall *c) { c->ret = vl(NULL); }
+static void IvPS_init(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "iv", "[B", c->args[0]);
+}
+static void IvPS_init2(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (a && a->kind == TL_K_PRIM_ARRAY) {
+        int off = c->args[1].i, n = c->args[2].i;
+        jobj *sub = tl_jni_new_prim_array('B', (uint32_t)(n > 0 ? n : 0));
+        memcpy(sub->arr.data, (char *)a->arr.data + off, (size_t)(n > 0 ? n : 0));
+        tl_jni_set_field(c->self, "iv", "[B", vl(sub));
+    }
+}
+static void IvPS_getIV(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "iv", "[B"); }
+
+/* ============================================================== android.view / app */
+
+static void View_init(tl_jcall *c) { (void)c; }
+static void View_getWidth(tl_jcall *c)  { c->ret = vi(get_int(c->self, "mWidth")); }
+static void View_getHeight(tl_jcall *c) { c->ret = vi(get_int(c->self, "mHeight")); }
+static void View_getMeasuredWidth(tl_jcall *c)  { View_getWidth(c); }
+static void View_getMeasuredHeight(tl_jcall *c) { View_getHeight(c); }
+static void View_getLeft(tl_jcall *c)   { c->ret = vi(get_int(c->self, "mLeft")); }
+static void View_getTop(tl_jcall *c)    { c->ret = vi(get_int(c->self, "mTop")); }
+static void View_getRight(tl_jcall *c)  { c->ret = vi(get_int(c->self, "mRight")); }
+static void View_getBottom(tl_jcall *c) { c->ret = vi(get_int(c->self, "mBottom")); }
+static void View_getX(tl_jcall *c) { c->ret = vf(get_flt(c->self, "x")); }
+static void View_getY(tl_jcall *c) { c->ret = vf(get_flt(c->self, "y")); }
+static void View_setX(tl_jcall *c) { set_float(c->self, "x", c->args[0].f); }
+static void View_setY(tl_jcall *c) { set_float(c->self, "y", c->args[0].f); }
+static void View_getTranslationX(tl_jcall *c) { c->ret = vf(get_flt(c->self, "tx")); }
+static void View_getTranslationY(tl_jcall *c) { c->ret = vf(get_flt(c->self, "ty")); }
+static void View_setTranslationX(tl_jcall *c) { set_float(c->self, "tx", c->args[0].f); }
+static void View_setTranslationY(tl_jcall *c) { set_float(c->self, "ty", c->args[0].f); }
+static void View_getAlpha(tl_jcall *c) { c->ret = vf(get_flt(c->self, "alpha") ? get_flt(c->self, "alpha") : 1.0f); }
+static void View_setAlpha(tl_jcall *c) { set_float(c->self, "alpha", c->args[0].f); }
+static void View_getRotation(tl_jcall *c) { c->ret = vf(get_flt(c->self, "rot")); }
+static void View_setRotation(tl_jcall *c) { set_float(c->self, "rot", c->args[0].f); }
+static void View_getScaleX(tl_jcall *c) { c->ret = vf(get_flt(c->self, "sx") ? get_flt(c->self, "sx") : 1.0f); }
+static void View_getScaleY(tl_jcall *c) { c->ret = vf(get_flt(c->self, "sy") ? get_flt(c->self, "sy") : 1.0f); }
+static void View_setScaleX(tl_jcall *c) { set_float(c->self, "sx", c->args[0].f); }
+static void View_setScaleY(tl_jcall *c) { set_float(c->self, "sy", c->args[0].f); }
+static void View_getPivotX(tl_jcall *c) { c->ret = vf(get_flt(c->self, "px")); }
+static void View_getPivotY(tl_jcall *c) { c->ret = vf(get_flt(c->self, "py")); }
+static void View_setPivotX(tl_jcall *c) { set_float(c->self, "px", c->args[0].f); }
+static void View_setPivotY(tl_jcall *c) { set_float(c->self, "py", c->args[0].f); }
+static void View_getVisibility(tl_jcall *c) { c->ret = vi(get_int(c->self, "vis")); }
+static void View_setVisibility(tl_jcall *c) { set_int(c->self, "vis", c->args[0].i); }
+static void View_isShown(tl_jcall *c) { c->ret = vz(get_int(c->self, "vis") == 0); }
+static void View_getId(tl_jcall *c) { c->ret = vi(get_int(c->self, "id") ? get_int(c->self, "id") : -1); }
+static void View_setId(tl_jcall *c) { set_int(c->self, "id", c->args[0].i); }
+static void View_getTag(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "tag", "Ljava/lang/Object;"); }
+static void View_setTag(tl_jcall *c) { tl_jni_set_field(c->self, "tag", "Ljava/lang/Object;", c->args[0]); }
+static void View_getTagK(tl_jcall *c)
+{
+    jobjmap *tags = c->self->native;
+    jobj *v = NULL;
+    if (tags) {
+        char kb[32]; snprintf(kb, 32, "%d", c->args[0].i);
+        int i = jm_find(tags, kb);
+        if (i >= 0) v = tags->e[i].v;
+    }
+    c->ret = vl(v);
+}
+static void View_setTagK(tl_jcall *c)
+{
+    if (!c->self->native) c->self->native = calloc(1, sizeof(jobjmap));
+    char kb[32]; snprintf(kb, 32, "%d", c->args[0].i);
+    jm_put(c->self->native, kb, c->args[1].l);
+}
+static void View_setEnabled(tl_jcall *c) { set_bool(c->self, "enabled", c->args[0].z); }
+static void View_isEnabled(tl_jcall *c) { c->ret = vz(!get_int(c->self, "disabled")); }
+static void View_setClickable(tl_jcall *c) { set_bool(c->self, "clickable", c->args[0].z); }
+static void View_isClickable(tl_jcall *c) { c->ret = vz(get_int(c->self, "clickable")); }
+static void View_setFocusable(tl_jcall *c) { set_bool(c->self, "focusable", c->args[0].z); }
+static void View_isFocusable(tl_jcall *c) { c->ret = vz(get_int(c->self, "focusable")); }
+static void View_setSelected(tl_jcall *c) { set_bool(c->self, "selected", c->args[0].z); }
+static void View_isSelected(tl_jcall *c) { c->ret = vz(get_int(c->self, "selected")); }
+static void View_setPressed(tl_jcall *c) { set_bool(c->self, "pressed", c->args[0].z); }
+static void View_isPressed(tl_jcall *c) { c->ret = vz(get_int(c->self, "pressed")); }
+static void View_setActivated(tl_jcall *c) { set_bool(c->self, "activated", c->args[0].z); }
+static void View_isActivated(tl_jcall *c) { c->ret = vz(get_int(c->self, "activated")); }
+static void View_requestLayout(tl_jcall *c) { (void)c; }
+static void View_invalidate(tl_jcall *c) { (void)c; }
+static void View_invalidateR(tl_jcall *c) { (void)c; }
+static void View_postInvalidate(tl_jcall *c) { (void)c; }
+static void View_postInvalidateR(tl_jcall *c) { (void)c; }
+static void View_post(tl_jcall *c)
+{
+    if (c->args[0].l) tl_jni_call(c->args[0].l, "run", "()V", NULL);
+    c->ret = vz(true);
+}
+static void View_postDelayed(tl_jcall *c)
+{
+    if (c->args[0].l) tl_jni_call(c->args[0].l, "run", "()V", NULL);
+    c->ret = vz(true);
+}
+static void View_removeCallbacks(tl_jcall *c) { c->ret = vz(true); }
+static void View_bringToFront(tl_jcall *c) { (void)c; }
+static void View_requestFocus(tl_jcall *c) { c->ret = vz(true); }
+static void View_hasFocus(tl_jcall *c) { c->ret = vz(false); }
+static void View_hasWindowFocus(tl_jcall *c) { c->ret = vz(true); }
+static void View_clearFocus(tl_jcall *c) { (void)c; }
+static void View_isFocused(tl_jcall *c) { c->ret = vz(false); }
+static void View_findFocus(tl_jcall *c) { c->ret = vl(NULL); }
+static void View_findViewById(tl_jcall *c)
+{
+    c->ret = get_int(c->self, "id") == c->args[0].i ? vl(tl_jni_ref(c->self)) : vl(NULL);
+}
+static void View_getContext(tl_jcall *c)
+{
+    c->ret = tl_jni_get_field(c->self, "ctx", "Landroid/content/Context;");
+}
+static void View_getParent(tl_jcall *c)
+{
+    c->ret = tl_jni_get_field(c->self, "parent", "Landroid/view/ViewParent;");
+}
+static void View_setLayoutParams(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "lp", "Landroid/view/ViewGroup$LayoutParams;", c->args[0]);
+}
+static void View_getLayoutParams(tl_jcall *c)
+{
+    jobj *lp = tl_jni_get_field(c->self, "lp", "Landroid/view/ViewGroup$LayoutParams;").l;
+    if (!lp) lp = make("android/view/ViewGroup$LayoutParams");
+    c->ret = vl(lp);
+}
+static void View_measure(tl_jcall *c)
+{
+    set_int(c->self, "mWidth", c->args[0].i & 0x3FFFFFFF);
+    set_int(c->self, "mHeight", c->args[1].i & 0x3FFFFFFF);
+}
+static void View_layout(tl_jcall *c)
+{
+    set_int(c->self, "mLeft", c->args[0].i); set_int(c->self, "mTop", c->args[1].i);
+    set_int(c->self, "mRight", c->args[2].i); set_int(c->self, "mBottom", c->args[3].i);
+    set_int(c->self, "mWidth", c->args[2].i - c->args[0].i);
+    set_int(c->self, "mHeight", c->args[3].i - c->args[1].i);
+}
+static void View_getLocationOnScreen(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (a && a->kind == TL_K_PRIM_ARRAY && a->arr.len >= 2) {
+        ((int32_t *)a->arr.data)[0] = get_int(c->self, "mLeft");
+        ((int32_t *)a->arr.data)[1] = get_int(c->self, "mTop");
+    }
+}
+static void View_getLocationInWindow(tl_jcall *c) { View_getLocationOnScreen(c); }
+static void View_getHitRect(tl_jcall *c)
+{
+    jobj *r = c->args[0].l;
+    if (r) {
+        set_int(r, "left", get_int(c->self, "mLeft")); set_int(r, "top", get_int(c->self, "mTop"));
+        set_int(r, "right", get_int(c->self, "mRight")); set_int(r, "bottom", get_int(c->self, "mBottom"));
+    }
+}
+static void View_getGlobalVisibleRect(tl_jcall *c)
+{
+    jobj *r = c->args[0].l;
+    if (r) {
+        set_int(r, "left", 0); set_int(r, "top", 0);
+        set_int(r, "right", get_int(c->self, "mWidth")); set_int(r, "bottom", get_int(c->self, "mHeight"));
+    }
+    c->ret = vz(true);
+}
+static void View_getLocalVisibleRect(tl_jcall *c) { View_getGlobalVisibleRect(c); }
+static void View_getDrawingRect(tl_jcall *c)
+{
+    jobj *r = c->args[0].l;
+    if (r) {
+        set_int(r, "left", 0); set_int(r, "top", 0);
+        set_int(r, "right", get_int(c->self, "mWidth")); set_int(r, "bottom", get_int(c->self, "mHeight"));
+    }
+}
+static void View_getWindowVisibleDisplayFrame(tl_jcall *c) { View_getDrawingRect(c); }
+static void View_setBackgroundColor(tl_jcall *c) { set_int(c->self, "bg", c->args[0].i); }
+static void View_getSolidColor(tl_jcall *c) { c->ret = vi(get_int(c->self, "bg")); }
+static void View_setBackground(tl_jcall *c) { tl_jni_set_field(c->self, "bgd", "Landroid/graphics/drawable/Drawable;", c->args[0]); }
+static void View_getBackground(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "bgd", "Landroid/graphics/drawable/Drawable;"); }
+static void View_setBackgroundResource(tl_jcall *c) { set_int(c->self, "bgres", c->args[0].i); }
+static void View_setPadding(tl_jcall *c)
+{
+    set_int(c->self, "padL", c->args[0].i); set_int(c->self, "padT", c->args[1].i);
+    set_int(c->self, "padR", c->args[2].i); set_int(c->self, "padB", c->args[3].i);
+}
+static void View_getPaddingLeft(tl_jcall *c) { c->ret = vi(get_int(c->self, "padL")); }
+static void View_getPaddingTop(tl_jcall *c) { c->ret = vi(get_int(c->self, "padT")); }
+static void View_getPaddingRight(tl_jcall *c) { c->ret = vi(get_int(c->self, "padR")); }
+static void View_getPaddingBottom(tl_jcall *c) { c->ret = vi(get_int(c->self, "padB")); }
+static void View_setMinimumWidth(tl_jcall *c) { set_int(c->self, "minW", c->args[0].i); }
+static void View_getMinimumWidth(tl_jcall *c) { c->ret = vi(get_int(c->self, "minW")); }
+static void View_setMinimumHeight(tl_jcall *c) { set_int(c->self, "minH", c->args[0].i); }
+static void View_getMinimumHeight(tl_jcall *c) { c->ret = vi(get_int(c->self, "minH")); }
+static void View_setOnClickListener(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "onClick", "Landroid/view/View$OnClickListener;", c->args[0]);
+    set_bool(c->self, "clickable", true);
+}
+static void View_setOnLongClickListener(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "onLongClick", "Landroid/view/View$OnLongClickListener;", c->args[0]);
+    c->ret = vz(true);
+}
+static void View_setOnTouchListener(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "onTouch", "Landroid/view/View$OnTouchListener;", c->args[0]);
+}
+static void View_setOnFocusChangeListener(tl_jcall *c) { tl_jni_set_field(c->self, "onFocus", "Landroid/view/View$OnFocusChangeListener;", c->args[0]); }
+static void View_setOnKeyListener(tl_jcall *c) { tl_jni_set_field(c->self, "onKey", "Landroid/view/View$OnKeyListener;", c->args[0]); }
+static void View_setOnLayoutChangeListener(tl_jcall *c) { (void)c; }
+static void View_addOnLayoutChangeListener(tl_jcall *c) { (void)c; }
+static void View_setOnSystemUiVisibilityChangeListener(tl_jcall *c) { (void)c; }
+static void View_performClick(tl_jcall *c)
+{
+    jobj *l = tl_jni_get_field(c->self, "onClick", "Landroid/view/View$OnClickListener;").l;
+    if (l) { jvalue s = vl(c->self); tl_jni_call(l, "onClick", "(Landroid/view/View;)V", &s); }
+    c->ret = vz(l != NULL);
+}
+static void View_performLongClick(tl_jcall *c)
+{
+    jobj *l = tl_jni_get_field(c->self, "onLongClick", "Landroid/view/View$OnLongClickListener;").l;
+    if (l) { jvalue s = vl(c->self); tl_jni_call(l, "onLongClick", "(Landroid/view/View;)Z", &s); }
+    c->ret = vz(l != NULL);
+}
+static void View_callOnClick(tl_jcall *c) { View_performClick(c); }
+static void View_soundEffectsEnabled(tl_jcall *c) { set_bool(c->self, "sndfx", c->args[0].z); }
+static void View_playSoundEffect(tl_jcall *c) { (void)c; }
+static void View_getViewTreeObserver(tl_jcall *c)
+{
+    jobj *o = tl_jni_get_field(c->self, "vto", "Landroid/view/ViewTreeObserver;").l;
+    if (!o) {
+        o = make("android/view/ViewTreeObserver");
+        tl_jni_set_field(c->self, "vto", "Landroid/view/ViewTreeObserver;", vl(o));
+    }
+    c->ret = vl(o);
+}
+static void VTO_isAlive(tl_jcall *c) { c->ret = vz(true); }
+static void VTO_addGlobalLayoutListener(tl_jcall *c) { tl_jni_set_field(c->self, "gll", "Landroid/view/ViewTreeObserver$OnGlobalLayoutListener;", c->args[0]); }
+static void VTO_removeGlobalLayoutListener(tl_jcall *c) { tl_jni_set_field(c->self, "gll", "Landroid/view/ViewTreeObserver$OnGlobalLayoutListener;", vl(NULL)); }
+static void VTO_addOnDrawListener(tl_jcall *c) { (void)c; }
+static void VTO_addOnPreDrawListener(tl_jcall *c) { tl_jni_set_field(c->self, "pdl", "Landroid/view/ViewTreeObserver$OnPreDrawListener;", c->args[0]); }
+static void VTO_addOnScrollChangedListener(tl_jcall *c) { (void)c; }
+static void VTO_addOnGlobalFocusChangeListener(tl_jcall *c) { (void)c; }
+static void VTO_dispatchOnGlobalLayout(tl_jcall *c) { (void)c; }
+static void View_getDisplay(tl_jcall *c) { c->ret = vl(make("android/view/Display")); }
+static void View_getRootView(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void View_getWindowToken(tl_jcall *c) { c->ret = vl(make("android/os/Binder")); }
+static void View_getApplicationWindowToken(tl_jcall *c) { View_getWindowToken(c); }
+static void View_getHandler(tl_jcall *c) { c->ret = vl(make("android/os/Handler")); }
+static void View_getAnimation(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "anim", "Landroid/view/animation/Animation;"); }
+static void View_setAnimation(tl_jcall *c) { tl_jni_set_field(c->self, "anim", "Landroid/view/animation/Animation;", c->args[0]); }
+static void View_startAnimation(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "anim", "Landroid/view/animation/Animation;", c->args[0]);
+    if (c->args[0].l) tl_jni_call(c->args[0].l, "start", "()V", NULL);
+}
+static void View_clearAnimation(tl_jcall *c) { tl_jni_set_field(c->self, "anim", "Landroid/view/animation/Animation;", vl(NULL)); }
+static void View_animate(tl_jcall *c) { c->ret = vl(make("android/view/ViewPropertyAnimator")); }
+static void VPA_alpha(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void VPA_translationX(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void VPA_translationY(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void VPA_scaleX(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void VPA_scaleY(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void VPA_rotation(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void VPA_x(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void VPA_y(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void VPA_setDuration(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void VPA_getDuration(tl_jcall *c) { c->ret = vj(300); }
+static void VPA_setStartDelay(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void VPA_setInterpolator(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void VPA_setListener(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void VPA_setUpdateListener(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void VPA_start(tl_jcall *c) { (void)c; }
+static void VPA_cancel(tl_jcall *c) { (void)c; }
+static void VPA_withLayer(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void VPA_withEndAction(tl_jcall *c)
+{
+    if (c->args[0].l) tl_jni_call(c->args[0].l, "run", "()V", NULL);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void VPA_withStartAction(tl_jcall *c)
+{
+    if (c->args[0].l) tl_jni_call(c->args[0].l, "run", "()V", NULL);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void View_setKeepScreenOn(tl_jcall *c) { (void)c; }
+static void View_setLayerType(tl_jcall *c) { set_int(c->self, "layer", c->args[0].i); }
+static void View_getLayerType(tl_jcall *c) { c->ret = vi(get_int(c->self, "layer")); }
+static void View_setWillNotDraw(tl_jcall *c) { (void)c; }
+static void View_setWillNotCacheDrawing(tl_jcall *c) { (void)c; }
+static void View_setDrawingCacheEnabled(tl_jcall *c) { (void)c; }
+static void View_isDrawingCacheEnabled(tl_jcall *c) { c->ret = vz(false); }
+static void View_getDrawingCache(tl_jcall *c) { c->ret = vl(NULL); }
+static void View_destroyDrawingCache(tl_jcall *c) { (void)c; }
+static void View_buildDrawingCache(tl_jcall *c) { (void)c; }
+static void View_getScrollX(tl_jcall *c) { c->ret = vi(get_int(c->self, "scrollX")); }
+static void View_getScrollY(tl_jcall *c) { c->ret = vi(get_int(c->self, "scrollY")); }
+static void View_setScrollX(tl_jcall *c) { set_int(c->self, "scrollX", c->args[0].i); }
+static void View_setScrollY(tl_jcall *c) { set_int(c->self, "scrollY", c->args[0].i); }
+static void View_scrollTo(tl_jcall *c)
+{
+    set_int(c->self, "scrollX", c->args[0].i); set_int(c->self, "scrollY", c->args[1].i);
+}
+static void View_scrollBy(tl_jcall *c)
+{
+    set_int(c->self, "scrollX", get_int(c->self, "scrollX") + c->args[0].i);
+    set_int(c->self, "scrollY", get_int(c->self, "scrollY") + c->args[1].i);
+}
+static void View_canScrollVertically(tl_jcall *c) { c->ret = vz(false); }
+static void View_canScrollHorizontally(tl_jcall *c) { c->ret = vz(false); }
+static void View_computeScroll(tl_jcall *c) { (void)c; }
+static void View_awakenScrollBars(tl_jcall *c) { c->ret = vz(false); }
+static void View_getVerticalScrollbarWidth(tl_jcall *c) { c->ret = vi(0); }
+static void View_setScrollbarFadingEnabled(tl_jcall *c) { (void)c; }
+static void View_setVerticalScrollBarEnabled(tl_jcall *c) { (void)c; }
+static void View_setHorizontalScrollBarEnabled(tl_jcall *c) { (void)c; }
+static void View_setOverScrollMode(tl_jcall *c) { set_int(c->self, "overscroll", c->args[0].i); }
+static void View_getOverScrollMode(tl_jcall *c) { c->ret = vi(get_int(c->self, "overscroll")); }
+static void View_setSystemUiVisibility(tl_jcall *c) { set_int(c->self, "sysvis", c->args[0].i); }
+static void View_getSystemUiVisibility(tl_jcall *c) { c->ret = vi(get_int(c->self, "sysvis")); }
+static void View_getWindowSystemUiVisibility(tl_jcall *c) { c->ret = vi(get_int(c->self, "sysvis")); }
+static void View_getWindowId(tl_jcall *c) { c->ret = vl(NULL); }
+static void View_isAttachedToWindow(tl_jcall *c) { c->ret = vz(true); }
+static void View_isInTouchMode(tl_jcall *c) { c->ret = vz(true); }
+static void View_isHardwareAccelerated(tl_jcall *c) { c->ret = vz(true); }
+static void View_isLaidOut(tl_jcall *c) { c->ret = vz(true); }
+static void View_isLayoutRequested(tl_jcall *c) { c->ret = vz(false); }
+static void View_getBaseline(tl_jcall *c) { c->ret = vi(-1); }
+static void View_getResources(tl_jcall *c) { c->ret = vl(make("android/content/res/Resources")); }
+static void View_getElevation(tl_jcall *c) { c->ret = vf(get_flt(c->self, "elev")); }
+static void View_setElevation(tl_jcall *c) { set_float(c->self, "elev", c->args[0].f); }
+static void View_getZ(tl_jcall *c) { c->ret = vf(get_flt(c->self, "elev")); }
+static void View_setZ(tl_jcall *c) { set_float(c->self, "elev", c->args[0].f); }
+static void View_getClipToPadding(tl_jcall *c) { c->ret = vz(true); }
+static void View_setClipToPadding(tl_jcall *c) { set_bool(c->self, "clippad", c->args[0].z); }
+static void View_setContentDescription(tl_jcall *c) { tl_jni_set_field(c->self, "cd", "Ljava/lang/CharSequence;", c->args[0]); }
+static void View_getContentDescription(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "cd", "Ljava/lang/CharSequence;"); }
+static void View_setAccessibilityDelegate(tl_jcall *c) { (void)c; }
+static void View_setImportantForAccessibility(tl_jcall *c) { (void)c; }
+static void View_announceForAccessibility(tl_jcall *c) { (void)c; }
+static void View_sendAccessibilityEvent(tl_jcall *c) { (void)c; }
+static void View_setNextFocusDownId(tl_jcall *c) { (void)c; }
+static void View_setNextFocusUpId(tl_jcall *c) { (void)c; }
+static void View_setNextFocusLeftId(tl_jcall *c) { (void)c; }
+static void View_setNextFocusRightId(tl_jcall *c) { (void)c; }
+static void View_setNextFocusForwardId(tl_jcall *c) { (void)c; }
+static void View_getDefaultSize(tl_jcall *c) { c->ret = c->args[1]; }
+static void View_resolveSize(tl_jcall *c)
+{
+    int spec = c->args[1].i, mode = (spec >> 30) & 3;
+    int size = spec & 0x3FFFFFFF;
+    c->ret = vi(mode == 0x40000000 ? size : (mode == -0x80000000 && c->args[0].i > size) ? size : c->args[0].i);
+}
+static void View_resolveSizeAndState(tl_jcall *c) { View_resolveSize(c); }
+static void View_generateViewId(tl_jcall *c)
+{
+    static _Atomic int nid = 1;
+    c->ret = vi((int)__atomic_fetch_add(&nid, 1, __ATOMIC_RELAXED));
+}
+static void View_combineMeasuredStates(tl_jcall *c) { c->ret = vi(c->args[0].i | c->args[1].i); }
+
+/* ViewGroup: children as jobj array in native */
+static jobjmap *vg_kids(jobj *o)
+{
+    if (!o->native) o->native = calloc(1, sizeof(jobjmap));
+    return o->native;
+}
+static void VG_addView(tl_jcall *c)
+{
+    jobj *v = c->args[0].l;
+    if (v) {
+        jobjmap *m = vg_kids(c->self);
+        char kb[32]; snprintf(kb, 32, "#%d", m->n);
+        jm_put(m, kb, v);
+        tl_jni_set_field(v, "parent", "Landroid/view/ViewParent;", vl(c->self));
+    }
+}
+static void VG_addViewLP(tl_jcall *c)
+{
+    VG_addView(c);
+    if (c->args[0].l && c->args[1].l)
+        tl_jni_set_field(c->args[0].l, "lp", "Landroid/view/ViewGroup$LayoutParams;", c->args[1]);
+}
+static void VG_removeView(tl_jcall *c)
+{
+    jobjmap *m = vg_kids(c->self);
+    for (int i = 0; i < m->n; i++)
+        if (m->e[i].v == c->args[0].l) { jm_del(m, m->e[i].k); break; }
+}
+static void VG_removeViewAt(tl_jcall *c)
+{
+    jobjmap *m = vg_kids(c->self);
+    if (c->args[0].i >= 0 && c->args[0].i < m->n) jm_del(m, m->e[c->args[0].i].k);
+}
+static void VG_removeAllViews(tl_jcall *c)
+{
+    jobjmap *m = c->self->native;
+    if (m) m->n = 0;
+}
+static void VG_getChildCount(tl_jcall *c)
+{
+    jobjmap *m = c->self->native;
+    c->ret = vi(m ? m->n : 0);
+}
+static void VG_getChildAt(tl_jcall *c)
+{
+    jobjmap *m = c->self->native;
+    jobj *v = NULL;
+    if (m && c->args[0].i >= 0 && c->args[0].i < m->n) v = m->e[c->args[0].i].v;
+    c->ret = vl(v);
+}
+static void VG_indexOfChild(tl_jcall *c)
+{
+    jobjmap *m = c->self->native;
+    int r = -1;
+    if (m) for (int i = 0; i < m->n; i++) if (m->e[i].v == c->args[0].l) { r = i; break; }
+    c->ret = vi(r);
+}
+static void VG_bringChildToFront(tl_jcall *c) { (void)c; }
+static void VG_setDescendantFocusability(tl_jcall *c) { (void)c; }
+static void VG_setClipChildren(tl_jcall *c) { (void)c; }
+static void VG_requestDisallowInterceptTouchEvent(tl_jcall *c) { (void)c; }
+static void VG_onInterceptTouchEvent(tl_jcall *c) { c->ret = vz(false); }
+static void VG_clearDisappearingChildren(tl_jcall *c) { (void)c; }
+static void VG_getFocusedChild(tl_jcall *c) { c->ret = vl(NULL); }
+static void VG_setOnHierarchyChangeListener(tl_jcall *c) { (void)c; }
+static void VG_setOnChildrenDrawnListener(tl_jcall *c) { (void)c; }
+static void LP_init(tl_jcall *c)
+{
+    set_int(c->self, "width", c->args[0].i);
+    set_int(c->self, "height", c->args[1].i);
+}
+static void LP_initCopy(tl_jcall *c)
+{
+    jobj *o = c->args[0].l;
+    set_int(c->self, "width", o ? get_int(o, "width") : -2);
+    set_int(c->self, "height", o ? get_int(o, "height") : -2);
+}
+static void MLP_init(tl_jcall *c)
+{
+    set_int(c->self, "width", c->args[0].i);
+    set_int(c->self, "height", c->args[1].i);
+}
+static void MLP_setMargins(tl_jcall *c)
+{
+    set_int(c->self, "leftMargin", c->args[0].i); set_int(c->self, "topMargin", c->args[1].i);
+    set_int(c->self, "rightMargin", c->args[2].i); set_int(c->self, "bottomMargin", c->args[3].i);
+}
+static void MLP_setMarginStart(tl_jcall *c) { set_int(c->self, "marginStart", c->args[0].i); }
+static void MLP_setMarginEnd(tl_jcall *c) { set_int(c->self, "marginEnd", c->args[0].i); }
+static void MLP_getMarginStart(tl_jcall *c) { c->ret = vi(get_int(c->self, "marginStart") ? get_int(c->self, "marginStart") : get_int(c->self, "leftMargin")); }
+static void MLP_getMarginEnd(tl_jcall *c) { c->ret = vi(get_int(c->self, "marginEnd") ? get_int(c->self, "marginEnd") : get_int(c->self, "rightMargin")); }
+
+/* MotionEvent: real stored state so games can read coords */
+static jobj *me_make(int action, float x, float y, int64_t when)
+{
+    jobj *e = make("android/view/MotionEvent");
+    set_int(e, "action", action);
+    set_float(e, "x", x); set_float(e, "y", y);
+    set_long(e, "down", when); set_long(e, "when", when);
+    set_float(e, "pressure", 1.0f); set_float(e, "size", 0.2f);
+    return e;
+}
+static void ME_obtain(tl_jcall *c) { c->ret = vl(me_make(0, 0, 0, 0)); }
+static void ME_obtainArgs(tl_jcall *c)
+{
+    jobj *e = me_make(c->args[2].i, c->args[3].f, c->args[4].f, c->args[1].j);
+    c->ret = vl(e);
+}
+static void ME_obtain2(tl_jcall *c)
+{
+    jobj *e = me_make(c->args[2].i, c->args[5].f, c->args[6].f, c->args[1].j);
+    c->ret = vl(e);
+}
+static void ME_obtain3(tl_jcall *c)
+{
+    jobj *src = c->args[0].l;
+    jobj *e = make("android/view/MotionEvent");
+    if (src) {
+        set_int(e, "action", get_int(src, "action"));
+        set_float(e, "x", get_flt(src, "x")); set_float(e, "y", get_flt(src, "y"));
+        set_long(e, "down", get_lng(src, "down")); set_long(e, "when", get_lng(src, "when"));
+        set_float(e, "pressure", get_flt(src, "pressure")); set_float(e, "size", get_flt(src, "size"));
+    }
+    c->ret = vl(e);
+}
+static void ME_getAction(tl_jcall *c) { c->ret = vi(get_int(c->self, "action")); }
+static void ME_getActionMasked(tl_jcall *c) { c->ret = vi(get_int(c->self, "action") & 0xff); }
+static void ME_getActionIndex(tl_jcall *c) { c->ret = vi((get_int(c->self, "action") >> 8) & 0xff); }
+static void ME_getX(tl_jcall *c) { c->ret = vf(get_flt(c->self, "x")); }
+static void ME_getY(tl_jcall *c) { c->ret = vf(get_flt(c->self, "y")); }
+static void ME_getXi(tl_jcall *c) { c->ret = c->args[0].i == 0 ? vf(get_flt(c->self, "x")) : vf(0); }
+static void ME_getYi(tl_jcall *c) { c->ret = c->args[0].i == 0 ? vf(get_flt(c->self, "y")) : vf(0); }
+static void ME_getRawX(tl_jcall *c) { c->ret = vf(get_flt(c->self, "x")); }
+static void ME_getRawY(tl_jcall *c) { c->ret = vf(get_flt(c->self, "y")); }
+static void ME_getPressure(tl_jcall *c) { c->ret = vf(get_flt(c->self, "pressure")); }
+static void ME_getSize(tl_jcall *c) { c->ret = vf(get_flt(c->self, "size")); }
+static void ME_getPointerCount(tl_jcall *c) { c->ret = vi(1); }
+static void ME_getPointerId(tl_jcall *c) { c->ret = c->args[0]; }
+static void ME_findPointerIndex(tl_jcall *c) { c->ret = vz(true) ? vi(0) : vi(-1); }
+static void ME_getEventTime(tl_jcall *c) { c->ret = vj(get_lng(c->self, "when")); }
+static void ME_getDownTime(tl_jcall *c) { c->ret = vj(get_lng(c->self, "down")); }
+static void ME_getDeviceId(tl_jcall *c) { c->ret = vi(0); }
+static void ME_getSource(tl_jcall *c) { c->ret = vi(0x1002); }
+static void ME_getToolType(tl_jcall *c) { c->ret = vi(1); }
+static void ME_getAxisValue(tl_jcall *c) { c->ret = vf(0); }
+static void ME_getButtonState(tl_jcall *c) { c->ret = vi(0); }
+static void ME_getMetaState(tl_jcall *c) { c->ret = vi(0); }
+static void ME_setAction(tl_jcall *c) { set_int(c->self, "action", c->args[0].i); }
+static void ME_setLocation(tl_jcall *c)
+{
+    set_float(c->self, "x", c->args[0].f); set_float(c->self, "y", c->args[1].f);
+}
+static void ME_offsetLocation(tl_jcall *c)
+{
+    set_float(c->self, "x", get_flt(c->self, "x") + c->args[0].f);
+    set_float(c->self, "y", get_flt(c->self, "y") + c->args[1].f);
+}
+static void ME_recycle(tl_jcall *c) { (void)c; }
+static void ME_actionToString(tl_jcall *c) { c->ret = vl(STR("ACTION")); }
+
+/* KeyEvent */
+static jobj *ke_make(int action, int code)
+{
+    jobj *e = make("android/view/KeyEvent");
+    set_int(e, "action", action); set_int(e, "code", code);
+    return e;
+}
+static void KE_init(tl_jcall *c)
+{
+    set_int(c->self, "action", c->args[0].i); set_int(c->self, "code", c->args[1].i);
+}
+static void KE_getAction(tl_jcall *c) { c->ret = vi(get_int(c->self, "action")); }
+static void KE_getKeyCode(tl_jcall *c) { c->ret = vi(get_int(c->self, "code")); }
+static void KE_getScanCode(tl_jcall *c) { c->ret = vi(get_int(c->self, "scan")); }
+static void KE_getUnicodeChar(tl_jcall *c) { c->ret = vi(0); }
+static void KE_getRepeatCount(tl_jcall *c) { c->ret = vi(0); }
+static void KE_isDown(tl_jcall *c) { c->ret = vz(get_int(c->self, "action") == 0); }
+static void KE_isCancelled(tl_jcall *c) { c->ret = vz(false); }
+static void KE_isCtrlPressed(tl_jcall *c) { c->ret = vz(get_int(c->self, "meta") & 0x1000); }
+static void KE_isShiftPressed(tl_jcall *c) { c->ret = vz(get_int(c->self, "meta") & 1); }
+static void KE_isAltPressed(tl_jcall *c) { c->ret = vz(get_int(c->self, "meta") & 2); }
+static void KE_getMetaState(tl_jcall *c) { c->ret = vi(get_int(c->self, "meta")); }
+static void KE_isPrintingKey(tl_jcall *c) { c->ret = vz(false); }
+static void KE_isGamepadButton(tl_jcall *c) { c->ret = vz(get_int(c->self, "code") >= 188 && get_int(c->self, "code") <= 199); }
+static void KE_getEventTime(tl_jcall *c) { c->ret = vj(get_lng(c->self, "when")); }
+static void KE_getDownTime(tl_jcall *c) { c->ret = vj(get_lng(c->self, "down")); }
+static void KE_getDeviceId(tl_jcall *c) { c->ret = vi(-1); }
+static void KE_getSource(tl_jcall *c) { c->ret = vi(0x101); }
+static void KE_getDisplayLabel(tl_jcall *c) { c->ret = vc(0); }
+static void KE_getCharacters(tl_jcall *c) { c->ret = vl(NULL); }
+static void KE_getNumber(tl_jcall *c) { c->ret = vc(0); }
+static void KE_dispatch(tl_jcall *c) { c->ret = vz(false); }
+static void KE_keyCodeToString(tl_jcall *c)
+{
+    char b[32]; snprintf(b, 32, "KEYCODE_%d", c->args[0].i);
+    c->ret = vl(STR(b));
+}
+static void KE_keyCodeFromString(tl_jcall *c) { c->ret = vi(0); }
+static void KE_isModifierKey(tl_jcall *c)
+{
+    int k = c->args[0].i;
+    c->ret = vz((k >= 57 && k <= 60) || k == 113 || k == 114 || k == 117);
+}
+static void KE_changeAction(tl_jcall *c) { c->ret = vl(ke_make(c->args[1].i, get_int(c->args[0].l, "code"))); }
+static void KE_changeTimeRepeat(tl_jcall *c) { c->ret = vl(ke_make(0, get_int(c->args[0].l, "code"))); }
+
+/* InputDevice: report a touchscreen + generic keyboard */
+static void ID_getDevice(tl_jcall *c)
+{
+    jobj *d = make("android/view/InputDevice");
+    set_int(d, "id", c->args[0].i);
+    c->ret = vl(d);
+}
+static void ID_getDeviceIds(tl_jcall *c) { c->ret = vl(tl_jni_new_prim_array('I', 0)); }
+static void ID_getName(tl_jcall *c) { c->ret = vl(STR("touchscreen")); }
+static void ID_getId(tl_jcall *c) { c->ret = vi(get_int(c->self, "id")); }
+static void ID_getSources(tl_jcall *c) { c->ret = vi(0x1002 | 0x101); }
+static void ID_getVendorId(tl_jcall *c) { c->ret = vi(0); }
+static void ID_getProductId(tl_jcall *c) { c->ret = vi(0); }
+static void ID_getDescriptor(tl_jcall *c) { c->ret = vl(STR("bhusk")); }
+static void ID_isVirtual(tl_jcall *c) { c->ret = vz(false); }
+static void ID_getControllerNumber(tl_jcall *c) { c->ret = vi(0); }
+static void ID_hasKeys(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    if (a && a->kind == TL_K_PRIM_ARRAY) {
+        jobj *r = tl_jni_new_prim_array('B', a->arr.len);
+        memset(r->arr.data, 0, a->arr.len);
+        c->ret = vl(r);
+    } else c->ret = vl(NULL);
+}
+static void ID_getMotionRange(tl_jcall *c) { c->ret = vl(NULL); }
+static void ID_getVibrator(tl_jcall *c) { c->ret = vl(make("android/os/Vibrator")); }
+static void ID_supportsSource(tl_jcall *c) { c->ret = vz(true); }
+static void ID_toString(tl_jcall *c) { c->ret = vl(STR("InputDevice(touch)")); }
+
+/* Surface */
+static void Surf_isValid(tl_jcall *c) { c->ret = vz(get_lng(c->self, "ptr") != 0 || c->self->native != NULL); }
+static void Surf_release(tl_jcall *c) { (void)c; }
+static void Surf_describeContents(tl_jcall *c) { c->ret = vi(0); }
+static void Surf_writeToParcel(tl_jcall *c) { (void)c; }
+static void Surf_readFromParcel(tl_jcall *c) { (void)c; }
+static void Surf_toString(tl_jcall *c) { c->ret = vl(STR("Surface(name=betterhusk)")); }
+
+/* WindowManager.LayoutParams */
+static void WLP_init(tl_jcall *c) { (void)c; }
+static void WLP_initWH(tl_jcall *c)
+{
+    set_int(c->self, "width", c->args[0].i); set_int(c->self, "height", c->args[1].i);
+}
+static void WLP_copyFrom(tl_jcall *c)
+{
+    jobj *o = c->args[0].l;
+    if (o) {
+        set_int(c->self, "flags", get_int(o, "flags"));
+        set_int(c->self, "width", get_int(o, "width"));
+        set_int(c->self, "height", get_int(o, "height"));
+    }
+    c->ret = vl(tl_jni_ref(c->self));
+}
+
+/* ============================================================== android.app */
+
+/* tl_more_* host bridges declared at top of file */
+
+static void Toast_makeText(tl_jcall *c)
+{
+    jobj *t = make("android/widget/Toast");
+    if (c->args[1].l) {
+        jvalue v = tl_jni_call(c->args[1].l, "toString", "()Ljava/lang/String;", NULL);
+        if (v.l) set_str(t, "text", S(v.l));
+    }
+    set_int(t, "dur", c->args[2].i);
+    c->ret = vl(t);
+}
+static void Toast_setText(tl_jcall *c)
+{
+    if (c->args[0].l) {
+        jvalue v = tl_jni_call(c->args[0].l, "toString", "()Ljava/lang/String;", NULL);
+        if (v.l) set_str(c->self, "text", S(v.l));
+    }
+}
+static void Toast_setDuration(tl_jcall *c) { set_int(c->self, "dur", c->args[0].i); }
+static void Toast_getDuration(tl_jcall *c) { c->ret = vi(get_int(c->self, "dur")); }
+static void Toast_setGravity(tl_jcall *c)
+{
+    set_int(c->self, "grav", c->args[0].i);
+    set_int(c->self, "gx", c->args[1].i); set_int(c->self, "gy", c->args[2].i);
+}
+static void Toast_setView(tl_jcall *c) { tl_jni_set_field(c->self, "view", "Landroid/view/View;", c->args[0]); }
+static void Toast_getView(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "view", "Landroid/view/View;"); }
+static void Toast_show(tl_jcall *c)
+{
+    jobj *s = tl_jni_get_field(c->self, "text", "Ljava/lang/String;").l;
+    if (tl_more_has_uikit) tl_more_toast(s ? S(s) : "");
+}
+static void Toast_cancel(tl_jcall *c) { (void)c; }
+static void Toast_setMargin(tl_jcall *c) { (void)c; }
+
+/* Notification.Builder + NotificationManager */
+static void NB_init(tl_jcall *c) { (void)c; }
+static void NB_setContentTitle(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "title", "Ljava/lang/CharSequence;", c->args[0]);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void NB_setContentText(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "text", "Ljava/lang/CharSequence;", c->args[0]);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void NB_setSmallIcon(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void NB_setContentIntent(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void NB_setAutoCancel(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void NB_setOngoing(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void NB_setPriority(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void NB_setChannelId(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void NB_setDefaults(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void NB_setTicker(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void NB_setWhen(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void NB_setProgress(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void NB_setStyle(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void NB_addAction(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void NB_setSound(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void NB_setVibrate(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void NB_setLights(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void NB_setLargeIcon(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void NB_setSubText(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void NB_setNumber(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void NB_setOnlyAlertOnce(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void NB_setShowWhen(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void NB_setVisibility(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void NB_setColor(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void NB_setCategory(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void NB_build(tl_jcall *c)
+{
+    jobj *n = make("android/app/Notification");
+    jvalue t = tl_jni_get_field(c->self, "title", "Ljava/lang/CharSequence;");
+    if (t.l) tl_jni_set_field(n, "title", "Ljava/lang/CharSequence;", t);
+    jvalue x = tl_jni_get_field(c->self, "text", "Ljava/lang/CharSequence;");
+    if (x.l) tl_jni_set_field(n, "text", "Ljava/lang/CharSequence;", x);
+    c->ret = vl(n);
+}
+static void NB_getNotification(tl_jcall *c) { NB_build(c); }
+static void NM_notify(tl_jcall *c) { (void)c; }
+static void NM_notifyTag(tl_jcall *c) { (void)c; }
+static void NM_cancel(tl_jcall *c) { (void)c; }
+static void NM_cancelTag(tl_jcall *c) { (void)c; }
+static void NM_cancelAll(tl_jcall *c) { (void)c; }
+static void NM_areNotificationsEnabled(tl_jcall *c) { c->ret = vz(true); }
+static void NM_getNotificationChannel(tl_jcall *c) { c->ret = vl(NULL); }
+static void NM_createNotificationChannel(tl_jcall *c) { (void)c; }
+static void NM_createNotificationChannels(tl_jcall *c) { (void)c; }
+static void NM_deleteNotificationChannel(tl_jcall *c) { (void)c; }
+static void NC_init(tl_jcall *c)
+{
+    if (c->args[0].l) tl_jni_set_field(c->self, "id", "Ljava/lang/String;", c->args[0]);
+    if (c->args[1].l) tl_jni_set_field(c->self, "name", "Ljava/lang/CharSequence;", c->args[1]);
+    set_int(c->self, "imp", c->args[2].i);
+}
+
+/* PendingIntent: store intent + type */
+static jobj *pi_make(int kind, jobj *ctx, int req, jobj *intent, int flags)
+{
+    jobj *p = make("android/app/PendingIntent");
+    set_int(p, "kind", kind); set_int(p, "req", req); set_int(p, "flags", flags);
+    if (ctx) tl_jni_set_field(p, "ctx", "Landroid/content/Context;", vl(ctx));
+    if (intent) tl_jni_set_field(p, "intent", "Landroid/content/Intent;", vl(intent));
+    return p;
+}
+static void PI_getActivity(tl_jcall *c) { c->ret = vl(pi_make(0, c->args[0].l, c->args[1].i, c->args[2].l, c->args[3].i)); }
+static void PI_getService(tl_jcall *c) { c->ret = vl(pi_make(1, c->args[0].l, c->args[1].i, c->args[2].l, c->args[3].i)); }
+static void PI_getBroadcast(tl_jcall *c) { c->ret = vl(pi_make(2, c->args[0].l, c->args[1].i, c->args[2].l, c->args[3].i)); }
+static void PI_send(tl_jcall *c)
+{
+    jobj *i = tl_jni_get_field(c->self, "intent", "Landroid/content/Intent;").l;
+    jobj *ctx = tl_jni_get_field(c->self, "ctx", "Landroid/content/Context;").l;
+    if (i && ctx) { jvalue v = vl(i); tl_jni_call(ctx, "startActivity", "(Landroid/content/Intent;)V", &v); }
+}
+static void PI_sendCtx(tl_jcall *c) { PI_send(c); }
+static void PI_cancel(tl_jcall *c) { (void)c; }
+static void PI_getIntentSender(tl_jcall *c) { c->ret = vl(make("android/content/IntentSender")); }
+static void PI_getTargetPackage(tl_jcall *c) { c->ret = vl(STR("com.betterhusk.app")); }
+static void PI_isActivity(tl_jcall *c) { c->ret = vz(get_int(c->self, "kind") == 0); }
+
+/* AlertDialog.Builder — creates dialogs that resolve immediately with stored state */
+static void ADB_init(tl_jcall *c) { (void)c; }
+static void ADB_setTitle(tl_jcall *c) { tl_jni_set_field(c->self, "title", "Ljava/lang/CharSequence;", c->args[0]); c->ret = vl(tl_jni_ref(c->self)); }
+static void ADB_setTitleRes(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void ADB_setMessage(tl_jcall *c) { tl_jni_set_field(c->self, "msg", "Ljava/lang/CharSequence;", c->args[0]); c->ret = vl(tl_jni_ref(c->self)); }
+static void ADB_setMessageRes(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void ADB_setIcon(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void ADB_setView(tl_jcall *c) { tl_jni_set_field(c->self, "view", "Landroid/view/View;", c->args[0]); c->ret = vl(tl_jni_ref(c->self)); }
+static void ADB_setCancelable(tl_jcall *c) { set_bool(c->self, "cancelable", c->args[0].z); c->ret = vl(tl_jni_ref(c->self)); }
+static void ADB_setPositiveButton(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "posL", "Landroid/content/DialogInterface$OnClickListener;", c->args[1]);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void ADB_setNegativeButton(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "negL", "Landroid/content/DialogInterface$OnClickListener;", c->args[1]);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void ADB_setNeutralButton(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "neuL", "Landroid/content/DialogInterface$OnClickListener;", c->args[1]);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void ADB_setItems(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "itemL", "Landroid/content/DialogInterface$OnClickListener;", c->args[1]);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void ADB_setOnCancelListener(tl_jcall *c) { tl_jni_set_field(c->self, "cancelL", "Landroid/content/DialogInterface$OnCancelListener;", c->args[0]); c->ret = vl(tl_jni_ref(c->self)); }
+static void ADB_setOnDismissListener(tl_jcall *c) { tl_jni_set_field(c->self, "dismissL", "Landroid/content/DialogInterface$OnDismissListener;", c->args[0]); c->ret = vl(tl_jni_ref(c->self)); }
+static void ADB_setOnKeyListener(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static jobj *adb_build(jobj *b)
+{
+    jobj *d = make("android/app/AlertDialog");
+    static const char *sigL = "Landroid/content/DialogInterface$OnClickListener;";
+    static const char *names[] = { "posL", "negL", "neuL", "itemL" };
+    for (unsigned i = 0; i < 4; i++) {
+        jvalue v = tl_jni_get_field(b, names[i], sigL);
+        if (v.l) tl_jni_set_field(d, names[i], sigL, v);
+    }
+    jvalue v = tl_jni_get_field(b, "title", "Ljava/lang/CharSequence;");
+    if (v.l) tl_jni_set_field(d, "title", "Ljava/lang/CharSequence;", v);
+    v = tl_jni_get_field(b, "msg", "Ljava/lang/CharSequence;");
+    if (v.l) tl_jni_set_field(d, "msg", "Ljava/lang/CharSequence;", v);
+    return d;
+}
+static void ADB_create(tl_jcall *c) { c->ret = vl(adb_build(c->self)); }
+static void ADB_show(tl_jcall *c)
+{
+    jobj *d = adb_build(c->self);
+    jobj *l = tl_jni_get_field(d, "posL", "Landroid/content/DialogInterface$OnClickListener;").l;
+    if (l) { jvalue a[2] = { vl(d), vi(-1) }; tl_jni_call(l, "onClick", "(Landroid/content/DialogInterface;I)V", a); }
+    c->ret = vl(d);
+}
+static void AD_show(tl_jcall *c)
+{
+    jobj *l = tl_jni_get_field(c->self, "posL", "Landroid/content/DialogInterface$OnClickListener;").l;
+    if (l) { jvalue a[2] = { vl(c->self), vi(-1) }; tl_jni_call(l, "onClick", "(Landroid/content/DialogInterface;I)V", a); }
+}
+static void AD_dismiss(tl_jcall *c) { set_bool(c->self, "dismissed", true); }
+static void AD_cancel(tl_jcall *c) { set_bool(c->self, "dismissed", true); }
+static void AD_isShowing(tl_jcall *c) { c->ret = vz(!get_int(c->self, "dismissed")); }
+static void AD_setTitle(tl_jcall *c) { tl_jni_set_field(c->self, "title", "Ljava/lang/CharSequence;", c->args[0]); }
+static void AD_setMessage(tl_jcall *c) { tl_jni_set_field(c->self, "msg", "Ljava/lang/CharSequence;", c->args[0]); }
+static void AD_getButton(tl_jcall *c) { c->ret = vl(make("android/widget/Button")); }
+static void AD_setCancelable(tl_jcall *c) { set_bool(c->self, "cancelable", c->args[0].z); }
+static void AD_setCanceledOnTouchOutside(tl_jcall *c) { (void)c; }
+static void AD_setOnShowListener(tl_jcall *c) { (void)c; }
+static void AD_getWindow(tl_jcall *c) { c->ret = vl(make("android/view/Window")); }
+static void AD_getContext(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "ctx", "Landroid/content/Context;"); }
+static void AD_findViewById(tl_jcall *c) { c->ret = vl(NULL); }
+static void AD_setOnCancelListener(tl_jcall *c) { tl_jni_set_field(c->self, "cancelL", "Landroid/content/DialogInterface$OnCancelListener;", c->args[0]); }
+static void AD_setOnDismissListener(tl_jcall *c) { tl_jni_set_field(c->self, "dismissL", "Landroid/content/DialogInterface$OnDismissListener;", c->args[0]); }
+static void AD_getListView(tl_jcall *c) { c->ret = vl(make("android/widget/ListView")); }
+
+/* ============================================================== android.opengl.Matrix (real 4x4 math) */
+
+static float *glmat(jobj *a, int off)
+{
+    if (!a || a->kind != TL_K_PRIM_ARRAY || !a->arr.data) return NULL;
+    if (off < 0 || off + 16 > (int)a->arr.len) return NULL;
+    return (float *)a->arr.data + off;
+}
+static void GM_multiplyMM(tl_jcall *c)
+{
+    float *r = glmat(c->args[0].l, c->args[1].i);
+    float *a = glmat(c->args[2].l, c->args[3].i);
+    float *b = glmat(c->args[4].l, c->args[5].i);
+    if (!r || !a || !b) return;
+    float t[16];
+    for (int i = 0; i < 4; i++)
+        for (int j = 0; j < 4; j++) {
+            float s = 0;
+            for (int k = 0; k < 4; k++) s += a[i + k * 4] * b[k + j * 4];
+            t[i + j * 4] = s;
+        }
+    memcpy(r, t, sizeof t);
+}
+static void GM_multiplyMV(tl_jcall *c)
+{
+    float *r = NULL;
+    jobj *ra = c->args[0].l;
+    if (ra && ra->kind == TL_K_PRIM_ARRAY && c->args[1].i + 4 <= (int)ra->arr.len) r = (float *)ra->arr.data + c->args[1].i;
+    float *m = glmat(c->args[2].l, c->args[3].i);
+    float *v = NULL;
+    jobj *va = c->args[4].l;
+    if (va && va->kind == TL_K_PRIM_ARRAY && c->args[5].i + 4 <= (int)va->arr.len) v = (float *)va->arr.data + c->args[5].i;
+    if (!r || !m || !v) return;
+    float t[4];
+    for (int i = 0; i < 4; i++) {
+        float s = 0;
+        for (int k = 0; k < 4; k++) s += m[i + k * 4] * v[k];
+        t[i] = s;
+    }
+    memcpy(r, t, sizeof t);
+}
+static void gmat_identity(float *m)
+{
+    memset(m, 0, 16 * sizeof(float));
+    m[0] = m[5] = m[10] = m[15] = 1.0f;
+}
+static void GM_setIdentityM(tl_jcall *c)
+{
+    float *m = glmat(c->args[0].l, c->args[1].i);
+    if (m) gmat_identity(m);
+}
+static void GM_orthoM(tl_jcall *c)
+{
+    float *m = glmat(c->args[0].l, c->args[1].i);
+    if (!m) return;
+    float l = c->args[2].f, r = c->args[3].f, b = c->args[4].f, t = c->args[5].f, n = c->args[6].f, f = c->args[7].f;
+    gmat_identity(m);
+    m[0] = 2.0f / (r - l); m[5] = 2.0f / (t - b); m[10] = -2.0f / (f - n);
+    m[12] = -(r + l) / (r - l); m[13] = -(t + b) / (t - b); m[14] = -(f + n) / (f - n);
+}
+static void GM_frustumM(tl_jcall *c)
+{
+    float *m = glmat(c->args[0].l, c->args[1].i);
+    if (!m) return;
+    float l = c->args[2].f, r = c->args[3].f, b = c->args[4].f, t = c->args[5].f, n = c->args[6].f, f = c->args[7].f;
+    memset(m, 0, 16 * sizeof(float));
+    m[0] = 2 * n / (r - l); m[5] = 2 * n / (t - b);
+    m[8] = (r + l) / (r - l); m[9] = (t + b) / (t - b);
+    m[10] = -(f + n) / (f - n); m[11] = -1.0f; m[14] = -2 * f * n / (f - n);
+}
+static void GM_perspectiveM(tl_jcall *c)
+{
+    float *m = glmat(c->args[0].l, c->args[1].i);
+    if (!m) return;
+    float fovy = c->args[2].f * (float)M_PI / 180.0f, aspect = c->args[3].f;
+    float n = c->args[4].f, f = c->args[5].f;
+    float hh = tanf(fovy / 2) * n, ww = hh * aspect;
+    memset(m, 0, 16 * sizeof(float));
+    m[0] = n / ww; m[5] = n / hh;
+    m[10] = -(f + n) / (f - n); m[11] = -1.0f; m[14] = -2 * f * n / (f - n);
+}
+static void GM_translateM(tl_jcall *c)
+{
+    float *m = glmat(c->args[0].l, c->args[1].i);
+    if (!m) return;
+    float x = c->args[2].f, y = c->args[3].f, z = c->args[4].f;
+    float t[16]; gmat_identity(t);
+    t[12] = x; t[13] = y; t[14] = z;
+    float r[16];
+    for (int i = 0; i < 4; i++)
+        for (int j = 0; j < 4; j++) {
+            float s = 0;
+            for (int k = 0; k < 4; k++) s += m[i + k * 4] * t[k + j * 4];
+            r[i + j * 4] = s;
+        }
+    memcpy(m, r, sizeof r);
+}
+static void GM_scaleM(tl_jcall *c)
+{
+    float *m = glmat(c->args[0].l, c->args[1].i);
+    if (!m) return;
+    for (int i = 0; i < 4; i++) { m[i] *= c->args[2].f; m[4 + i] *= c->args[3].f; m[8 + i] *= c->args[4].f; }
+}
+static void GM_rotateM(tl_jcall *c)
+{
+    float *m = glmat(c->args[0].l, c->args[1].i);
+    if (!m) return;
+    float ang = c->args[2].f * (float)M_PI / 180.0f;
+    float x = c->args[3].f, y = c->args[4].f, z = c->args[5].f;
+    float len = sqrtf(x * x + y * y + z * z);
+    if (len < 1e-6f) return;
+    x /= len; y /= len; z /= len;
+    float co = cosf(ang), si = sinf(ang), ic = 1.0f - co;
+    float r0[16];
+    r0[0] = x*x*ic + co;   r0[4] = x*y*ic - z*si; r0[8]  = x*z*ic + y*si; r0[12] = 0;
+    r0[1] = y*x*ic + z*si; r0[5] = y*y*ic + co;   r0[9]  = y*z*ic - x*si; r0[13] = 0;
+    r0[2] = x*z*ic - y*si; r0[6] = y*z*ic + x*si; r0[10] = z*z*ic + co;   r0[14] = 0;
+    r0[3] = 0;             r0[7] = 0;             r0[11] = 0;             r0[15] = 1;
+    float rr[16];
+    for (int i = 0; i < 4; i++)
+        for (int j = 0; j < 4; j++) {
+            float s = 0;
+            for (int k = 0; k < 4; k++) s += m[i + k * 4] * r0[k + j * 4];
+            rr[i + j * 4] = s;
+        }
+    memcpy(m, rr, sizeof rr);
+}
+static void GM_setRotateM(tl_jcall *c)
+{
+    float *m = glmat(c->args[0].l, c->args[1].i);
+    if (!m) return;
+    gmat_identity(m);
+    GM_rotateM(c);
+}
+static void GM_setLookAtM(tl_jcall *c)
+{
+    float *m = glmat(c->args[0].l, c->args[1].i);
+    if (!m) return;
+    float ex = c->args[2].f, ey = c->args[3].f, ez = c->args[4].f;
+    float cx = c->args[5].f, cy = c->args[6].f, cz = c->args[7].f;
+    float ux = c->args[8].f, uy = c->args[9].f, uz = c->args[10].f;
+    float fx = cx - ex, fy = cy - ey, fz = cz - ez;
+    float fl = sqrtf(fx * fx + fy * fy + fz * fz);
+    if (fl < 1e-6f) { gmat_identity(m); return; }
+    fx /= fl; fy /= fl; fz /= fl;
+    float sx = fy * uz - fz * uy, sy = fz * ux - fx * uz, sz = fx * uy - fy * ux;
+    float sl = sqrtf(sx * sx + sy * sy + sz * sz);
+    if (sl < 1e-6f) { gmat_identity(m); return; }
+    sx /= sl; sy /= sl; sz /= sl;
+    float ux2 = sy * fz - sz * fy, uy2 = sz * fx - sx * fz, uz2 = sx * fy - sy * fx;
+    memset(m, 0, 16 * sizeof(float));
+    m[0] = sx; m[4] = sy; m[8] = sz;
+    m[1] = ux2; m[5] = uy2; m[9] = uz2;
+    m[2] = -fx; m[6] = -fy; m[10] = -fz;
+    m[15] = 1.0f;
+    float t[16]; gmat_identity(t);
+    t[12] = -ex; t[13] = -ey; t[14] = -ez;
+    float r[16];
+    for (int i = 0; i < 4; i++)
+        for (int j = 0; j < 4; j++) {
+            float s = 0;
+            for (int k = 0; k < 4; k++) s += m[i + k * 4] * t[k + j * 4];
+            r[i + j * 4] = s;
+        }
+    memcpy(m, r, sizeof r);
+}
+static void GM_transposeM(tl_jcall *c)
+{
+    float *r = glmat(c->args[0].l, c->args[1].i);
+    float *m = glmat(c->args[2].l, c->args[3].i);
+    if (!r || !m) return;
+    float t[16];
+    for (int i = 0; i < 4; i++) for (int j = 0; j < 4; j++) t[i + j * 4] = m[j + i * 4];
+    memcpy(r, t, sizeof t);
+}
+static void GM_invertM(tl_jcall *c)
+{
+    float *r = glmat(c->args[0].l, c->args[1].i);
+    float *m = glmat(c->args[2].l, c->args[3].i);
+    if (!r || !m) { c->ret = vz(false); return; }
+    /* cofactor expansion */
+    float inv[16], det;
+    inv[0] = m[5]*m[10]*m[15] - m[5]*m[11]*m[14] - m[9]*m[6]*m[15] + m[9]*m[7]*m[14] + m[13]*m[6]*m[11] - m[13]*m[7]*m[10];
+    inv[4] = -m[4]*m[10]*m[15] + m[4]*m[11]*m[14] + m[8]*m[6]*m[15] - m[8]*m[7]*m[14] - m[12]*m[6]*m[11] + m[12]*m[7]*m[10];
+    inv[8] = m[4]*m[9]*m[15] - m[4]*m[11]*m[13] - m[8]*m[5]*m[15] + m[8]*m[7]*m[13] + m[12]*m[5]*m[11] - m[12]*m[7]*m[9];
+    inv[12] = -m[4]*m[9]*m[14] + m[4]*m[10]*m[13] + m[8]*m[5]*m[14] - m[8]*m[6]*m[13] - m[12]*m[5]*m[10] + m[12]*m[6]*m[9];
+    inv[1] = -m[1]*m[10]*m[15] + m[1]*m[11]*m[14] + m[9]*m[2]*m[15] - m[9]*m[3]*m[14] - m[13]*m[2]*m[11] + m[13]*m[3]*m[10];
+    inv[5] = m[0]*m[10]*m[15] - m[0]*m[11]*m[14] - m[8]*m[2]*m[15] + m[8]*m[3]*m[14] + m[12]*m[2]*m[11] - m[12]*m[3]*m[10];
+    inv[9] = -m[0]*m[9]*m[15] + m[0]*m[11]*m[13] + m[8]*m[1]*m[15] - m[8]*m[3]*m[13] - m[12]*m[1]*m[11] + m[12]*m[3]*m[9];
+    inv[13] = m[0]*m[9]*m[14] - m[0]*m[10]*m[13] - m[8]*m[1]*m[14] + m[8]*m[2]*m[13] + m[12]*m[1]*m[10] - m[12]*m[2]*m[9];
+    inv[2] = m[1]*m[6]*m[15] - m[1]*m[7]*m[14] - m[5]*m[2]*m[15] + m[5]*m[3]*m[14] + m[13]*m[2]*m[7] - m[13]*m[3]*m[6];
+    inv[6] = -m[0]*m[6]*m[15] + m[0]*m[7]*m[14] + m[4]*m[2]*m[15] - m[4]*m[3]*m[14] - m[12]*m[2]*m[7] + m[12]*m[3]*m[6];
+    inv[10] = m[0]*m[5]*m[15] - m[0]*m[7]*m[13] - m[4]*m[1]*m[15] + m[4]*m[3]*m[13] + m[12]*m[1]*m[7] - m[12]*m[3]*m[5];
+    inv[14] = -m[0]*m[5]*m[14] + m[0]*m[6]*m[13] + m[4]*m[1]*m[14] - m[4]*m[2]*m[13] - m[12]*m[1]*m[6] + m[12]*m[2]*m[5];
+    inv[3] = -m[1]*m[6]*m[11] + m[1]*m[7]*m[10] + m[5]*m[2]*m[11] - m[5]*m[3]*m[10] - m[9]*m[2]*m[7] + m[9]*m[3]*m[6];
+    inv[7] = m[0]*m[6]*m[11] - m[0]*m[7]*m[10] - m[4]*m[2]*m[11] + m[4]*m[3]*m[10] + m[8]*m[2]*m[7] - m[8]*m[3]*m[6];
+    inv[11] = -m[0]*m[5]*m[11] + m[0]*m[7]*m[9] + m[4]*m[1]*m[11] - m[4]*m[3]*m[9] - m[8]*m[1]*m[7] + m[8]*m[3]*m[5];
+    inv[15] = m[0]*m[5]*m[10] - m[0]*m[6]*m[9] - m[4]*m[1]*m[10] + m[4]*m[2]*m[9] + m[8]*m[1]*m[6] - m[8]*m[2]*m[5];
+    det = m[0]*inv[0] + m[1]*inv[4] + m[2]*inv[8] + m[3]*inv[12];
+    if (det == 0) { c->ret = vz(false); return; }
+    det = 1.0f / det;
+    for (int i = 0; i < 16; i++) r[i] = inv[i] * det;
+    c->ret = vz(true);
+}
+static void GM_length(tl_jcall *c)
+{
+    c->ret = vf(sqrtf(c->args[0].f * c->args[0].f + c->args[1].f * c->args[1].f + c->args[2].f * c->args[2].f));
+}
+static void GM_setM(tl_jcall *c)
+{
+    float *r = glmat(c->args[0].l, c->args[1].i);
+    float *m = glmat(c->args[2].l, c->args[3].i);
+    if (r && m) memcpy(r, m, 16 * sizeof(float));
+}
+static void GM_translateM2(tl_jcall *c) /* (m,o,x,y,z) in-place already covered */
+{
+    GM_translateM(c);
+}
+static void GM_multiplyMM_dest(tl_jcall *c) /* translateM(dst,do,src,so,x,y,z) */
+{
+    float *r = glmat(c->args[0].l, c->args[1].i);
+    float *m = glmat(c->args[2].l, c->args[3].i);
+    if (!r || !m) return;
+    float t[16]; gmat_identity(t);
+    t[12] = c->args[4].f; t[13] = c->args[5].f; t[14] = c->args[6].f;
+    float rr[16];
+    for (int i = 0; i < 4; i++)
+        for (int j = 0; j < 4; j++) {
+            float s = 0;
+            for (int k = 0; k < 4; k++) s += m[i + k * 4] * t[k + j * 4];
+            rr[i + j * 4] = s;
+        }
+    memcpy(r, rr, sizeof rr);
+}
+static void GM_scaleM_dest(tl_jcall *c)
+{
+    float *r = glmat(c->args[0].l, c->args[1].i);
+    float *m = glmat(c->args[2].l, c->args[3].i);
+    if (!r || !m) return;
+    memcpy(r, m, 16 * sizeof(float));
+    for (int i = 0; i < 4; i++) { r[i] *= c->args[4].f; r[4 + i] *= c->args[5].f; r[8 + i] *= c->args[6].f; }
+}
+static void GM_rotateM_dest(tl_jcall *c)
+{
+    float *r = glmat(c->args[0].l, c->args[1].i);
+    float *m = glmat(c->args[2].l, c->args[3].i);
+    if (!r || !m) return;
+    memcpy(r, m, 16 * sizeof(float));
+    jvalue a[6] = { c->args[0], c->args[1], c->args[4], c->args[5], c->args[6], c->args[7] };
+    tl_jcall cc = *c; memcpy(cc.args, a, sizeof a); cc.self = NULL;
+    GM_rotateM(&cc);
+    c->ret = cc.ret;
+}
+
+/* ============================================================== android.app.ActivityManager */
+
+static void AM_getMemoryInfo(tl_jcall *c)
+{
+    jobj *mi = c->args[0].l;
+    if (mi) {
+        uint64_t phys = 0, avail = 0;
+        size_t sz = sizeof(phys);
+        sysctlbyname("hw.memsize", &phys, &sz, NULL, 0);
+#ifdef __APPLE__
+        mach_port_t host = mach_host_self();
+        vm_statistics64_data_t st; mach_msg_type_number_t cnt = HOST_VM_INFO64_COUNT;
+        if (host_statistics64(host, HOST_VM_INFO64, (host_info64_t)&st, &cnt) == KERN_SUCCESS)
+            avail = (uint64_t)(st.free_count + st.inactive_count) * vm_kernel_page_size;
+#endif
+        set_long(mi, "totalMem", (int64_t)phys);
+        set_long(mi, "availMem", (int64_t)avail);
+        set_long(mi, "threshold", (int64_t)(phys / 8));
+        set_bool(mi, "lowMemory", false);
+    }
+}
+static void AM_getMemoryClass(tl_jcall *c)
+{
+    uint64_t phys = 0; size_t sz = sizeof(phys);
+    sysctlbyname("hw.memsize", &phys, &sz, NULL, 0);
+    c->ret = vi(phys >= (6ull << 30) ? 256 : phys >= (4ull << 30) ? 192 : 128);
+}
+static void AM_getLargeMemoryClass(tl_jcall *c)
+{
+    uint64_t phys = 0; size_t sz = sizeof(phys);
+    sysctlbyname("hw.memsize", &phys, &sz, NULL, 0);
+    c->ret = vi(phys >= (6ull << 30) ? 512 : 256);
+}
+static void AM_getRunningAppProcesses(tl_jcall *c)
+{
+    jobj *l = make("java/util/ArrayList");
+    jobj *p = make("android/app/ActivityManager$RunningAppProcessInfo");
+    set_str(p, "processName", "com.betterhusk.app");
+    set_int(p, "pid", getpid());
+    set_int(p, "importance", 100);
+    jvalue v = vl(p); tl_jni_call(l, "add", "(Ljava/lang/Object;)Z", &v);
+    c->ret = vl(l);
+}
+static void AM_getRunningTasks(tl_jcall *c)
+{
+    jobj *l = make("java/util/ArrayList");
+    jobj *t = make("android/app/ActivityManager$RunningTaskInfo");
+    set_int(t, "id", 1); set_int(t, "numActivities", 1);
+    jvalue v = vl(t); tl_jni_call(l, "add", "(Ljava/lang/Object;)Z", &v);
+    c->ret = vl(l);
+}
+static void AM_getRunningServices(tl_jcall *c) { c->ret = vl(make("java/util/ArrayList")); }
+static void AM_getProcessesInErrorState(tl_jcall *c) { c->ret = vl(NULL); }
+static void AM_getProcessMemoryInfo(tl_jcall *c)
+{
+    jobj *arr = tl_jni_new_obj_array(C("android/os/Debug$MemoryInfo"), 0);
+    c->ret = vl(arr);
+}
+static void AM_getMyMemoryState(tl_jcall *c)
+{
+    jobj *p = c->args[0].l;
+    if (p) {
+        set_int(p, "importance", 100);
+        set_int(p, "lastTrimLevel", 0);
+    }
+}
+static void AM_isUserAMonkey(tl_jcall *c) { c->ret = vz(false); }
+static void AM_isLowRamDevice(tl_jcall *c) { c->ret = vz(false); }
+static void AM_isRunningInTestHarness(tl_jcall *c) { c->ret = vz(false); }
+static void AM_killBackgroundProcesses(tl_jcall *c) { (void)c; }
+static void AM_clearApplicationUserData(tl_jcall *c) { c->ret = vz(false); }
+static void AM_getDeviceConfigurationInfo(tl_jcall *c)
+{
+    jobj *d = make("android/content/pm/ConfigurationInfo");
+    set_int(d, "reqGlEsVersion", 0x30002); /* GLES 3.2 */
+    set_int(d, "reqTouchScreen", 1);       /* FINGER */
+    set_int(d, "reqKeyboardType", 1);      /* NOKEYS */
+    set_int(d, "reqNavigation", 1);        /* NONAV */
+    set_int(d, "reqInputFeatures", 0);
+    c->ret = vl(d);
+}
+static void AM_getLauncherLargeIconDensity(tl_jcall *c) { c->ret = vi(480); }
+static void AM_getLauncherLargeIconSize(tl_jcall *c) { c->ret = vi(144); }
+static void AM_isHighEndGfx(tl_jcall *c) { c->ret = vz(true); }
+static void AM_addAppTask(tl_jcall *c) { c->ret = vi(0); }
+static void AM_getAppTasks(tl_jcall *c) { c->ret = vl(make("java/util/ArrayList")); }
+static void AM_isBackgroundRestricted(tl_jcall *c) { c->ret = vz(false); }
+static void AM_getHistoricalProcessExitReasons(tl_jcall *c) { c->ret = vl(make("java/util/ArrayList")); }
+static void AM_setWatchHeapLimit(tl_jcall *c) { (void)c; }
+static void AM_getLockTaskModeState(tl_jcall *c) { c->ret = vi(0); }
+static void AM_getDeviceIdleState(tl_jcall *c) { c->ret = vz(false); }
+
+/* AsyncTask: run synchronously through the Java methods — most uses are one-shot IO */
+static void AT_execute(tl_jcall *c)
+{
+    jobj *self = c->self;
+    jvalue a[1] = { c->args[0] };
+    jvalue r = tl_jni_call(self, "doInBackground", "([Ljava/lang/Object;)Ljava/lang/Object;", a);
+    jvalue p[1] = { r };
+    tl_jni_call(self, "onPostExecute", "(Ljava/lang/Object;)V", p);
+    c->ret = vl(tl_jni_ref(self));
+}
+static void AT_executeOnExecutor(tl_jcall *c)
+{
+    jvalue a[1] = { c->args[1] };
+    jvalue r = tl_jni_call(c->self, "doInBackground", "([Ljava/lang/Object;)Ljava/lang/Object;", a);
+    jvalue p[1] = { r };
+    tl_jni_call(c->self, "onPostExecute", "(Ljava/lang/Object;)V", p);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void AT_executeRunnable(tl_jcall *c)
+{
+    if (c->args[0].l) tl_jni_call(c->args[0].l, "run", "()V", NULL);
+}
+static void AT_get(tl_jcall *c) { c->ret = vl(NULL); }
+static void AT_getTimeout(tl_jcall *c) { c->ret = vl(NULL); }
+static void AT_cancel(tl_jcall *c) { set_bool(c->self, "cancelled", true); c->ret = vz(true); }
+static void AT_isCancelled(tl_jcall *c) { c->ret = vz(get_int(c->self, "cancelled")); }
+static void AT_getStatus(tl_jcall *c) { c->ret = vl(NULL); }
+static void AT_publishProgress(tl_jcall *c)
+{
+    jvalue a[1] = { c->args[0] };
+    tl_jni_call(c->self, "onProgressUpdate", "([Ljava/lang/Object;)V", a);
+}
+static void AT_serialExecutor(tl_jcall *c) { c->ret = vl(make("java/util/concurrent/Executor")); }
+static void AT_threadPoolExecutor(tl_jcall *c) { c->ret = vl(make("java/util/concurrent/Executor")); }
+
+/* ============================================================== host-bridged classes
+ * These delegate to husk-tl-more.m: real sound, real web view, real vibration,
+ * real clipboard — the methods where a stub answer makes an app useless anyway.
+ */
+
+static void Vib_vibrate(tl_jcall *c)      { tl_more_vibrate(c->args[0].j); }
+static void Vib_vibrateEffect(tl_jcall *c){ tl_more_vibrate(c->args[0].j); }
+static void Vib_vibrateAmps(tl_jcall *c)  { tl_more_vibrate(400); }
+static void Vib_cancel(tl_jcall *c)       { (void)c; }
+static void Vib_hasVibrator(tl_jcall *c)  { c->ret = vz(true); }
+static void Vib_hasAmplitudeControl(tl_jcall *c) { c->ret = vz(false); }
+static void Vib_areEffectsSupported(tl_jcall *c)
+{
+    jobj *a = tl_jni_new_prim_array('Z', 3);
+    memset(a->arr.data, 1, 3);
+    c->ret = vl(a);
+}
+static void Vib_performHaptic(tl_jcall *c) { tl_more_haptic(c->args[0].i); }
+
+static void Clip_setText(tl_jcall *c)
+{
+    jobj *s = c->args[0].l;
+    jvalue v = s ? tl_jni_call(s, "toString", "()Ljava/lang/String;", NULL) : vl(NULL);
+    tl_more_clipboard_set(v.l ? S(v.l) : "");
+}
+static void Clip_getText(tl_jcall *c)
+{
+    char *t = tl_more_clipboard_get();
+    jobj *cs = make("android/text/SpannableString");
+    if (t) { set_str(cs, "text", t); free(t); }
+    c->ret = vl(cs);
+}
+static void Clip_hasText(tl_jcall *c) { c->ret = vz(tl_more_clipboard_has()); }
+static void Clip_setPrimaryClip(tl_jcall *c)
+{
+    jobj *item = c->args[0].l;
+    if (item) {
+        jvalue z = vi(0);
+        jvalue v = tl_jni_call(item, "getItemAt", "(I)Landroid/content/ClipData$Item;", &z);
+        if (v.l) {
+            jvalue t = tl_jni_call(v.l, "getText", "()Ljava/lang/CharSequence;", NULL);
+            if (t.l) { jvalue s2 = tl_jni_call(t.l, "toString", "()Ljava/lang/String;", NULL);
+                       tl_more_clipboard_set(s2.l ? S(s2.l) : ""); }
+        }
+    }
+}
+static void Clip_getPrimaryClip(tl_jcall *c)
+{
+    jobj *d = make("android/content/ClipData");
+    c->ret = vl(d);
+}
+static void Clip_hasPrimaryClip(tl_jcall *c) { c->ret = vz(tl_more_clipboard_has()); }
+static void ClipData_getItemCount(tl_jcall *c) { c->ret = vi(tl_more_clipboard_has() ? 1 : 0); }
+static void ClipData_getItemAt(tl_jcall *c)
+{
+    jobj *it = make("android/content/ClipData$Item");
+    char *t = tl_more_clipboard_get();
+    if (t) { set_str(it, "text", t); free(t); }
+    c->ret = vl(it);
+}
+static void ClipItem_getText(tl_jcall *c)
+{
+    jobj *t = tl_jni_get_field(c->self, "text", "Ljava/lang/String;").l;
+    c->ret = vl(t ? t : STR(""));
+}
+static void ClipData_newPlainText(tl_jcall *c)
+{
+    jobj *d = make("android/content/ClipData");
+    tl_jni_set_field(d, "text", "Ljava/lang/CharSequence;", c->args[1]);
+    c->ret = vl(d);
+}
+
+static void Act_startActivity(tl_jcall *c)
+{
+    jobj *i = c->args[0].l;
+    if (!i) return;
+    jobj *u = tl_jni_get_field(i, "mData", "Landroid/net/Uri;").l;
+    if (!u) u = tl_jni_get_field(i, "data", "Landroid/net/Uri;").l;
+    if (u) {
+        jvalue v = tl_jni_call(u, "toString", "()Ljava/lang/String;", NULL);
+        if (v.l) tl_more_open_url(S(v.l));
+    }
+}
+static void WakeLock_acquire(tl_jcall *c) { tl_more_idle_timer(1); set_bool(c->self, "held", true); }
+static void WakeLock_acquireTo(tl_jcall *c) { WakeLock_acquire(c); }
+static void WakeLock_release(tl_jcall *c) { tl_more_idle_timer(0); set_bool(c->self, "held", false); }
+static void WakeLock_isHeld(tl_jcall *c) { c->ret = vz(get_int(c->self, "held")); }
+static void PM_newWakeLock(tl_jcall *c)
+{
+    jobj *w = make("android/os/PowerManager$WakeLock");
+    set_int(w, "flags", c->args[0].i);
+    c->ret = vl(w);
+}
+static void PM_isInteractive(tl_jcall *c) { c->ret = vz(true); }
+static void PM_isScreenOn(tl_jcall *c) { c->ret = vz(true); }
+static void PM_isPowerSaveMode(tl_jcall *c) { c->ret = vz(false); }
+static void PM_isIgnoringBatteryOptimizations(tl_jcall *c) { c->ret = vz(true); }
+
+static void Batt_level(tl_jcall *c) { c->ret = vi(tl_more_battery_pct()); }
+static void Batt_status(tl_jcall *c) { c->ret = vi(tl_more_battery_state()); }
+
+/* MediaPlayer: id in native; sources resolved where Java handed us one */
+static int mp_of(jobj *o)
+{
+    if (!o->native) o->native = (void *)(intptr_t)tl_mp_new();
+    return (int)(intptr_t)o->native;
+}
+static void MP_init(tl_jcall *c) { mp_of(c->self); }
+static void MP_create(tl_jcall *c)
+{
+    jobj *m = make("android/media/MediaPlayer");
+    mp_of(m);
+    c->ret = vl(m);
+}
+static void MP_createUri(tl_jcall *c)
+{
+    jobj *m = make("android/media/MediaPlayer");
+    int id = mp_of(m);
+    jobj *u = c->args[1].l;
+    if (u) {
+        jvalue v = tl_jni_call(u, "toString", "()Ljava/lang/String;", NULL);
+        if (v.l) tl_mp_source_url(id, S(v.l));
+    }
+    c->ret = vl(m);
+}
+static void MP_setDataSourcePath(tl_jcall *c) { tl_mp_source_path(mp_of(c->self), S(c->args[0].l)); }
+static void MP_setDataSourceFD(tl_jcall *c)
+{
+    jobj *fd = c->args[0].l;
+    int f = fd ? get_int(fd, "descriptor") : -1;
+    if (f >= 0) tl_mp_source_fd(mp_of(c->self), f, c->args[1].j, c->args[2].j);
+}
+static void MP_setDataSourceUrl(tl_jcall *c) { tl_mp_source_url(mp_of(c->self), S(c->args[0].l)); }
+static void MP_prepare(tl_jcall *c) { tl_mp_prepare(mp_of(c->self), 0); }
+static void MP_prepareAsync(tl_jcall *c) { tl_mp_prepare(mp_of(c->self), 1); }
+static void MP_start(tl_jcall *c) { tl_mp_start(mp_of(c->self)); set_bool(c->self, "playing", true); }
+static void MP_pause(tl_jcall *c) { tl_mp_pause(mp_of(c->self)); set_bool(c->self, "playing", false); }
+static void MP_stop(tl_jcall *c) { tl_mp_stop(mp_of(c->self)); set_bool(c->self, "playing", false); }
+static void MP_release(tl_jcall *c) { tl_mp_release(mp_of(c->self)); }
+static void MP_reset(tl_jcall *c) { tl_mp_stop(mp_of(c->self)); }
+static void MP_seekTo(tl_jcall *c) { tl_mp_seek(mp_of(c->self), c->args[0].i); }
+static void MP_getCurrentPosition(tl_jcall *c) { c->ret = vi(tl_mp_pos(mp_of(c->self))); }
+static void MP_getDuration(tl_jcall *c) { c->ret = vi(tl_mp_dur(mp_of(c->self))); }
+static void MP_isPlaying(tl_jcall *c) { c->ret = vz(tl_mp_playing(mp_of(c->self))); }
+static void MP_setLooping(tl_jcall *c) { tl_mp_looping(mp_of(c->self), c->args[0].z); }
+static void MP_isLooping(tl_jcall *c) { c->ret = vz(get_int(c->self, "loop")); }
+static void MP_setVolume(tl_jcall *c) { tl_mp_volume(mp_of(c->self), c->args[0].f, c->args[1].f); }
+static void MP_setScreenOnWhilePlaying(tl_jcall *c) { tl_more_idle_timer(c->args[0].z); }
+static void MP_setWakeMode(tl_jcall *c) { tl_more_idle_timer(1); }
+static void MP_setOnCompletionListener(tl_jcall *c) { tl_jni_set_field(c->self, "onComplete", "Landroid/media/MediaPlayer$OnCompletionListener;", c->args[0]); }
+static void MP_setOnPreparedListener(tl_jcall *c) { tl_jni_set_field(c->self, "onPrepared", "Landroid/media/MediaPlayer$OnPreparedListener;", c->args[0]); }
+static void MP_setOnErrorListener(tl_jcall *c) { c->ret = vz(true); }
+static void MP_setOnSeekCompleteListener(tl_jcall *c) { (void)c; }
+static void MP_setOnInfoListener(tl_jcall *c) { (void)c; }
+static void MP_setOnBufferingUpdateListener(tl_jcall *c) { (void)c; }
+static void MP_setAudioStreamType(tl_jcall *c) { (void)c; }
+static void MP_setAudioAttributes(tl_jcall *c) { (void)c; }
+static void MP_getAudioSessionId(tl_jcall *c) { c->ret = vi(mp_of(c->self)); }
+static void MP_setAudioSessionId(tl_jcall *c) { (void)c; }
+static void MP_attachAuxEffect(tl_jcall *c) { (void)c; }
+static void MP_setAuxEffectSendLevel(tl_jcall *c) { (void)c; }
+static void MP_setPlaybackParams(tl_jcall *c) { (void)c; }
+static void MP_getTrackInfo(tl_jcall *c) { c->ret = vl(tl_jni_new_obj_array(C("android/media/MediaPlayer$TrackInfo"), 0)); }
+static void MP_getVideoWidth(tl_jcall *c) { c->ret = vi(0); }
+static void MP_getVideoHeight(tl_jcall *c) { c->ret = vi(0); }
+static void MP_setDisplay(tl_jcall *c) { (void)c; }
+static void MP_setSurface(tl_jcall *c) { (void)c; }
+
+/* SoundPool */
+static void SP2_init(tl_jcall *c) { (void)c; }
+static void SP2Builder_build(tl_jcall *c) { c->ret = vl(make("android/media/SoundPool")); }
+static void SP2Builder_setMaxStreams(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void SP2Builder_setAudioAttributes(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void SP2_loadPath(tl_jcall *c) { c->ret = vi(tl_sp_load_path(S(c->args[0].l))); }
+static void SP2_loadFD(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    int fd = a ? get_int(a, "fd") : -1;
+    if (fd < 0) fd = a ? get_int(a, "descriptor") : -1;
+    c->ret = vi(tl_sp_load_fd(fd, c->args[1].j, c->args[2].j));
+}
+static void SP2_loadCtx(tl_jcall *c) { c->ret = vi(0); }
+static void SP2_play(tl_jcall *c)
+{
+    c->ret = vi(tl_sp_play(c->args[0].i, c->args[1].f, c->args[2].f, c->args[3].i, c->args[4].i, c->args[5].f));
+}
+static void SP2_stop(tl_jcall *c) { tl_sp_stop(c->args[0].i); }
+static void SP2_pause(tl_jcall *c) { tl_sp_pause(c->args[0].i); }
+static void SP2_resume(tl_jcall *c) { tl_sp_resume(c->args[0].i); }
+static void SP2_setVolume(tl_jcall *c) { tl_sp_volume(c->args[0].i, c->args[1].f, c->args[2].f); }
+static void SP2_setLoop(tl_jcall *c) { tl_sp_loop(c->args[0].i, c->args[1].i); }
+static void SP2_setRate(tl_jcall *c) { tl_sp_rate(c->args[0].i, c->args[1].f); }
+static void SP2_unload(tl_jcall *c) { tl_sp_unload(c->args[0].i); c->ret = vz(true); }
+static void SP2_release(tl_jcall *c) { (void)c; }
+static void SP2_autoPause(tl_jcall *c) { (void)c; }
+static void SP2_autoResume(tl_jcall *c) { (void)c; }
+static void SP2_setOnLoadCompleteListener(tl_jcall *c) { (void)c; }
+
+/* WebView: thin shim over a pooled WKWebView (offscreen unless made visible) */
+static int wv_of(jobj *o)
+{
+    if (!o->native) o->native = (void *)(intptr_t)tl_wv_new();
+    return (int)(intptr_t)o->native;
+}
+static void WV_init(tl_jcall *c) { wv_of(c->self); }
+static void WV_getSettings(tl_jcall *c)
+{
+    jobj *s = tl_jni_get_field(c->self, "settings", "Landroid/webkit/WebSettings;").l;
+    if (!s) {
+        s = make("android/webkit/WebSettings");
+        tl_jni_set_field(c->self, "settings", "Landroid/webkit/WebSettings;", vl(s));
+        tl_jni_set_field(s, "wv", "Landroid/webkit/WebView;", vl(c->self));
+    }
+    c->ret = vl(s);
+}
+static void WVS_setJavaScriptEnabled(tl_jcall *c)
+{
+    jobj *w = tl_jni_get_field(c->self, "wv", "Landroid/webkit/WebView;").l;
+    if (w) tl_wv_js(wv_of(w), c->args[0].z);
+    set_bool(c->self, "js", c->args[0].z);
+}
+static void WVS_getJavaScriptEnabled(tl_jcall *c) { c->ret = vz(get_int(c->self, "js")); }
+static void WVS_setDomStorageEnabled(tl_jcall *c) { set_bool(c->self, "dom", c->args[0].z); }
+static void WVS_getDomStorageEnabled(tl_jcall *c) { c->ret = vz(get_int(c->self, "dom")); }
+static void WVS_setUserAgentString(tl_jcall *c) { tl_jni_set_field(c->self, "ua", "Ljava/lang/String;", c->args[0]); }
+static void WVS_getUserAgentString(tl_jcall *c)
+{
+    jobj *u = tl_jni_get_field(c->self, "ua", "Ljava/lang/String;").l;
+    c->ret = vl(u ? u : STR("Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36"));
+}
+static void WVS_getDefaultUserAgent(tl_jcall *c)
+{
+    c->ret = vl(STR("Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36"));
+}
+static void WVS_setMediaPlaybackRequiresUserGesture(tl_jcall *c) { (void)c; }
+static void WVS_setLoadWithOverviewMode(tl_jcall *c) { set_bool(c->self, "overview", c->args[0].z); }
+static void WVS_setUseWideViewPort(tl_jcall *c) { set_bool(c->self, "widevp", c->args[0].z); }
+static void WVS_setSupportZoom(tl_jcall *c) { set_bool(c->self, "zoom", c->args[0].z); }
+static void WVS_setBuiltInZoomControls(tl_jcall *c) { (void)c; }
+static void WVS_setDisplayZoomControls(tl_jcall *c) { (void)c; }
+static void WVS_setAllowFileAccess(tl_jcall *c) { (void)c; }
+static void WVS_setAllowContentAccess(tl_jcall *c) { (void)c; }
+static void WVS_setAllowFileAccessFromFileURLs(tl_jcall *c) { (void)c; }
+static void WVS_setAllowUniversalAccessFromFileURLs(tl_jcall *c) { (void)c; }
+static void WVS_setCacheMode(tl_jcall *c) { set_int(c->self, "cachemode", c->args[0].i); }
+static void WVS_getCacheMode(tl_jcall *c) { c->ret = vi(get_int(c->self, "cachemode")); }
+static void WVS_setAppCacheEnabled(tl_jcall *c) { (void)c; }
+static void WVS_setAppCachePath(tl_jcall *c) { (void)c; }
+static void WVS_setDatabaseEnabled(tl_jcall *c) { (void)c; }
+static void WVS_setGeolocationEnabled(tl_jcall *c) { (void)c; }
+static void WVS_setTextSize(tl_jcall *c) { (void)c; }
+static void WVS_setTextZoom(tl_jcall *c) { set_int(c->self, "textzoom", c->args[0].i); }
+static void WVS_getTextZoom(tl_jcall *c) { c->ret = vi(get_int(c->self, "textzoom") ? get_int(c->self, "textzoom") : 100); }
+static void WVS_setDefaultFontSize(tl_jcall *c) { (void)c; }
+static void WVS_setMinimumFontSize(tl_jcall *c) { (void)c; }
+static void WVS_setMinimumLogicalFontSize(tl_jcall *c) { (void)c; }
+static void WVS_setDefaultTextEncodingName(tl_jcall *c) { (void)c; }
+static void WVS_setLayoutAlgorithm(tl_jcall *c) { (void)c; }
+static void WVS_setSupportMultipleWindows(tl_jcall *c) { set_bool(c->self, "multiwin", c->args[0].z); }
+static void WVS_supportMultipleWindows(tl_jcall *c) { c->ret = vz(get_int(c->self, "multiwin")); }
+static void WVS_setJavaScriptCanOpenWindowsAutomatically(tl_jcall *c) { set_bool(c->self, "jswin", c->args[0].z); }
+static void WVS_setPluginState(tl_jcall *c) { (void)c; }
+static void WVS_setMixedContentMode(tl_jcall *c) { (void)c; }
+static void WVS_setSafeBrowsingEnabled(tl_jcall *c) { (void)c; }
+static void WVS_setOffscreenPreRaster(tl_jcall *c) { (void)c; }
+static void WVS_setDisabledActionModeMenuItems(tl_jcall *c) { (void)c; }
+static void WV_loadUrl(tl_jcall *c) { tl_wv_load_url(wv_of(c->self), S(c->args[0].l)); }
+static void WV_loadUrlHdr(tl_jcall *c) { WV_loadUrl(c); }
+static void WV_loadData(tl_jcall *c)
+{
+    tl_wv_load_html(wv_of(c->self), S(c->args[0].l), NULL);
+}
+static void WV_loadDataWithBaseURL(tl_jcall *c)
+{
+    tl_wv_load_html(wv_of(c->self), S(c->args[1].l), c->args[0].l ? S(c->args[0].l) : NULL);
+}
+static void WV_getUrl(tl_jcall *c)
+{
+    char *u = tl_wv_url(wv_of(c->self));
+    c->ret = vl(u ? STR(u) : NULL);
+    free(u);
+}
+static void WV_getOriginalUrl(tl_jcall *c) { WV_getUrl(c); }
+static void WV_getTitle(tl_jcall *c)
+{
+    char *t = tl_wv_title(wv_of(c->self));
+    c->ret = vl(t ? STR(t) : NULL);
+    free(t);
+}
+static void WV_canGoBack(tl_jcall *c) { c->ret = vz(tl_wv_can_back(wv_of(c->self))); }
+static void WV_goBack(tl_jcall *c) { tl_wv_back(wv_of(c->self)); }
+static void WV_goForward(tl_jcall *c) { (void)c; }
+static void WV_canGoForward(tl_jcall *c) { c->ret = vz(false); }
+static void WV_reload(tl_jcall *c) { tl_wv_reload(wv_of(c->self)); }
+static void WV_stopLoading(tl_jcall *c) { tl_wv_stop(wv_of(c->self)); }
+static void WV_destroy(tl_jcall *c) { tl_wv_destroy(wv_of(c->self)); }
+static void WV_evaluateJavascript(tl_jcall *c)
+{
+    tl_wv_eval(wv_of(c->self), S(c->args[0].l));
+    jobj *cb = c->args[1].l;
+    if (cb) { jvalue v = vl(NULL); tl_jni_call(cb, "onReceiveValue", "(Ljava/lang/String;)V", &v); }
+}
+static void WV_addJavascriptInterface(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "jsif", "Ljava/lang/Object;", c->args[0]);
+}
+static void WV_removeJavascriptInterface(tl_jcall *c) { (void)c; }
+static void WV_setWebViewClient(tl_jcall *c) { tl_jni_set_field(c->self, "wvc", "Landroid/webkit/WebViewClient;", c->args[0]); }
+static void WV_setWebChromeClient(tl_jcall *c) { tl_jni_set_field(c->self, "wcc", "Landroid/webkit/WebChromeClient;", c->args[0]); }
+static void WV_getProgress(tl_jcall *c) { c->ret = vi(tl_wv_progress(wv_of(c->self))); }
+static void WV_setDownloadListener(tl_jcall *c) { (void)c; }
+static void WV_clearCache(tl_jcall *c) { (void)c; }
+static void WV_clearHistory(tl_jcall *c) { (void)c; }
+static void WV_clearFormData(tl_jcall *c) { (void)c; }
+static void WV_onPause(tl_jcall *c) { (void)c; }
+static void WV_onResume(tl_jcall *c) { (void)c; }
+static void WV_pauseTimers(tl_jcall *c) { (void)c; }
+static void WV_resumeTimers(tl_jcall *c) { (void)c; }
+static void WV_requestFocusNodeHref(tl_jcall *c) { (void)c; }
+static void WV_getHitTestResult(tl_jcall *c) { c->ret = vl(make("android/webkit/WebView$HitTestResult")); }
+static void WV_postUrl(tl_jcall *c) { WV_loadUrl(c); }
+static void WV_findAllAsync(tl_jcall *c) { (void)c; }
+static void WV_setFindListener(tl_jcall *c) { (void)c; }
+static void WV_setLayerType(tl_jcall *c) { (void)c; }
+static void WV_setOverScrollMode(tl_jcall *c) { (void)c; }
+static void WV_setScrollBarStyle(tl_jcall *c) { (void)c; }
+static void WV_flingScroll(tl_jcall *c) { (void)c; }
+static void WV_getCertificate(tl_jcall *c) { c->ret = vl(NULL); }
+static void WV_clearSslPreferences(tl_jcall *c) { (void)c; }
+static void CookieMan_getInstance(tl_jcall *c)
+{
+    static jobj *cm;
+    if (!cm) { cm = tl_jni_ref(make("android/webkit/CookieManager")); }
+    c->ret = vl(cm);
+}
+static void CookieMan_setAcceptCookie(tl_jcall *c) { set_bool(c->self, "accept", c->args[0].z); }
+static void CookieMan_acceptCookie(tl_jcall *c) { c->ret = vz(!get_int(c->self, "deny")); }
+static sbuf *ck_jar(jobj *o)
+{
+    if (!o->native) o->native = calloc(1, sizeof(sbuf));
+    return o->native;
+}
+static void CookieMan_setCookie(tl_jcall *c)
+{
+    sbuf *b = ck_jar(c->self);
+    sb_add(b, S(c->args[0].l)); sb_putc(b, '\x1f'); sb_add(b, S(c->args[1].l)); sb_putc(b, '\n');
+}
+static void CookieMan_getCookie(tl_jcall *c)
+{
+    sbuf *b = ck_jar(c->self);
+    const char *url = S(c->args[0].l);
+    sbuf out = {0};
+    if (b->p) {
+        char *p = b->p;
+        while (*p) {
+            char *eol = strchr(p, '\n'); if (!eol) eol = p + strlen(p);
+            char *sep = memchr(p, '\x1f', (size_t)(eol - p));
+            if (sep && (size_t)(sep - p) == strlen(url) && !strncmp(p, url, (size_t)(sep - p)))
+                sb_add_n(&out, sep + 1, (size_t)(eol - sep - 1));
+            p = *eol ? eol + 1 : eol;
+        }
+    }
+    c->ret = vl(out.p ? STR(out.p) : NULL);
+    free(out.p);
+}
+static void CookieMan_removeAllCookies(tl_jcall *c)
+{
+    ck_jar(c->self)->n = 0;
+    jobj *cb = c->args[0].l;
+    if (cb) { jvalue v = vz(true); tl_jni_call(cb, "onReceiveValue", "(Ljava/lang/Object;)V", &v); }
+}
+static void CookieMan_removeSessionCookies(tl_jcall *c)
+{
+    jobj *cb = c->args[0].l;
+    if (cb) { jvalue v = vz(true); tl_jni_call(cb, "onReceiveValue", "(Ljava/lang/Object;)V", &v); }
+}
+static void CookieMan_flush(tl_jcall *c) { (void)c; }
+static void CookieMan_hasCookies(tl_jcall *c) { c->ret = vz(false); }
+static void CookieMan_setAcceptThirdPartyCookies(tl_jcall *c) { (void)c; }
+static void CookieMan_acceptThirdPartyCookies(tl_jcall *c) { c->ret = vz(true); }
+
+/* BitmapFactory.decodeFile-side info via CGImageSource (dimensions only) */
+static void ImgInfo_wh(tl_jcall *c)
+{
+    int w = 0, h = 0;
+    tl_more_image_info(S(c->args[0].l), &w, &h);
+    jobj *p = make("android/graphics/Point");
+    set_int(p, "x", w); set_int(p, "y", h);
+    c->ret = vl(p);
+}
+
+/* ============================================================== registration
+ * Entries whose signature is NULL act as wildcards (hle_find matches any
+ * overload); entries with real signatures are needed where the impl reads
+ * c->args -- the argument slot types must match the caller's signature.
+ */
+
+#define M(c, n, s, f) { c, n, s, f }
+static const tl_jhle k_more_hle[] = {
+    M("java/lang/String", "charAt", "(I)C", String_charAt),
+    M("java/lang/String", "codePointAt", "(I)I", String_codePointAt),
+    M("java/lang/String", "substring", "(I)Ljava/lang/Object;", String_substring),
+    M("java/lang/String", "substring", "(II)Ljava/lang/Object;", String_substring2),
+    M("java/lang/String", "subSequence", NULL, String_subSequence),
+    M("java/lang/String", "concat", "(Ljava/lang/Object;)Ljava/lang/Object;", String_concat),
+    M("java/lang/String", "indexOf", "(I)I", String_indexOf_i),
+    M("java/lang/String", "indexOf", "(II)I", String_indexOf_i2),
+    M("java/lang/String", "indexOf", "(Ljava/lang/Object;)I", String_indexOf_s),
+    M("java/lang/String", "indexOf", "(Ljava/lang/Object;I)I", String_indexOf_s2),
+    M("java/lang/String", "lastIndexOf", "(I)I", String_lastIndexOf_i),
+    M("java/lang/String", "lastIndexOf", "(Ljava/lang/Object;)I", String_lastIndexOf_s),
+    M("java/lang/String", "startsWith", "(Ljava/lang/Object;)Z", String_startsWith),
+    M("java/lang/String", "endsWith", "(Ljava/lang/Object;)Z", String_endsWith),
+    M("java/lang/String", "contains", "(Ljava/lang/Object;)Z", String_contains),
+    M("java/lang/String", "toLowerCase", NULL, String_toLowerCase),
+    M("java/lang/String", "toUpperCase", NULL, String_toUpperCase),
+    M("java/lang/String", "trim", NULL, String_trim),
+    M("java/lang/String", "strip", NULL, String_strip),
+    M("java/lang/String", "isBlank", NULL, String_isBlank),
+    M("java/lang/String", "equalsIgnoreCase", "(Ljava/lang/Object;)Z", String_equalsIgnoreCase),
+    M("java/lang/String", "compareTo", "(Ljava/lang/Object;)I", String_compareTo),
+    M("java/lang/String", "compareToIgnoreCase", "(Ljava/lang/Object;)I", String_compareToIgnoreCase),
+    M("java/lang/String", "contentEquals", "(Ljava/lang/Object;)Z", String_contentEquals),
+    M("java/lang/String", "replace", "(CC)Ljava/lang/Object;", String_replace_cc),
+    M("java/lang/String", "replace", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", String_replace_seq),
+    M("java/lang/String", "replaceFirst", "(Ljava/lang/Object;I)Ljava/lang/Object;", String_replaceFirst),
+    M("java/lang/String", "replaceAll", "(Ljava/lang/Object;I)Ljava/lang/Object;", String_replaceAll),
+    M("java/lang/String", "matches", "(Ljava/lang/Object;)V", String_matches),
+    M("java/lang/String", "split", "(Ljava/lang/Object;)Ljava/lang/Object;", String_split),
+    M("java/lang/String", "toCharArray", NULL, String_toCharArray),
+    M("java/lang/String", "getChars", "(II[Ljava/lang/Object;I)V", String_getChars),
+    M("java/lang/String", "valueOf", "(Ljava/lang/Object;)Ljava/lang/Object;", String_valueOf_o),
+    M("java/lang/String", "valueOf", "(I)Ljava/lang/Object;", String_valueOf_i),
+    M("java/lang/String", "valueOf", "(J)Ljava/lang/Object;", String_valueOf_j),
+    M("java/lang/String", "valueOf", "(Z)Ljava/lang/Object;", String_valueOf_z),
+    M("java/lang/String", "valueOf", "(F)Ljava/lang/Object;", String_valueOf_f),
+    M("java/lang/String", "valueOf", "(D)Ljava/lang/Object;", String_valueOf_d),
+    M("java/lang/String", "valueOf", "(C)Ljava/lang/Object;", String_valueOf_c),
+    M("java/lang/String", "valueOf", "([Ljava/lang/Object;)Ljava/lang/Object;", String_valueOf_chars),
+    M("java/lang/String", "valueOf", "([Ljava/lang/Object;II)Ljava/lang/Object;", String_valueOf_chars_range),
+    M("java/lang/String", "<init>", "()V", String_init_chars_range),
+    M("java/lang/String", "<init>", "(Ljava/lang/Object;)V", String_init_sb),
+    M("java/lang/String", "intern", NULL, String_intern),
+    M("java/lang/String", "regionMatches", "(ILjava/lang/Object;II)Z", String_regionMatches),
+    M("java/lang/String", "regionMatches", "(IILjava/lang/Object;II)Z", String_regionMatches_ic),
+    M("java/lang/String", "repeat", "(I)Ljava/lang/Object;", String_repeat),
+    M("java/lang/String", "join", "(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;", String_join),
+    M("java/lang/String", "offsetByCodePoints", "(I)Ljava/lang/Object;", String_offsetByCodePoints),
+    M("java/lang/String", "codePointCount", "(II)I", String_codePointCount),
+    M("java/lang/StringBuilder", "append", "(Ljava/lang/Object;)Ljava/lang/Object;", SB_append_cs),
+    M("java/lang/StringBuffer", "append", "(Ljava/lang/Object;)Ljava/lang/Object;", SB_append_cs),
+    M("java/lang/StringBuilder", "append", "([Ljava/lang/Object;)Ljava/lang/Object;", SB_append_chars),
+    M("java/lang/StringBuffer", "append", "([Ljava/lang/Object;)Ljava/lang/Object;", SB_append_chars),
+    M("java/lang/StringBuilder", "append", "([Ljava/lang/Object;II)Ljava/lang/Object;", SB_append_chars_range),
+    M("java/lang/StringBuffer", "append", "([Ljava/lang/Object;II)Ljava/lang/Object;", SB_append_chars_range),
+    M("java/lang/StringBuilder", "append", "(Ljava/lang/Object;II)Ljava/lang/Object;", SB_append_seq_range),
+    M("java/lang/StringBuffer", "append", "(Ljava/lang/Object;II)Ljava/lang/Object;", SB_append_seq_range),
+    M("java/lang/StringBuilder", "charAt", "(I)C", SB_charAt),
+    M("java/lang/StringBuffer", "charAt", "(I)C", SB_charAt),
+    M("java/lang/StringBuilder", "codePointAt", "(I)I", SB_codePointAt),
+    M("java/lang/StringBuffer", "codePointAt", "(I)I", SB_codePointAt),
+    M("java/lang/StringBuilder", "substring", "(I)Ljava/lang/Object;", SB_substring),
+    M("java/lang/StringBuffer", "substring", "(I)Ljava/lang/Object;", SB_substring),
+    M("java/lang/StringBuilder", "substring2", "(II)Ljava/lang/Object;", SB_substring2),
+    M("java/lang/StringBuffer", "substring2", "(II)Ljava/lang/Object;", SB_substring2),
+    M("java/lang/StringBuilder", "indexOf", "(Ljava/lang/Object;)I", SB_indexOf),
+    M("java/lang/StringBuffer", "indexOf", "(Ljava/lang/Object;)I", SB_indexOf),
+    M("java/lang/StringBuilder", "indexOf2", "(Ljava/lang/Object;I)I", SB_indexOf2),
+    M("java/lang/StringBuffer", "indexOf2", "(Ljava/lang/Object;I)I", SB_indexOf2),
+    M("java/lang/StringBuilder", "lastIndexOf", "(Ljava/lang/Object;)I", SB_lastIndexOf),
+    M("java/lang/StringBuffer", "lastIndexOf", "(Ljava/lang/Object;)I", SB_lastIndexOf),
+    M("java/lang/StringBuilder", "insert", "(ILjava/lang/Object;)Ljava/lang/Object;", SB_insert),
+    M("java/lang/StringBuffer", "insert", "(ILjava/lang/Object;)Ljava/lang/Object;", SB_insert),
+    M("java/lang/StringBuilder", "insert", "(IJ)Ljava/lang/Object;", SB_insert_num),
+    M("java/lang/StringBuffer", "insert", "(IJ)Ljava/lang/Object;", SB_insert_num),
+    M("java/lang/StringBuilder", "insert", "(ID)Ljava/lang/Object;", SB_insert_dbl),
+    M("java/lang/StringBuffer", "insert", "(ID)Ljava/lang/Object;", SB_insert_dbl),
+    M("java/lang/StringBuilder", "insert", "(IZ)Ljava/lang/Object;", SB_insert_bool),
+    M("java/lang/StringBuffer", "insert", "(IZ)Ljava/lang/Object;", SB_insert_bool),
+    M("java/lang/StringBuilder", "insert", "(IC)Ljava/lang/Object;", SB_insert_char),
+    M("java/lang/StringBuffer", "insert", "(IC)Ljava/lang/Object;", SB_insert_char),
+    M("java/lang/StringBuilder", "delete", "(II)Ljava/lang/Object;", SB_delete),
+    M("java/lang/StringBuffer", "delete", "(II)Ljava/lang/Object;", SB_delete),
+    M("java/lang/StringBuilder", "deleteCharAt", "(I)Ljava/lang/Object;", SB_deleteCharAt),
+    M("java/lang/StringBuffer", "deleteCharAt", "(I)Ljava/lang/Object;", SB_deleteCharAt),
+    M("java/lang/StringBuilder", "setCharAt", "(IC)V", SB_setCharAt),
+    M("java/lang/StringBuffer", "setCharAt", "(IC)V", SB_setCharAt),
+    M("java/lang/StringBuilder", "replace", "(IILjava/lang/Object;)Ljava/lang/Object;", SB_replace),
+    M("java/lang/StringBuffer", "replace", "(IILjava/lang/Object;)Ljava/lang/Object;", SB_replace),
+    M("java/lang/StringBuilder", "reverse", NULL, SB_reverse),
+    M("java/lang/StringBuffer", "reverse", NULL, SB_reverse),
+    M("java/lang/StringBuilder", "capacity", NULL, SB_capacity),
+    M("java/lang/StringBuffer", "capacity", NULL, SB_capacity),
+    M("java/lang/StringBuilder", "ensure", "(I)V", SB_ensure),
+    M("java/lang/StringBuffer", "ensure", "(I)V", SB_ensure),
+    M("java/lang/StringBuilder", "getChars", "(II[Ljava/lang/Object;I)V", SB_getChars),
+    M("java/lang/StringBuffer", "getChars", "(II[Ljava/lang/Object;I)V", SB_getChars),
+    M("java/lang/StringBuilder", "trimToSize", NULL, SB_trimToSize),
+    M("java/lang/StringBuffer", "trimToSize", NULL, SB_trimToSize),
+    M("java/lang/StringBuilder", "appendCodePoint", "(I)Ljava/lang/Object;", SB_appendCodePoint),
+    M("java/lang/StringBuffer", "appendCodePoint", "(I)Ljava/lang/Object;", SB_appendCodePoint),
+    M("java/lang/StringBuilder", "setLength", "(I)V", SB_setLength),
+    M("java/lang/StringBuffer", "setLength", "(I)V", SB_setLength),
+    M("java/lang/StringBuilder", "toString", NULL, SB_toString),
+    M("java/lang/StringBuffer", "toString", NULL, SB_toString),
+    M("java/lang/StringBuilder", "offsetByCodePoints", "(I)Ljava/lang/Object;", SB_offsetByCodePoints),
+    M("java/lang/StringBuffer", "offsetByCodePoints", "(I)Ljava/lang/Object;", SB_offsetByCodePoints),
+    M("java/lang/Throwable", "<init>", "()V", Thr_init),
+    M("java/lang/Exception", "<init>", "()V", Thr_init),
+    M("java/lang/RuntimeException", "<init>", "()V", Thr_init),
+    M("java/lang/Error", "<init>", "()V", Thr_init),
+    M("java/lang/IllegalArgumentException", "<init>", "()V", Thr_init),
+    M("java/lang/IllegalStateException", "<init>", "()V", Thr_init),
+    M("java/lang/NullPointerException", "<init>", "()V", Thr_init),
+    M("java/lang/IndexOutOfBoundsException", "<init>", "()V", Thr_init),
+    M("java/lang/ArrayIndexOutOfBoundsException", "<init>", "()V", Thr_init),
+    M("java/lang/StringIndexOutOfBoundsException", "<init>", "()V", Thr_init),
+    M("java/lang/UnsupportedOperationException", "<init>", "()V", Thr_init),
+    M("java/lang/NumberFormatException", "<init>", "()V", Thr_init),
+    M("java/lang/ClassCastException", "<init>", "()V", Thr_init),
+    M("java/lang/ClassNotFoundException", "<init>", "()V", Thr_init),
+    M("java/lang/NoSuchMethodException", "<init>", "()V", Thr_init),
+    M("java/lang/NoSuchFieldException", "<init>", "()V", Thr_init),
+    M("java/io/IOException", "<init>", "()V", Thr_init),
+    M("java/io/FileNotFoundException", "<init>", "()V", Thr_init),
+    M("java/io/EOFException", "<init>", "()V", Thr_init),
+    M("java/net/SocketException", "<init>", "()V", Thr_init),
+    M("java/net/UnknownHostException", "<init>", "()V", Thr_init),
+    M("java/net/ConnectException", "<init>", "()V", Thr_init),
+    M("java/net/SocketTimeoutException", "<init>", "()V", Thr_init),
+    M("java/security/GeneralSecurityException", "<init>", "()V", Thr_init),
+    M("java/security/NoSuchAlgorithmException", "<init>", "()V", Thr_init),
+    M("java/security/InvalidKeyException", "<init>", "()V", Thr_init),
+    M("java/security/SignatureException", "<init>", "()V", Thr_init),
+    M("java/security/KeyStoreException", "<init>", "()V", Thr_init),
+    M("java/security/cert/CertificateException", "<init>", "()V", Thr_init),
+    M("javax/crypto/NoSuchPaddingException", "<init>", "()V", Thr_init),
+    M("javax/crypto/BadPaddingException", "<init>", "()V", Thr_init),
+    M("javax/crypto/IllegalBlockSizeException", "<init>", "()V", Thr_init),
+    M("java/text/ParseException", "<init>", "()V", Thr_init),
+    M("java/util/NoSuchElementException", "<init>", "()V", Thr_init),
+    M("java/util/concurrent/ExecutionException", "<init>", "()V", Thr_init),
+    M("java/util/concurrent/TimeoutException", "<init>", "()V", Thr_init),
+    M("java/lang/InterruptedException", "<init>", "()V", Thr_init),
+    M("java/lang/InstantiationException", "<init>", "()V", Thr_init),
+    M("java/lang/IllegalAccessException", "<init>", "()V", Thr_init),
+    M("java/lang/reflect/InvocationTargetException", "<init>", "()V", Thr_init),
+    M("java/lang/OutOfMemoryError", "<init>", "()V", Thr_init),
+    M("java/lang/StackOverflowError", "<init>", "()V", Thr_init),
+    M("java/lang/AssertionError", "<init>", "()V", Thr_init),
+    M("java/lang/SecurityException", "<init>", "()V", Thr_init),
+    M("java/lang/ArithmeticException", "<init>", "()V", Thr_init),
+    M("java/lang/ArrayStoreException", "<init>", "()V", Thr_init),
+    M("java/lang/NegativeArraySizeException", "<init>", "()V", Thr_init),
+    M("java/io/UnsupportedEncodingException", "<init>", "()V", Thr_init),
+    M("java/io/UTFDataFormatException", "<init>", "()V", Thr_init),
+    M("java/io/InterruptedIOException", "<init>", "()V", Thr_init),
+    M("java/io/StreamCorruptedException", "<init>", "()V", Thr_init),
+    M("java/io/ObjectStreamException", "<init>", "()V", Thr_init),
+    M("java/io/NotSerializableException", "<init>", "()V", Thr_init),
+    M("java/io/InvalidClassException", "<init>", "()V", Thr_init),
+    M("java/util/MissingResourceException", "<init>", "()V", Thr_init),
+    M("java/util/ConcurrentModificationException", "<init>", "()V", Thr_init),
+    M("java/util/EmptyStackException", "<init>", "()V", Thr_init),
+    M("java/util/UnknownFormatConversionException", "<init>", "()V", Thr_init),
+    M("java/nio/BufferOverflowException", "<init>", "()V", Thr_init),
+    M("java/nio/BufferUnderflowException", "<init>", "()V", Thr_init),
+    M("java/nio/InvalidMarkException", "<init>", "()V", Thr_init),
+    M("java/nio/ReadOnlyBufferException", "<init>", "()V", Thr_init),
+    M("java/sql/SQLException", "<init>", "()V", Thr_init),
+    M("java/util/zip/ZipException", "<init>", "()V", Thr_init),
+    M("java/util/concurrent/CancellationException", "<init>", "()V", Thr_init),
+    M("java/util/concurrent/RejectedExecutionException", "<init>", "()V", Thr_init),
+    M("java/lang/reflect/UndeclaredThrowableException", "<init>", "()V", Thr_init),
+    M("java/lang/CloneNotSupportedException", "<init>", "()V", Thr_init),
+    M("java/util/regex/PatternSyntaxException", "<init>", "()V", Thr_init),
+    M("javax/net/ssl/SSLException", "<init>", "()V", Thr_init),
+    M("java/security/KeyManagementException", "<init>", "()V", Thr_init),
+    M("java/security/cert/CertificateEncodingException", "<init>", "()V", Thr_init),
+    M("java/security/cert/CertificateParsingException", "<init>", "()V", Thr_init),
+    M("java/security/UnrecoverableKeyException", "<init>", "()V", Thr_init),
+    M("java/security/InvalidAlgorithmParameterException", "<init>", "()V", Thr_init),
+    M("java/security/NoSuchProviderException", "<init>", "()V", Thr_init),
+    M("java/security/spec/InvalidKeySpecException", "<init>", "()V", Thr_init),
+    M("java/security/DigestException", "<init>", "()V", Thr_init),
+    M("java/security/ProviderException", "<init>", "()V", Thr_init),
+    M("java/util/TooManyListenersException", "<init>", "()V", Thr_init),
+    M("org/json/JSONException", "<init>", "()V", Thr_init),
+    M("android/os/RemoteException", "<init>", "()V", Thr_init),
+    M("android/content/OperationApplicationException", "<init>", "()V", Thr_init),
+    M("android/os/TransactionTooLargeException", "<init>", "()V", Thr_init),
+    M("android/os/DeadObjectException", "<init>", "()V", Thr_init),
+    M("android/app/PendingIntent$CanceledException", "<init>", "()V", Thr_init),
+    M("android/util/AndroidRuntimeException", "<init>", "()V", Thr_init),
+    M("android/view/InflateException", "<init>", "()V", Thr_init),
+    M("android/database/SQLException", "<init>", "()V", Thr_init),
+    M("android/database/sqlite/SQLiteException", "<init>", "()V", Thr_init),
+    M("android/media/MediaCodec$CryptoException", "<init>", "()V", Thr_init),
+    M("android/os/BadParcelableException", "<init>", "()V", Thr_init),
+    M("java/lang/VerifyError", "<init>", "()V", Thr_init),
+    M("java/lang/UnsatisfiedLinkError", "<init>", "()V", Thr_init),
+    M("java/lang/ExceptionInInitializerError", "<init>", "()V", Thr_init),
+    M("java/lang/NoClassDefFoundError", "<init>", "()V", Thr_init),
+    M("java/lang/IncompatibleClassChangeError", "<init>", "()V", Thr_init),
+    M("java/lang/AbstractMethodError", "<init>", "()V", Thr_init),
+    M("java/lang/NoSuchMethodError", "<init>", "()V", Thr_init),
+    M("java/lang/NoSuchFieldError", "<init>", "()V", Thr_init),
+    M("java/lang/IllegalAccessError", "<init>", "()V", Thr_init),
+    M("java/lang/InstantiationError", "<init>", "()V", Thr_init),
+    M("java/lang/LinkageError", "<init>", "()V", Thr_init),
+    M("java/lang/VirtualMachineError", "<init>", "()V", Thr_init),
+    M("java/lang/InternalError", "<init>", "()V", Thr_init),
+    M("java/lang/ThreadDeath", "<init>", "()V", Thr_init),
+    M("java/lang/Throwable", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/lang/Exception", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/lang/RuntimeException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/lang/Error", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/lang/IllegalArgumentException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/lang/IllegalStateException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/lang/NullPointerException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/lang/IndexOutOfBoundsException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/lang/ArrayIndexOutOfBoundsException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/lang/StringIndexOutOfBoundsException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/lang/UnsupportedOperationException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/lang/NumberFormatException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/lang/ClassCastException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/lang/ClassNotFoundException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/lang/NoSuchMethodException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/lang/NoSuchFieldException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/io/IOException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/io/FileNotFoundException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/io/EOFException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/net/SocketException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/net/UnknownHostException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/net/ConnectException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/net/SocketTimeoutException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/security/GeneralSecurityException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/security/NoSuchAlgorithmException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/security/InvalidKeyException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/security/SignatureException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/security/KeyStoreException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/security/cert/CertificateException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("javax/crypto/NoSuchPaddingException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("javax/crypto/BadPaddingException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("javax/crypto/IllegalBlockSizeException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/text/ParseException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/util/NoSuchElementException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/util/concurrent/ExecutionException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/util/concurrent/TimeoutException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/lang/InterruptedException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/lang/InstantiationException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/lang/IllegalAccessException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/lang/reflect/InvocationTargetException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/lang/OutOfMemoryError", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/lang/StackOverflowError", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/lang/AssertionError", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/lang/SecurityException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/lang/ArithmeticException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/lang/ArrayStoreException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/lang/NegativeArraySizeException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/io/UnsupportedEncodingException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/io/UTFDataFormatException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/io/InterruptedIOException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/io/StreamCorruptedException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/io/ObjectStreamException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/io/NotSerializableException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/io/InvalidClassException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/util/MissingResourceException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/util/ConcurrentModificationException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/util/EmptyStackException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/util/UnknownFormatConversionException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/nio/BufferOverflowException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/nio/BufferUnderflowException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/nio/InvalidMarkException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/nio/ReadOnlyBufferException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/sql/SQLException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/util/zip/ZipException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/util/concurrent/CancellationException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/util/concurrent/RejectedExecutionException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/lang/reflect/UndeclaredThrowableException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/lang/CloneNotSupportedException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/util/regex/PatternSyntaxException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("javax/net/ssl/SSLException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/security/KeyManagementException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/security/cert/CertificateEncodingException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/security/cert/CertificateParsingException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/security/UnrecoverableKeyException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/security/InvalidAlgorithmParameterException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/security/NoSuchProviderException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/security/spec/InvalidKeySpecException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/security/DigestException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/security/ProviderException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/util/TooManyListenersException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("org/json/JSONException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("android/os/RemoteException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("android/content/OperationApplicationException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("android/os/TransactionTooLargeException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("android/os/DeadObjectException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("android/app/PendingIntent$CanceledException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("android/util/AndroidRuntimeException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("android/view/InflateException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("android/database/SQLException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("android/database/sqlite/SQLiteException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("android/media/MediaCodec$CryptoException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("android/os/BadParcelableException", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/lang/VerifyError", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/lang/UnsatisfiedLinkError", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/lang/ExceptionInInitializerError", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/lang/NoClassDefFoundError", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/lang/IncompatibleClassChangeError", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/lang/AbstractMethodError", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/lang/NoSuchMethodError", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/lang/NoSuchFieldError", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/lang/IllegalAccessError", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/lang/InstantiationError", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/lang/LinkageError", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/lang/VirtualMachineError", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/lang/InternalError", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/lang/ThreadDeath", "<init>", "(Ljava/lang/Object;)V", Thr_init_s),
+    M("java/lang/Throwable", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/lang/Exception", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/lang/RuntimeException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/lang/Error", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/lang/IllegalArgumentException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/lang/IllegalStateException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/lang/NullPointerException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/lang/IndexOutOfBoundsException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/lang/ArrayIndexOutOfBoundsException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/lang/StringIndexOutOfBoundsException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/lang/UnsupportedOperationException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/lang/NumberFormatException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/lang/ClassCastException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/lang/ClassNotFoundException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/lang/NoSuchMethodException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/lang/NoSuchFieldException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/io/IOException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/io/FileNotFoundException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/io/EOFException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/net/SocketException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/net/UnknownHostException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/net/ConnectException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/net/SocketTimeoutException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/security/GeneralSecurityException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/security/NoSuchAlgorithmException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/security/InvalidKeyException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/security/SignatureException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/security/KeyStoreException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/security/cert/CertificateException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("javax/crypto/NoSuchPaddingException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("javax/crypto/BadPaddingException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("javax/crypto/IllegalBlockSizeException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/text/ParseException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/util/NoSuchElementException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/util/concurrent/ExecutionException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/util/concurrent/TimeoutException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/lang/InterruptedException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/lang/InstantiationException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/lang/IllegalAccessException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/lang/reflect/InvocationTargetException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/lang/OutOfMemoryError", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/lang/StackOverflowError", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/lang/AssertionError", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/lang/SecurityException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/lang/ArithmeticException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/lang/ArrayStoreException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/lang/NegativeArraySizeException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/io/UnsupportedEncodingException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/io/UTFDataFormatException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/io/InterruptedIOException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/io/StreamCorruptedException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/io/ObjectStreamException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/io/NotSerializableException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/io/InvalidClassException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/util/MissingResourceException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/util/ConcurrentModificationException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/util/EmptyStackException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/util/UnknownFormatConversionException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/nio/BufferOverflowException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/nio/BufferUnderflowException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/nio/InvalidMarkException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/nio/ReadOnlyBufferException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/sql/SQLException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/util/zip/ZipException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/util/concurrent/CancellationException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/util/concurrent/RejectedExecutionException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/lang/reflect/UndeclaredThrowableException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/lang/CloneNotSupportedException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/util/regex/PatternSyntaxException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("javax/net/ssl/SSLException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/security/KeyManagementException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/security/cert/CertificateEncodingException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/security/cert/CertificateParsingException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/security/UnrecoverableKeyException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/security/InvalidAlgorithmParameterException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/security/NoSuchProviderException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/security/spec/InvalidKeySpecException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/security/DigestException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/security/ProviderException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/util/TooManyListenersException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("org/json/JSONException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("android/os/RemoteException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("android/content/OperationApplicationException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("android/os/TransactionTooLargeException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("android/os/DeadObjectException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("android/app/PendingIntent$CanceledException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("android/util/AndroidRuntimeException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("android/view/InflateException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("android/database/SQLException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("android/database/sqlite/SQLiteException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("android/media/MediaCodec$CryptoException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("android/os/BadParcelableException", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/lang/VerifyError", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/lang/UnsatisfiedLinkError", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/lang/ExceptionInInitializerError", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/lang/NoClassDefFoundError", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/lang/IncompatibleClassChangeError", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/lang/AbstractMethodError", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/lang/NoSuchMethodError", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/lang/NoSuchFieldError", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/lang/IllegalAccessError", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/lang/InstantiationError", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/lang/LinkageError", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/lang/VirtualMachineError", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/lang/InternalError", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/lang/ThreadDeath", "<init>", "(Ljava/lang/Object;I)V", Thr_init_st),
+    M("java/lang/Throwable", "<init>", "(I)V", Thr_init_t),
+    M("java/lang/Exception", "<init>", "(I)V", Thr_init_t),
+    M("java/lang/RuntimeException", "<init>", "(I)V", Thr_init_t),
+    M("java/lang/Error", "<init>", "(I)V", Thr_init_t),
+    M("java/lang/IllegalArgumentException", "<init>", "(I)V", Thr_init_t),
+    M("java/lang/IllegalStateException", "<init>", "(I)V", Thr_init_t),
+    M("java/lang/NullPointerException", "<init>", "(I)V", Thr_init_t),
+    M("java/lang/IndexOutOfBoundsException", "<init>", "(I)V", Thr_init_t),
+    M("java/lang/ArrayIndexOutOfBoundsException", "<init>", "(I)V", Thr_init_t),
+    M("java/lang/StringIndexOutOfBoundsException", "<init>", "(I)V", Thr_init_t),
+    M("java/lang/UnsupportedOperationException", "<init>", "(I)V", Thr_init_t),
+    M("java/lang/NumberFormatException", "<init>", "(I)V", Thr_init_t),
+    M("java/lang/ClassCastException", "<init>", "(I)V", Thr_init_t),
+    M("java/lang/ClassNotFoundException", "<init>", "(I)V", Thr_init_t),
+    M("java/lang/NoSuchMethodException", "<init>", "(I)V", Thr_init_t),
+    M("java/lang/NoSuchFieldException", "<init>", "(I)V", Thr_init_t),
+    M("java/io/IOException", "<init>", "(I)V", Thr_init_t),
+    M("java/io/FileNotFoundException", "<init>", "(I)V", Thr_init_t),
+    M("java/io/EOFException", "<init>", "(I)V", Thr_init_t),
+    M("java/net/SocketException", "<init>", "(I)V", Thr_init_t),
+    M("java/net/UnknownHostException", "<init>", "(I)V", Thr_init_t),
+    M("java/net/ConnectException", "<init>", "(I)V", Thr_init_t),
+    M("java/net/SocketTimeoutException", "<init>", "(I)V", Thr_init_t),
+    M("java/security/GeneralSecurityException", "<init>", "(I)V", Thr_init_t),
+    M("java/security/NoSuchAlgorithmException", "<init>", "(I)V", Thr_init_t),
+    M("java/security/InvalidKeyException", "<init>", "(I)V", Thr_init_t),
+    M("java/security/SignatureException", "<init>", "(I)V", Thr_init_t),
+    M("java/security/KeyStoreException", "<init>", "(I)V", Thr_init_t),
+    M("java/security/cert/CertificateException", "<init>", "(I)V", Thr_init_t),
+    M("javax/crypto/NoSuchPaddingException", "<init>", "(I)V", Thr_init_t),
+    M("javax/crypto/BadPaddingException", "<init>", "(I)V", Thr_init_t),
+    M("javax/crypto/IllegalBlockSizeException", "<init>", "(I)V", Thr_init_t),
+    M("java/text/ParseException", "<init>", "(I)V", Thr_init_t),
+    M("java/util/NoSuchElementException", "<init>", "(I)V", Thr_init_t),
+    M("java/util/concurrent/ExecutionException", "<init>", "(I)V", Thr_init_t),
+    M("java/util/concurrent/TimeoutException", "<init>", "(I)V", Thr_init_t),
+    M("java/lang/InterruptedException", "<init>", "(I)V", Thr_init_t),
+    M("java/lang/InstantiationException", "<init>", "(I)V", Thr_init_t),
+    M("java/lang/IllegalAccessException", "<init>", "(I)V", Thr_init_t),
+    M("java/lang/reflect/InvocationTargetException", "<init>", "(I)V", Thr_init_t),
+    M("java/lang/OutOfMemoryError", "<init>", "(I)V", Thr_init_t),
+    M("java/lang/StackOverflowError", "<init>", "(I)V", Thr_init_t),
+    M("java/lang/AssertionError", "<init>", "(I)V", Thr_init_t),
+    M("java/lang/SecurityException", "<init>", "(I)V", Thr_init_t),
+    M("java/lang/ArithmeticException", "<init>", "(I)V", Thr_init_t),
+    M("java/lang/ArrayStoreException", "<init>", "(I)V", Thr_init_t),
+    M("java/lang/NegativeArraySizeException", "<init>", "(I)V", Thr_init_t),
+    M("java/io/UnsupportedEncodingException", "<init>", "(I)V", Thr_init_t),
+    M("java/io/UTFDataFormatException", "<init>", "(I)V", Thr_init_t),
+    M("java/io/InterruptedIOException", "<init>", "(I)V", Thr_init_t),
+    M("java/io/StreamCorruptedException", "<init>", "(I)V", Thr_init_t),
+    M("java/io/ObjectStreamException", "<init>", "(I)V", Thr_init_t),
+    M("java/io/NotSerializableException", "<init>", "(I)V", Thr_init_t),
+    M("java/io/InvalidClassException", "<init>", "(I)V", Thr_init_t),
+    M("java/util/MissingResourceException", "<init>", "(I)V", Thr_init_t),
+    M("java/util/ConcurrentModificationException", "<init>", "(I)V", Thr_init_t),
+    M("java/util/EmptyStackException", "<init>", "(I)V", Thr_init_t),
+    M("java/util/UnknownFormatConversionException", "<init>", "(I)V", Thr_init_t),
+    M("java/nio/BufferOverflowException", "<init>", "(I)V", Thr_init_t),
+    M("java/nio/BufferUnderflowException", "<init>", "(I)V", Thr_init_t),
+    M("java/nio/InvalidMarkException", "<init>", "(I)V", Thr_init_t),
+    M("java/nio/ReadOnlyBufferException", "<init>", "(I)V", Thr_init_t),
+    M("java/sql/SQLException", "<init>", "(I)V", Thr_init_t),
+    M("java/util/zip/ZipException", "<init>", "(I)V", Thr_init_t),
+    M("java/util/concurrent/CancellationException", "<init>", "(I)V", Thr_init_t),
+    M("java/util/concurrent/RejectedExecutionException", "<init>", "(I)V", Thr_init_t),
+    M("java/lang/reflect/UndeclaredThrowableException", "<init>", "(I)V", Thr_init_t),
+    M("java/lang/CloneNotSupportedException", "<init>", "(I)V", Thr_init_t),
+    M("java/util/regex/PatternSyntaxException", "<init>", "(I)V", Thr_init_t),
+    M("javax/net/ssl/SSLException", "<init>", "(I)V", Thr_init_t),
+    M("java/security/KeyManagementException", "<init>", "(I)V", Thr_init_t),
+    M("java/security/cert/CertificateEncodingException", "<init>", "(I)V", Thr_init_t),
+    M("java/security/cert/CertificateParsingException", "<init>", "(I)V", Thr_init_t),
+    M("java/security/UnrecoverableKeyException", "<init>", "(I)V", Thr_init_t),
+    M("java/security/InvalidAlgorithmParameterException", "<init>", "(I)V", Thr_init_t),
+    M("java/security/NoSuchProviderException", "<init>", "(I)V", Thr_init_t),
+    M("java/security/spec/InvalidKeySpecException", "<init>", "(I)V", Thr_init_t),
+    M("java/security/DigestException", "<init>", "(I)V", Thr_init_t),
+    M("java/security/ProviderException", "<init>", "(I)V", Thr_init_t),
+    M("java/util/TooManyListenersException", "<init>", "(I)V", Thr_init_t),
+    M("org/json/JSONException", "<init>", "(I)V", Thr_init_t),
+    M("android/os/RemoteException", "<init>", "(I)V", Thr_init_t),
+    M("android/content/OperationApplicationException", "<init>", "(I)V", Thr_init_t),
+    M("android/os/TransactionTooLargeException", "<init>", "(I)V", Thr_init_t),
+    M("android/os/DeadObjectException", "<init>", "(I)V", Thr_init_t),
+    M("android/app/PendingIntent$CanceledException", "<init>", "(I)V", Thr_init_t),
+    M("android/util/AndroidRuntimeException", "<init>", "(I)V", Thr_init_t),
+    M("android/view/InflateException", "<init>", "(I)V", Thr_init_t),
+    M("android/database/SQLException", "<init>", "(I)V", Thr_init_t),
+    M("android/database/sqlite/SQLiteException", "<init>", "(I)V", Thr_init_t),
+    M("android/media/MediaCodec$CryptoException", "<init>", "(I)V", Thr_init_t),
+    M("android/os/BadParcelableException", "<init>", "(I)V", Thr_init_t),
+    M("java/lang/VerifyError", "<init>", "(I)V", Thr_init_t),
+    M("java/lang/UnsatisfiedLinkError", "<init>", "(I)V", Thr_init_t),
+    M("java/lang/ExceptionInInitializerError", "<init>", "(I)V", Thr_init_t),
+    M("java/lang/NoClassDefFoundError", "<init>", "(I)V", Thr_init_t),
+    M("java/lang/IncompatibleClassChangeError", "<init>", "(I)V", Thr_init_t),
+    M("java/lang/AbstractMethodError", "<init>", "(I)V", Thr_init_t),
+    M("java/lang/NoSuchMethodError", "<init>", "(I)V", Thr_init_t),
+    M("java/lang/NoSuchFieldError", "<init>", "(I)V", Thr_init_t),
+    M("java/lang/IllegalAccessError", "<init>", "(I)V", Thr_init_t),
+    M("java/lang/InstantiationError", "<init>", "(I)V", Thr_init_t),
+    M("java/lang/LinkageError", "<init>", "(I)V", Thr_init_t),
+    M("java/lang/VirtualMachineError", "<init>", "(I)V", Thr_init_t),
+    M("java/lang/InternalError", "<init>", "(I)V", Thr_init_t),
+    M("java/lang/ThreadDeath", "<init>", "(I)V", Thr_init_t),
+    M("java/lang/Throwable", "getMessage", NULL, Thr_getMessage),
+    M("java/lang/Exception", "getMessage", NULL, Thr_getMessage),
+    M("java/lang/RuntimeException", "getMessage", NULL, Thr_getMessage),
+    M("java/lang/Error", "getMessage", NULL, Thr_getMessage),
+    M("java/lang/IllegalArgumentException", "getMessage", NULL, Thr_getMessage),
+    M("java/lang/IllegalStateException", "getMessage", NULL, Thr_getMessage),
+    M("java/lang/NullPointerException", "getMessage", NULL, Thr_getMessage),
+    M("java/lang/IndexOutOfBoundsException", "getMessage", NULL, Thr_getMessage),
+    M("java/lang/ArrayIndexOutOfBoundsException", "getMessage", NULL, Thr_getMessage),
+    M("java/lang/StringIndexOutOfBoundsException", "getMessage", NULL, Thr_getMessage),
+    M("java/lang/UnsupportedOperationException", "getMessage", NULL, Thr_getMessage),
+    M("java/lang/NumberFormatException", "getMessage", NULL, Thr_getMessage),
+    M("java/lang/ClassCastException", "getMessage", NULL, Thr_getMessage),
+    M("java/lang/ClassNotFoundException", "getMessage", NULL, Thr_getMessage),
+    M("java/lang/NoSuchMethodException", "getMessage", NULL, Thr_getMessage),
+    M("java/lang/NoSuchFieldException", "getMessage", NULL, Thr_getMessage),
+    M("java/io/IOException", "getMessage", NULL, Thr_getMessage),
+    M("java/io/FileNotFoundException", "getMessage", NULL, Thr_getMessage),
+    M("java/io/EOFException", "getMessage", NULL, Thr_getMessage),
+    M("java/net/SocketException", "getMessage", NULL, Thr_getMessage),
+    M("java/net/UnknownHostException", "getMessage", NULL, Thr_getMessage),
+    M("java/net/ConnectException", "getMessage", NULL, Thr_getMessage),
+    M("java/net/SocketTimeoutException", "getMessage", NULL, Thr_getMessage),
+    M("java/security/GeneralSecurityException", "getMessage", NULL, Thr_getMessage),
+    M("java/security/NoSuchAlgorithmException", "getMessage", NULL, Thr_getMessage),
+    M("java/security/InvalidKeyException", "getMessage", NULL, Thr_getMessage),
+    M("java/security/SignatureException", "getMessage", NULL, Thr_getMessage),
+    M("java/security/KeyStoreException", "getMessage", NULL, Thr_getMessage),
+    M("java/security/cert/CertificateException", "getMessage", NULL, Thr_getMessage),
+    M("javax/crypto/NoSuchPaddingException", "getMessage", NULL, Thr_getMessage),
+    M("javax/crypto/BadPaddingException", "getMessage", NULL, Thr_getMessage),
+    M("javax/crypto/IllegalBlockSizeException", "getMessage", NULL, Thr_getMessage),
+    M("java/text/ParseException", "getMessage", NULL, Thr_getMessage),
+    M("java/util/NoSuchElementException", "getMessage", NULL, Thr_getMessage),
+    M("java/util/concurrent/ExecutionException", "getMessage", NULL, Thr_getMessage),
+    M("java/util/concurrent/TimeoutException", "getMessage", NULL, Thr_getMessage),
+    M("java/lang/InterruptedException", "getMessage", NULL, Thr_getMessage),
+    M("java/lang/InstantiationException", "getMessage", NULL, Thr_getMessage),
+    M("java/lang/IllegalAccessException", "getMessage", NULL, Thr_getMessage),
+    M("java/lang/reflect/InvocationTargetException", "getMessage", NULL, Thr_getMessage),
+    M("java/lang/OutOfMemoryError", "getMessage", NULL, Thr_getMessage),
+    M("java/lang/StackOverflowError", "getMessage", NULL, Thr_getMessage),
+    M("java/lang/AssertionError", "getMessage", NULL, Thr_getMessage),
+    M("java/lang/SecurityException", "getMessage", NULL, Thr_getMessage),
+    M("java/lang/ArithmeticException", "getMessage", NULL, Thr_getMessage),
+    M("java/lang/ArrayStoreException", "getMessage", NULL, Thr_getMessage),
+    M("java/lang/NegativeArraySizeException", "getMessage", NULL, Thr_getMessage),
+    M("java/io/UnsupportedEncodingException", "getMessage", NULL, Thr_getMessage),
+    M("java/io/UTFDataFormatException", "getMessage", NULL, Thr_getMessage),
+    M("java/io/InterruptedIOException", "getMessage", NULL, Thr_getMessage),
+    M("java/io/StreamCorruptedException", "getMessage", NULL, Thr_getMessage),
+    M("java/io/ObjectStreamException", "getMessage", NULL, Thr_getMessage),
+    M("java/io/NotSerializableException", "getMessage", NULL, Thr_getMessage),
+    M("java/io/InvalidClassException", "getMessage", NULL, Thr_getMessage),
+    M("java/util/MissingResourceException", "getMessage", NULL, Thr_getMessage),
+    M("java/util/ConcurrentModificationException", "getMessage", NULL, Thr_getMessage),
+    M("java/util/EmptyStackException", "getMessage", NULL, Thr_getMessage),
+    M("java/util/UnknownFormatConversionException", "getMessage", NULL, Thr_getMessage),
+    M("java/nio/BufferOverflowException", "getMessage", NULL, Thr_getMessage),
+    M("java/nio/BufferUnderflowException", "getMessage", NULL, Thr_getMessage),
+    M("java/nio/InvalidMarkException", "getMessage", NULL, Thr_getMessage),
+    M("java/nio/ReadOnlyBufferException", "getMessage", NULL, Thr_getMessage),
+    M("java/sql/SQLException", "getMessage", NULL, Thr_getMessage),
+    M("java/util/zip/ZipException", "getMessage", NULL, Thr_getMessage),
+    M("java/util/concurrent/CancellationException", "getMessage", NULL, Thr_getMessage),
+    M("java/util/concurrent/RejectedExecutionException", "getMessage", NULL, Thr_getMessage),
+    M("java/lang/reflect/UndeclaredThrowableException", "getMessage", NULL, Thr_getMessage),
+    M("java/lang/CloneNotSupportedException", "getMessage", NULL, Thr_getMessage),
+    M("java/util/regex/PatternSyntaxException", "getMessage", NULL, Thr_getMessage),
+    M("javax/net/ssl/SSLException", "getMessage", NULL, Thr_getMessage),
+    M("java/security/KeyManagementException", "getMessage", NULL, Thr_getMessage),
+    M("java/security/cert/CertificateEncodingException", "getMessage", NULL, Thr_getMessage),
+    M("java/security/cert/CertificateParsingException", "getMessage", NULL, Thr_getMessage),
+    M("java/security/UnrecoverableKeyException", "getMessage", NULL, Thr_getMessage),
+    M("java/security/InvalidAlgorithmParameterException", "getMessage", NULL, Thr_getMessage),
+    M("java/security/NoSuchProviderException", "getMessage", NULL, Thr_getMessage),
+    M("java/security/spec/InvalidKeySpecException", "getMessage", NULL, Thr_getMessage),
+    M("java/security/DigestException", "getMessage", NULL, Thr_getMessage),
+    M("java/security/ProviderException", "getMessage", NULL, Thr_getMessage),
+    M("java/util/TooManyListenersException", "getMessage", NULL, Thr_getMessage),
+    M("org/json/JSONException", "getMessage", NULL, Thr_getMessage),
+    M("android/os/RemoteException", "getMessage", NULL, Thr_getMessage),
+    M("android/content/OperationApplicationException", "getMessage", NULL, Thr_getMessage),
+    M("android/os/TransactionTooLargeException", "getMessage", NULL, Thr_getMessage),
+    M("android/os/DeadObjectException", "getMessage", NULL, Thr_getMessage),
+    M("android/app/PendingIntent$CanceledException", "getMessage", NULL, Thr_getMessage),
+    M("android/util/AndroidRuntimeException", "getMessage", NULL, Thr_getMessage),
+    M("android/view/InflateException", "getMessage", NULL, Thr_getMessage),
+    M("android/database/SQLException", "getMessage", NULL, Thr_getMessage),
+    M("android/database/sqlite/SQLiteException", "getMessage", NULL, Thr_getMessage),
+    M("android/media/MediaCodec$CryptoException", "getMessage", NULL, Thr_getMessage),
+    M("android/os/BadParcelableException", "getMessage", NULL, Thr_getMessage),
+    M("java/lang/VerifyError", "getMessage", NULL, Thr_getMessage),
+    M("java/lang/UnsatisfiedLinkError", "getMessage", NULL, Thr_getMessage),
+    M("java/lang/ExceptionInInitializerError", "getMessage", NULL, Thr_getMessage),
+    M("java/lang/NoClassDefFoundError", "getMessage", NULL, Thr_getMessage),
+    M("java/lang/IncompatibleClassChangeError", "getMessage", NULL, Thr_getMessage),
+    M("java/lang/AbstractMethodError", "getMessage", NULL, Thr_getMessage),
+    M("java/lang/NoSuchMethodError", "getMessage", NULL, Thr_getMessage),
+    M("java/lang/NoSuchFieldError", "getMessage", NULL, Thr_getMessage),
+    M("java/lang/IllegalAccessError", "getMessage", NULL, Thr_getMessage),
+    M("java/lang/InstantiationError", "getMessage", NULL, Thr_getMessage),
+    M("java/lang/LinkageError", "getMessage", NULL, Thr_getMessage),
+    M("java/lang/VirtualMachineError", "getMessage", NULL, Thr_getMessage),
+    M("java/lang/InternalError", "getMessage", NULL, Thr_getMessage),
+    M("java/lang/ThreadDeath", "getMessage", NULL, Thr_getMessage),
+    M("java/lang/Throwable", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/lang/Exception", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/lang/RuntimeException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/lang/Error", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/lang/IllegalArgumentException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/lang/IllegalStateException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/lang/NullPointerException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/lang/IndexOutOfBoundsException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/lang/ArrayIndexOutOfBoundsException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/lang/StringIndexOutOfBoundsException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/lang/UnsupportedOperationException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/lang/NumberFormatException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/lang/ClassCastException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/lang/ClassNotFoundException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/lang/NoSuchMethodException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/lang/NoSuchFieldException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/io/IOException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/io/FileNotFoundException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/io/EOFException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/net/SocketException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/net/UnknownHostException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/net/ConnectException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/net/SocketTimeoutException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/security/GeneralSecurityException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/security/NoSuchAlgorithmException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/security/InvalidKeyException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/security/SignatureException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/security/KeyStoreException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/security/cert/CertificateException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("javax/crypto/NoSuchPaddingException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("javax/crypto/BadPaddingException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("javax/crypto/IllegalBlockSizeException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/text/ParseException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/util/NoSuchElementException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/util/concurrent/ExecutionException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/util/concurrent/TimeoutException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/lang/InterruptedException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/lang/InstantiationException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/lang/IllegalAccessException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/lang/reflect/InvocationTargetException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/lang/OutOfMemoryError", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/lang/StackOverflowError", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/lang/AssertionError", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/lang/SecurityException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/lang/ArithmeticException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/lang/ArrayStoreException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/lang/NegativeArraySizeException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/io/UnsupportedEncodingException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/io/UTFDataFormatException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/io/InterruptedIOException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/io/StreamCorruptedException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/io/ObjectStreamException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/io/NotSerializableException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/io/InvalidClassException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/util/MissingResourceException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/util/ConcurrentModificationException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/util/EmptyStackException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/util/UnknownFormatConversionException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/nio/BufferOverflowException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/nio/BufferUnderflowException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/nio/InvalidMarkException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/nio/ReadOnlyBufferException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/sql/SQLException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/util/zip/ZipException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/util/concurrent/CancellationException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/util/concurrent/RejectedExecutionException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/lang/reflect/UndeclaredThrowableException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/lang/CloneNotSupportedException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/util/regex/PatternSyntaxException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("javax/net/ssl/SSLException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/security/KeyManagementException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/security/cert/CertificateEncodingException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/security/cert/CertificateParsingException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/security/UnrecoverableKeyException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/security/InvalidAlgorithmParameterException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/security/NoSuchProviderException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/security/spec/InvalidKeySpecException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/security/DigestException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/security/ProviderException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/util/TooManyListenersException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("org/json/JSONException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("android/os/RemoteException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("android/content/OperationApplicationException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("android/os/TransactionTooLargeException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("android/os/DeadObjectException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("android/app/PendingIntent$CanceledException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("android/util/AndroidRuntimeException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("android/view/InflateException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("android/database/SQLException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("android/database/sqlite/SQLiteException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("android/media/MediaCodec$CryptoException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("android/os/BadParcelableException", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/lang/VerifyError", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/lang/UnsatisfiedLinkError", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/lang/ExceptionInInitializerError", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/lang/NoClassDefFoundError", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/lang/IncompatibleClassChangeError", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/lang/AbstractMethodError", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/lang/NoSuchMethodError", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/lang/NoSuchFieldError", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/lang/IllegalAccessError", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/lang/InstantiationError", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/lang/LinkageError", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/lang/VirtualMachineError", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/lang/InternalError", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/lang/ThreadDeath", "getLocalizedMessage", NULL, Thr_getLocalizedMessage),
+    M("java/lang/Throwable", "getCause", NULL, Thr_getCause),
+    M("java/lang/Exception", "getCause", NULL, Thr_getCause),
+    M("java/lang/RuntimeException", "getCause", NULL, Thr_getCause),
+    M("java/lang/Error", "getCause", NULL, Thr_getCause),
+    M("java/lang/IllegalArgumentException", "getCause", NULL, Thr_getCause),
+    M("java/lang/IllegalStateException", "getCause", NULL, Thr_getCause),
+    M("java/lang/NullPointerException", "getCause", NULL, Thr_getCause),
+    M("java/lang/IndexOutOfBoundsException", "getCause", NULL, Thr_getCause),
+    M("java/lang/ArrayIndexOutOfBoundsException", "getCause", NULL, Thr_getCause),
+    M("java/lang/StringIndexOutOfBoundsException", "getCause", NULL, Thr_getCause),
+    M("java/lang/UnsupportedOperationException", "getCause", NULL, Thr_getCause),
+    M("java/lang/NumberFormatException", "getCause", NULL, Thr_getCause),
+    M("java/lang/ClassCastException", "getCause", NULL, Thr_getCause),
+    M("java/lang/ClassNotFoundException", "getCause", NULL, Thr_getCause),
+    M("java/lang/NoSuchMethodException", "getCause", NULL, Thr_getCause),
+    M("java/lang/NoSuchFieldException", "getCause", NULL, Thr_getCause),
+    M("java/io/IOException", "getCause", NULL, Thr_getCause),
+    M("java/io/FileNotFoundException", "getCause", NULL, Thr_getCause),
+    M("java/io/EOFException", "getCause", NULL, Thr_getCause),
+    M("java/net/SocketException", "getCause", NULL, Thr_getCause),
+    M("java/net/UnknownHostException", "getCause", NULL, Thr_getCause),
+    M("java/net/ConnectException", "getCause", NULL, Thr_getCause),
+    M("java/net/SocketTimeoutException", "getCause", NULL, Thr_getCause),
+    M("java/security/GeneralSecurityException", "getCause", NULL, Thr_getCause),
+    M("java/security/NoSuchAlgorithmException", "getCause", NULL, Thr_getCause),
+    M("java/security/InvalidKeyException", "getCause", NULL, Thr_getCause),
+    M("java/security/SignatureException", "getCause", NULL, Thr_getCause),
+    M("java/security/KeyStoreException", "getCause", NULL, Thr_getCause),
+    M("java/security/cert/CertificateException", "getCause", NULL, Thr_getCause),
+    M("javax/crypto/NoSuchPaddingException", "getCause", NULL, Thr_getCause),
+    M("javax/crypto/BadPaddingException", "getCause", NULL, Thr_getCause),
+    M("javax/crypto/IllegalBlockSizeException", "getCause", NULL, Thr_getCause),
+    M("java/text/ParseException", "getCause", NULL, Thr_getCause),
+    M("java/util/NoSuchElementException", "getCause", NULL, Thr_getCause),
+    M("java/util/concurrent/ExecutionException", "getCause", NULL, Thr_getCause),
+    M("java/util/concurrent/TimeoutException", "getCause", NULL, Thr_getCause),
+    M("java/lang/InterruptedException", "getCause", NULL, Thr_getCause),
+    M("java/lang/InstantiationException", "getCause", NULL, Thr_getCause),
+    M("java/lang/IllegalAccessException", "getCause", NULL, Thr_getCause),
+    M("java/lang/reflect/InvocationTargetException", "getCause", NULL, Thr_getCause),
+    M("java/lang/OutOfMemoryError", "getCause", NULL, Thr_getCause),
+    M("java/lang/StackOverflowError", "getCause", NULL, Thr_getCause),
+    M("java/lang/AssertionError", "getCause", NULL, Thr_getCause),
+    M("java/lang/SecurityException", "getCause", NULL, Thr_getCause),
+    M("java/lang/ArithmeticException", "getCause", NULL, Thr_getCause),
+    M("java/lang/ArrayStoreException", "getCause", NULL, Thr_getCause),
+    M("java/lang/NegativeArraySizeException", "getCause", NULL, Thr_getCause),
+    M("java/io/UnsupportedEncodingException", "getCause", NULL, Thr_getCause),
+    M("java/io/UTFDataFormatException", "getCause", NULL, Thr_getCause),
+    M("java/io/InterruptedIOException", "getCause", NULL, Thr_getCause),
+    M("java/io/StreamCorruptedException", "getCause", NULL, Thr_getCause),
+    M("java/io/ObjectStreamException", "getCause", NULL, Thr_getCause),
+    M("java/io/NotSerializableException", "getCause", NULL, Thr_getCause),
+    M("java/io/InvalidClassException", "getCause", NULL, Thr_getCause),
+    M("java/util/MissingResourceException", "getCause", NULL, Thr_getCause),
+    M("java/util/ConcurrentModificationException", "getCause", NULL, Thr_getCause),
+    M("java/util/EmptyStackException", "getCause", NULL, Thr_getCause),
+    M("java/util/UnknownFormatConversionException", "getCause", NULL, Thr_getCause),
+    M("java/nio/BufferOverflowException", "getCause", NULL, Thr_getCause),
+    M("java/nio/BufferUnderflowException", "getCause", NULL, Thr_getCause),
+    M("java/nio/InvalidMarkException", "getCause", NULL, Thr_getCause),
+    M("java/nio/ReadOnlyBufferException", "getCause", NULL, Thr_getCause),
+    M("java/sql/SQLException", "getCause", NULL, Thr_getCause),
+    M("java/util/zip/ZipException", "getCause", NULL, Thr_getCause),
+    M("java/util/concurrent/CancellationException", "getCause", NULL, Thr_getCause),
+    M("java/util/concurrent/RejectedExecutionException", "getCause", NULL, Thr_getCause),
+    M("java/lang/reflect/UndeclaredThrowableException", "getCause", NULL, Thr_getCause),
+    M("java/lang/CloneNotSupportedException", "getCause", NULL, Thr_getCause),
+    M("java/util/regex/PatternSyntaxException", "getCause", NULL, Thr_getCause),
+    M("javax/net/ssl/SSLException", "getCause", NULL, Thr_getCause),
+    M("java/security/KeyManagementException", "getCause", NULL, Thr_getCause),
+    M("java/security/cert/CertificateEncodingException", "getCause", NULL, Thr_getCause),
+    M("java/security/cert/CertificateParsingException", "getCause", NULL, Thr_getCause),
+    M("java/security/UnrecoverableKeyException", "getCause", NULL, Thr_getCause),
+    M("java/security/InvalidAlgorithmParameterException", "getCause", NULL, Thr_getCause),
+    M("java/security/NoSuchProviderException", "getCause", NULL, Thr_getCause),
+    M("java/security/spec/InvalidKeySpecException", "getCause", NULL, Thr_getCause),
+    M("java/security/DigestException", "getCause", NULL, Thr_getCause),
+    M("java/security/ProviderException", "getCause", NULL, Thr_getCause),
+    M("java/util/TooManyListenersException", "getCause", NULL, Thr_getCause),
+    M("org/json/JSONException", "getCause", NULL, Thr_getCause),
+    M("android/os/RemoteException", "getCause", NULL, Thr_getCause),
+    M("android/content/OperationApplicationException", "getCause", NULL, Thr_getCause),
+    M("android/os/TransactionTooLargeException", "getCause", NULL, Thr_getCause),
+    M("android/os/DeadObjectException", "getCause", NULL, Thr_getCause),
+    M("android/app/PendingIntent$CanceledException", "getCause", NULL, Thr_getCause),
+    M("android/util/AndroidRuntimeException", "getCause", NULL, Thr_getCause),
+    M("android/view/InflateException", "getCause", NULL, Thr_getCause),
+    M("android/database/SQLException", "getCause", NULL, Thr_getCause),
+    M("android/database/sqlite/SQLiteException", "getCause", NULL, Thr_getCause),
+    M("android/media/MediaCodec$CryptoException", "getCause", NULL, Thr_getCause),
+    M("android/os/BadParcelableException", "getCause", NULL, Thr_getCause),
+    M("java/lang/VerifyError", "getCause", NULL, Thr_getCause),
+    M("java/lang/UnsatisfiedLinkError", "getCause", NULL, Thr_getCause),
+    M("java/lang/ExceptionInInitializerError", "getCause", NULL, Thr_getCause),
+    M("java/lang/NoClassDefFoundError", "getCause", NULL, Thr_getCause),
+    M("java/lang/IncompatibleClassChangeError", "getCause", NULL, Thr_getCause),
+    M("java/lang/AbstractMethodError", "getCause", NULL, Thr_getCause),
+    M("java/lang/NoSuchMethodError", "getCause", NULL, Thr_getCause),
+    M("java/lang/NoSuchFieldError", "getCause", NULL, Thr_getCause),
+    M("java/lang/IllegalAccessError", "getCause", NULL, Thr_getCause),
+    M("java/lang/InstantiationError", "getCause", NULL, Thr_getCause),
+    M("java/lang/LinkageError", "getCause", NULL, Thr_getCause),
+    M("java/lang/VirtualMachineError", "getCause", NULL, Thr_getCause),
+    M("java/lang/InternalError", "getCause", NULL, Thr_getCause),
+    M("java/lang/ThreadDeath", "getCause", NULL, Thr_getCause),
+    M("java/lang/Throwable", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/lang/Exception", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/lang/RuntimeException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/lang/Error", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/lang/IllegalArgumentException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/lang/IllegalStateException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/lang/NullPointerException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/lang/IndexOutOfBoundsException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/lang/ArrayIndexOutOfBoundsException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/lang/StringIndexOutOfBoundsException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/lang/UnsupportedOperationException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/lang/NumberFormatException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/lang/ClassCastException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/lang/ClassNotFoundException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/lang/NoSuchMethodException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/lang/NoSuchFieldException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/io/IOException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/io/FileNotFoundException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/io/EOFException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/net/SocketException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/net/UnknownHostException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/net/ConnectException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/net/SocketTimeoutException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/security/GeneralSecurityException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/security/NoSuchAlgorithmException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/security/InvalidKeyException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/security/SignatureException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/security/KeyStoreException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/security/cert/CertificateException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("javax/crypto/NoSuchPaddingException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("javax/crypto/BadPaddingException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("javax/crypto/IllegalBlockSizeException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/text/ParseException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/util/NoSuchElementException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/util/concurrent/ExecutionException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/util/concurrent/TimeoutException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/lang/InterruptedException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/lang/InstantiationException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/lang/IllegalAccessException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/lang/reflect/InvocationTargetException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/lang/OutOfMemoryError", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/lang/StackOverflowError", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/lang/AssertionError", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/lang/SecurityException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/lang/ArithmeticException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/lang/ArrayStoreException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/lang/NegativeArraySizeException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/io/UnsupportedEncodingException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/io/UTFDataFormatException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/io/InterruptedIOException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/io/StreamCorruptedException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/io/ObjectStreamException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/io/NotSerializableException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/io/InvalidClassException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/util/MissingResourceException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/util/ConcurrentModificationException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/util/EmptyStackException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/util/UnknownFormatConversionException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/nio/BufferOverflowException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/nio/BufferUnderflowException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/nio/InvalidMarkException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/nio/ReadOnlyBufferException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/sql/SQLException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/util/zip/ZipException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/util/concurrent/CancellationException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/util/concurrent/RejectedExecutionException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/lang/reflect/UndeclaredThrowableException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/lang/CloneNotSupportedException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/util/regex/PatternSyntaxException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("javax/net/ssl/SSLException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/security/KeyManagementException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/security/cert/CertificateEncodingException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/security/cert/CertificateParsingException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/security/UnrecoverableKeyException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/security/InvalidAlgorithmParameterException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/security/NoSuchProviderException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/security/spec/InvalidKeySpecException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/security/DigestException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/security/ProviderException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/util/TooManyListenersException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("org/json/JSONException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("android/os/RemoteException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("android/content/OperationApplicationException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("android/os/TransactionTooLargeException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("android/os/DeadObjectException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("android/app/PendingIntent$CanceledException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("android/util/AndroidRuntimeException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("android/view/InflateException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("android/database/SQLException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("android/database/sqlite/SQLiteException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("android/media/MediaCodec$CryptoException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("android/os/BadParcelableException", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/lang/VerifyError", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/lang/UnsatisfiedLinkError", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/lang/ExceptionInInitializerError", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/lang/NoClassDefFoundError", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/lang/IncompatibleClassChangeError", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/lang/AbstractMethodError", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/lang/NoSuchMethodError", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/lang/NoSuchFieldError", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/lang/IllegalAccessError", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/lang/InstantiationError", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/lang/LinkageError", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/lang/VirtualMachineError", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/lang/InternalError", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/lang/ThreadDeath", "initCause", "(I)Ljava/lang/Object;", Thr_initCause),
+    M("java/lang/Throwable", "toString", NULL, Thr_toString),
+    M("java/lang/Exception", "toString", NULL, Thr_toString),
+    M("java/lang/RuntimeException", "toString", NULL, Thr_toString),
+    M("java/lang/Error", "toString", NULL, Thr_toString),
+    M("java/lang/IllegalArgumentException", "toString", NULL, Thr_toString),
+    M("java/lang/IllegalStateException", "toString", NULL, Thr_toString),
+    M("java/lang/NullPointerException", "toString", NULL, Thr_toString),
+    M("java/lang/IndexOutOfBoundsException", "toString", NULL, Thr_toString),
+    M("java/lang/ArrayIndexOutOfBoundsException", "toString", NULL, Thr_toString),
+    M("java/lang/StringIndexOutOfBoundsException", "toString", NULL, Thr_toString),
+    M("java/lang/UnsupportedOperationException", "toString", NULL, Thr_toString),
+    M("java/lang/NumberFormatException", "toString", NULL, Thr_toString),
+    M("java/lang/ClassCastException", "toString", NULL, Thr_toString),
+    M("java/lang/ClassNotFoundException", "toString", NULL, Thr_toString),
+    M("java/lang/NoSuchMethodException", "toString", NULL, Thr_toString),
+    M("java/lang/NoSuchFieldException", "toString", NULL, Thr_toString),
+    M("java/io/IOException", "toString", NULL, Thr_toString),
+    M("java/io/FileNotFoundException", "toString", NULL, Thr_toString),
+    M("java/io/EOFException", "toString", NULL, Thr_toString),
+    M("java/net/SocketException", "toString", NULL, Thr_toString),
+    M("java/net/UnknownHostException", "toString", NULL, Thr_toString),
+    M("java/net/ConnectException", "toString", NULL, Thr_toString),
+    M("java/net/SocketTimeoutException", "toString", NULL, Thr_toString),
+    M("java/security/GeneralSecurityException", "toString", NULL, Thr_toString),
+    M("java/security/NoSuchAlgorithmException", "toString", NULL, Thr_toString),
+    M("java/security/InvalidKeyException", "toString", NULL, Thr_toString),
+    M("java/security/SignatureException", "toString", NULL, Thr_toString),
+    M("java/security/KeyStoreException", "toString", NULL, Thr_toString),
+    M("java/security/cert/CertificateException", "toString", NULL, Thr_toString),
+    M("javax/crypto/NoSuchPaddingException", "toString", NULL, Thr_toString),
+    M("javax/crypto/BadPaddingException", "toString", NULL, Thr_toString),
+    M("javax/crypto/IllegalBlockSizeException", "toString", NULL, Thr_toString),
+    M("java/text/ParseException", "toString", NULL, Thr_toString),
+    M("java/util/NoSuchElementException", "toString", NULL, Thr_toString),
+    M("java/util/concurrent/ExecutionException", "toString", NULL, Thr_toString),
+    M("java/util/concurrent/TimeoutException", "toString", NULL, Thr_toString),
+    M("java/lang/InterruptedException", "toString", NULL, Thr_toString),
+    M("java/lang/InstantiationException", "toString", NULL, Thr_toString),
+    M("java/lang/IllegalAccessException", "toString", NULL, Thr_toString),
+    M("java/lang/reflect/InvocationTargetException", "toString", NULL, Thr_toString),
+    M("java/lang/OutOfMemoryError", "toString", NULL, Thr_toString),
+    M("java/lang/StackOverflowError", "toString", NULL, Thr_toString),
+    M("java/lang/AssertionError", "toString", NULL, Thr_toString),
+    M("java/lang/SecurityException", "toString", NULL, Thr_toString),
+    M("java/lang/ArithmeticException", "toString", NULL, Thr_toString),
+    M("java/lang/ArrayStoreException", "toString", NULL, Thr_toString),
+    M("java/lang/NegativeArraySizeException", "toString", NULL, Thr_toString),
+    M("java/io/UnsupportedEncodingException", "toString", NULL, Thr_toString),
+    M("java/io/UTFDataFormatException", "toString", NULL, Thr_toString),
+    M("java/io/InterruptedIOException", "toString", NULL, Thr_toString),
+    M("java/io/StreamCorruptedException", "toString", NULL, Thr_toString),
+    M("java/io/ObjectStreamException", "toString", NULL, Thr_toString),
+    M("java/io/NotSerializableException", "toString", NULL, Thr_toString),
+    M("java/io/InvalidClassException", "toString", NULL, Thr_toString),
+    M("java/util/MissingResourceException", "toString", NULL, Thr_toString),
+    M("java/util/ConcurrentModificationException", "toString", NULL, Thr_toString),
+    M("java/util/EmptyStackException", "toString", NULL, Thr_toString),
+    M("java/util/UnknownFormatConversionException", "toString", NULL, Thr_toString),
+    M("java/nio/BufferOverflowException", "toString", NULL, Thr_toString),
+    M("java/nio/BufferUnderflowException", "toString", NULL, Thr_toString),
+    M("java/nio/InvalidMarkException", "toString", NULL, Thr_toString),
+    M("java/nio/ReadOnlyBufferException", "toString", NULL, Thr_toString),
+    M("java/sql/SQLException", "toString", NULL, Thr_toString),
+    M("java/util/zip/ZipException", "toString", NULL, Thr_toString),
+    M("java/util/concurrent/CancellationException", "toString", NULL, Thr_toString),
+    M("java/util/concurrent/RejectedExecutionException", "toString", NULL, Thr_toString),
+    M("java/lang/reflect/UndeclaredThrowableException", "toString", NULL, Thr_toString),
+    M("java/lang/CloneNotSupportedException", "toString", NULL, Thr_toString),
+    M("java/util/regex/PatternSyntaxException", "toString", NULL, Thr_toString),
+    M("javax/net/ssl/SSLException", "toString", NULL, Thr_toString),
+    M("java/security/KeyManagementException", "toString", NULL, Thr_toString),
+    M("java/security/cert/CertificateEncodingException", "toString", NULL, Thr_toString),
+    M("java/security/cert/CertificateParsingException", "toString", NULL, Thr_toString),
+    M("java/security/UnrecoverableKeyException", "toString", NULL, Thr_toString),
+    M("java/security/InvalidAlgorithmParameterException", "toString", NULL, Thr_toString),
+    M("java/security/NoSuchProviderException", "toString", NULL, Thr_toString),
+    M("java/security/spec/InvalidKeySpecException", "toString", NULL, Thr_toString),
+    M("java/security/DigestException", "toString", NULL, Thr_toString),
+    M("java/security/ProviderException", "toString", NULL, Thr_toString),
+    M("java/util/TooManyListenersException", "toString", NULL, Thr_toString),
+    M("org/json/JSONException", "toString", NULL, Thr_toString),
+    M("android/os/RemoteException", "toString", NULL, Thr_toString),
+    M("android/content/OperationApplicationException", "toString", NULL, Thr_toString),
+    M("android/os/TransactionTooLargeException", "toString", NULL, Thr_toString),
+    M("android/os/DeadObjectException", "toString", NULL, Thr_toString),
+    M("android/app/PendingIntent$CanceledException", "toString", NULL, Thr_toString),
+    M("android/util/AndroidRuntimeException", "toString", NULL, Thr_toString),
+    M("android/view/InflateException", "toString", NULL, Thr_toString),
+    M("android/database/SQLException", "toString", NULL, Thr_toString),
+    M("android/database/sqlite/SQLiteException", "toString", NULL, Thr_toString),
+    M("android/media/MediaCodec$CryptoException", "toString", NULL, Thr_toString),
+    M("android/os/BadParcelableException", "toString", NULL, Thr_toString),
+    M("java/lang/VerifyError", "toString", NULL, Thr_toString),
+    M("java/lang/UnsatisfiedLinkError", "toString", NULL, Thr_toString),
+    M("java/lang/ExceptionInInitializerError", "toString", NULL, Thr_toString),
+    M("java/lang/NoClassDefFoundError", "toString", NULL, Thr_toString),
+    M("java/lang/IncompatibleClassChangeError", "toString", NULL, Thr_toString),
+    M("java/lang/AbstractMethodError", "toString", NULL, Thr_toString),
+    M("java/lang/NoSuchMethodError", "toString", NULL, Thr_toString),
+    M("java/lang/NoSuchFieldError", "toString", NULL, Thr_toString),
+    M("java/lang/IllegalAccessError", "toString", NULL, Thr_toString),
+    M("java/lang/InstantiationError", "toString", NULL, Thr_toString),
+    M("java/lang/LinkageError", "toString", NULL, Thr_toString),
+    M("java/lang/VirtualMachineError", "toString", NULL, Thr_toString),
+    M("java/lang/InternalError", "toString", NULL, Thr_toString),
+    M("java/lang/ThreadDeath", "toString", NULL, Thr_toString),
+    M("java/lang/Throwable", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/lang/Exception", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/lang/RuntimeException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/lang/Error", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/lang/IllegalArgumentException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/lang/IllegalStateException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/lang/NullPointerException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/lang/IndexOutOfBoundsException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/lang/ArrayIndexOutOfBoundsException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/lang/StringIndexOutOfBoundsException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/lang/UnsupportedOperationException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/lang/NumberFormatException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/lang/ClassCastException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/lang/ClassNotFoundException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/lang/NoSuchMethodException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/lang/NoSuchFieldException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/io/IOException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/io/FileNotFoundException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/io/EOFException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/net/SocketException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/net/UnknownHostException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/net/ConnectException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/net/SocketTimeoutException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/security/GeneralSecurityException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/security/NoSuchAlgorithmException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/security/InvalidKeyException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/security/SignatureException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/security/KeyStoreException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/security/cert/CertificateException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("javax/crypto/NoSuchPaddingException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("javax/crypto/BadPaddingException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("javax/crypto/IllegalBlockSizeException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/text/ParseException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/util/NoSuchElementException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/util/concurrent/ExecutionException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/util/concurrent/TimeoutException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/lang/InterruptedException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/lang/InstantiationException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/lang/IllegalAccessException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/lang/reflect/InvocationTargetException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/lang/OutOfMemoryError", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/lang/StackOverflowError", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/lang/AssertionError", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/lang/SecurityException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/lang/ArithmeticException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/lang/ArrayStoreException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/lang/NegativeArraySizeException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/io/UnsupportedEncodingException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/io/UTFDataFormatException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/io/InterruptedIOException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/io/StreamCorruptedException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/io/ObjectStreamException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/io/NotSerializableException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/io/InvalidClassException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/util/MissingResourceException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/util/ConcurrentModificationException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/util/EmptyStackException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/util/UnknownFormatConversionException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/nio/BufferOverflowException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/nio/BufferUnderflowException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/nio/InvalidMarkException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/nio/ReadOnlyBufferException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/sql/SQLException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/util/zip/ZipException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/util/concurrent/CancellationException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/util/concurrent/RejectedExecutionException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/lang/reflect/UndeclaredThrowableException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/lang/CloneNotSupportedException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/util/regex/PatternSyntaxException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("javax/net/ssl/SSLException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/security/KeyManagementException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/security/cert/CertificateEncodingException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/security/cert/CertificateParsingException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/security/UnrecoverableKeyException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/security/InvalidAlgorithmParameterException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/security/NoSuchProviderException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/security/spec/InvalidKeySpecException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/security/DigestException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/security/ProviderException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/util/TooManyListenersException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("org/json/JSONException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("android/os/RemoteException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("android/content/OperationApplicationException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("android/os/TransactionTooLargeException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("android/os/DeadObjectException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("android/app/PendingIntent$CanceledException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("android/util/AndroidRuntimeException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("android/view/InflateException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("android/database/SQLException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("android/database/sqlite/SQLiteException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("android/media/MediaCodec$CryptoException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("android/os/BadParcelableException", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/lang/VerifyError", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/lang/UnsatisfiedLinkError", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/lang/ExceptionInInitializerError", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/lang/NoClassDefFoundError", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/lang/IncompatibleClassChangeError", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/lang/AbstractMethodError", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/lang/NoSuchMethodError", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/lang/NoSuchFieldError", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/lang/IllegalAccessError", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/lang/InstantiationError", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/lang/LinkageError", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/lang/VirtualMachineError", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/lang/InternalError", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/lang/ThreadDeath", "printStackTrace", "()V", Thr_printStackTrace),
+    M("java/lang/Throwable", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/lang/Exception", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/lang/RuntimeException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/lang/Error", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/lang/IllegalArgumentException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/lang/IllegalStateException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/lang/NullPointerException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/lang/IndexOutOfBoundsException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/lang/ArrayIndexOutOfBoundsException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/lang/StringIndexOutOfBoundsException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/lang/UnsupportedOperationException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/lang/NumberFormatException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/lang/ClassCastException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/lang/ClassNotFoundException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/lang/NoSuchMethodException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/lang/NoSuchFieldException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/io/IOException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/io/FileNotFoundException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/io/EOFException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/net/SocketException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/net/UnknownHostException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/net/ConnectException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/net/SocketTimeoutException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/security/GeneralSecurityException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/security/NoSuchAlgorithmException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/security/InvalidKeyException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/security/SignatureException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/security/KeyStoreException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/security/cert/CertificateException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("javax/crypto/NoSuchPaddingException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("javax/crypto/BadPaddingException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("javax/crypto/IllegalBlockSizeException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/text/ParseException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/util/NoSuchElementException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/util/concurrent/ExecutionException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/util/concurrent/TimeoutException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/lang/InterruptedException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/lang/InstantiationException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/lang/IllegalAccessException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/lang/reflect/InvocationTargetException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/lang/OutOfMemoryError", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/lang/StackOverflowError", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/lang/AssertionError", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/lang/SecurityException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/lang/ArithmeticException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/lang/ArrayStoreException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/lang/NegativeArraySizeException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/io/UnsupportedEncodingException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/io/UTFDataFormatException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/io/InterruptedIOException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/io/StreamCorruptedException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/io/ObjectStreamException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/io/NotSerializableException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/io/InvalidClassException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/util/MissingResourceException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/util/ConcurrentModificationException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/util/EmptyStackException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/util/UnknownFormatConversionException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/nio/BufferOverflowException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/nio/BufferUnderflowException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/nio/InvalidMarkException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/nio/ReadOnlyBufferException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/sql/SQLException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/util/zip/ZipException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/util/concurrent/CancellationException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/util/concurrent/RejectedExecutionException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/lang/reflect/UndeclaredThrowableException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/lang/CloneNotSupportedException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/util/regex/PatternSyntaxException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("javax/net/ssl/SSLException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/security/KeyManagementException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/security/cert/CertificateEncodingException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/security/cert/CertificateParsingException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/security/UnrecoverableKeyException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/security/InvalidAlgorithmParameterException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/security/NoSuchProviderException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/security/spec/InvalidKeySpecException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/security/DigestException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/security/ProviderException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/util/TooManyListenersException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("org/json/JSONException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("android/os/RemoteException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("android/content/OperationApplicationException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("android/os/TransactionTooLargeException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("android/os/DeadObjectException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("android/app/PendingIntent$CanceledException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("android/util/AndroidRuntimeException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("android/view/InflateException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("android/database/SQLException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("android/database/sqlite/SQLiteException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("android/media/MediaCodec$CryptoException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("android/os/BadParcelableException", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/lang/VerifyError", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/lang/UnsatisfiedLinkError", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/lang/ExceptionInInitializerError", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/lang/NoClassDefFoundError", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/lang/IncompatibleClassChangeError", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/lang/AbstractMethodError", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/lang/NoSuchMethodError", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/lang/NoSuchFieldError", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/lang/IllegalAccessError", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/lang/InstantiationError", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/lang/LinkageError", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/lang/VirtualMachineError", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/lang/InternalError", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/lang/ThreadDeath", "printStackTrace", "(Ljava/lang/Object;)V", Thr_printStackTrace_ps),
+    M("java/lang/Throwable", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/lang/Exception", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/lang/RuntimeException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/lang/Error", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/lang/IllegalArgumentException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/lang/IllegalStateException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/lang/NullPointerException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/lang/IndexOutOfBoundsException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/lang/ArrayIndexOutOfBoundsException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/lang/StringIndexOutOfBoundsException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/lang/UnsupportedOperationException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/lang/NumberFormatException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/lang/ClassCastException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/lang/ClassNotFoundException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/lang/NoSuchMethodException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/lang/NoSuchFieldException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/io/IOException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/io/FileNotFoundException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/io/EOFException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/net/SocketException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/net/UnknownHostException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/net/ConnectException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/net/SocketTimeoutException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/security/GeneralSecurityException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/security/NoSuchAlgorithmException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/security/InvalidKeyException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/security/SignatureException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/security/KeyStoreException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/security/cert/CertificateException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("javax/crypto/NoSuchPaddingException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("javax/crypto/BadPaddingException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("javax/crypto/IllegalBlockSizeException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/text/ParseException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/util/NoSuchElementException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/util/concurrent/ExecutionException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/util/concurrent/TimeoutException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/lang/InterruptedException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/lang/InstantiationException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/lang/IllegalAccessException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/lang/reflect/InvocationTargetException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/lang/OutOfMemoryError", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/lang/StackOverflowError", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/lang/AssertionError", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/lang/SecurityException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/lang/ArithmeticException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/lang/ArrayStoreException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/lang/NegativeArraySizeException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/io/UnsupportedEncodingException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/io/UTFDataFormatException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/io/InterruptedIOException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/io/StreamCorruptedException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/io/ObjectStreamException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/io/NotSerializableException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/io/InvalidClassException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/util/MissingResourceException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/util/ConcurrentModificationException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/util/EmptyStackException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/util/UnknownFormatConversionException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/nio/BufferOverflowException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/nio/BufferUnderflowException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/nio/InvalidMarkException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/nio/ReadOnlyBufferException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/sql/SQLException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/util/zip/ZipException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/util/concurrent/CancellationException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/util/concurrent/RejectedExecutionException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/lang/reflect/UndeclaredThrowableException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/lang/CloneNotSupportedException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/util/regex/PatternSyntaxException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("javax/net/ssl/SSLException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/security/KeyManagementException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/security/cert/CertificateEncodingException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/security/cert/CertificateParsingException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/security/UnrecoverableKeyException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/security/InvalidAlgorithmParameterException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/security/NoSuchProviderException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/security/spec/InvalidKeySpecException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/security/DigestException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/security/ProviderException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/util/TooManyListenersException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("org/json/JSONException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("android/os/RemoteException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("android/content/OperationApplicationException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("android/os/TransactionTooLargeException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("android/os/DeadObjectException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("android/app/PendingIntent$CanceledException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("android/util/AndroidRuntimeException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("android/view/InflateException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("android/database/SQLException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("android/database/sqlite/SQLiteException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("android/media/MediaCodec$CryptoException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("android/os/BadParcelableException", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/lang/VerifyError", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/lang/UnsatisfiedLinkError", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/lang/ExceptionInInitializerError", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/lang/NoClassDefFoundError", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/lang/IncompatibleClassChangeError", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/lang/AbstractMethodError", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/lang/NoSuchMethodError", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/lang/NoSuchFieldError", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/lang/IllegalAccessError", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/lang/InstantiationError", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/lang/LinkageError", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/lang/VirtualMachineError", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/lang/InternalError", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/lang/ThreadDeath", "getStackTrace", NULL, Thr_getStackTrace),
+    M("java/lang/Throwable", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/lang/Exception", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/lang/RuntimeException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/lang/Error", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/lang/IllegalArgumentException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/lang/IllegalStateException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/lang/NullPointerException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/lang/IndexOutOfBoundsException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/lang/ArrayIndexOutOfBoundsException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/lang/StringIndexOutOfBoundsException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/lang/UnsupportedOperationException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/lang/NumberFormatException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/lang/ClassCastException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/lang/ClassNotFoundException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/lang/NoSuchMethodException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/lang/NoSuchFieldException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/io/IOException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/io/FileNotFoundException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/io/EOFException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/net/SocketException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/net/UnknownHostException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/net/ConnectException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/net/SocketTimeoutException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/security/GeneralSecurityException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/security/NoSuchAlgorithmException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/security/InvalidKeyException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/security/SignatureException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/security/KeyStoreException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/security/cert/CertificateException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("javax/crypto/NoSuchPaddingException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("javax/crypto/BadPaddingException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("javax/crypto/IllegalBlockSizeException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/text/ParseException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/util/NoSuchElementException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/util/concurrent/ExecutionException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/util/concurrent/TimeoutException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/lang/InterruptedException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/lang/InstantiationException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/lang/IllegalAccessException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/lang/reflect/InvocationTargetException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/lang/OutOfMemoryError", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/lang/StackOverflowError", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/lang/AssertionError", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/lang/SecurityException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/lang/ArithmeticException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/lang/ArrayStoreException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/lang/NegativeArraySizeException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/io/UnsupportedEncodingException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/io/UTFDataFormatException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/io/InterruptedIOException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/io/StreamCorruptedException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/io/ObjectStreamException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/io/NotSerializableException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/io/InvalidClassException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/util/MissingResourceException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/util/ConcurrentModificationException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/util/EmptyStackException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/util/UnknownFormatConversionException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/nio/BufferOverflowException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/nio/BufferUnderflowException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/nio/InvalidMarkException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/nio/ReadOnlyBufferException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/sql/SQLException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/util/zip/ZipException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/util/concurrent/CancellationException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/util/concurrent/RejectedExecutionException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/lang/reflect/UndeclaredThrowableException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/lang/CloneNotSupportedException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/util/regex/PatternSyntaxException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("javax/net/ssl/SSLException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/security/KeyManagementException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/security/cert/CertificateEncodingException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/security/cert/CertificateParsingException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/security/UnrecoverableKeyException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/security/InvalidAlgorithmParameterException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/security/NoSuchProviderException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/security/spec/InvalidKeySpecException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/security/DigestException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/security/ProviderException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/util/TooManyListenersException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("org/json/JSONException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("android/os/RemoteException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("android/content/OperationApplicationException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("android/os/TransactionTooLargeException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("android/os/DeadObjectException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("android/app/PendingIntent$CanceledException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("android/util/AndroidRuntimeException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("android/view/InflateException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("android/database/SQLException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("android/database/sqlite/SQLiteException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("android/media/MediaCodec$CryptoException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("android/os/BadParcelableException", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/lang/VerifyError", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/lang/UnsatisfiedLinkError", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/lang/ExceptionInInitializerError", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/lang/NoClassDefFoundError", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/lang/IncompatibleClassChangeError", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/lang/AbstractMethodError", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/lang/NoSuchMethodError", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/lang/NoSuchFieldError", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/lang/IllegalAccessError", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/lang/InstantiationError", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/lang/LinkageError", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/lang/VirtualMachineError", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/lang/InternalError", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/lang/ThreadDeath", "setStackTrace", "(I)V", Thr_setStackTrace),
+    M("java/lang/Throwable", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/lang/Exception", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/lang/RuntimeException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/lang/Error", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/lang/IllegalArgumentException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/lang/IllegalStateException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/lang/NullPointerException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/lang/IndexOutOfBoundsException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/lang/ArrayIndexOutOfBoundsException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/lang/StringIndexOutOfBoundsException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/lang/UnsupportedOperationException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/lang/NumberFormatException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/lang/ClassCastException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/lang/ClassNotFoundException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/lang/NoSuchMethodException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/lang/NoSuchFieldException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/io/IOException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/io/FileNotFoundException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/io/EOFException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/net/SocketException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/net/UnknownHostException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/net/ConnectException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/net/SocketTimeoutException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/security/GeneralSecurityException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/security/NoSuchAlgorithmException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/security/InvalidKeyException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/security/SignatureException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/security/KeyStoreException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/security/cert/CertificateException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("javax/crypto/NoSuchPaddingException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("javax/crypto/BadPaddingException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("javax/crypto/IllegalBlockSizeException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/text/ParseException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/util/NoSuchElementException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/util/concurrent/ExecutionException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/util/concurrent/TimeoutException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/lang/InterruptedException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/lang/InstantiationException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/lang/IllegalAccessException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/lang/reflect/InvocationTargetException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/lang/OutOfMemoryError", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/lang/StackOverflowError", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/lang/AssertionError", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/lang/SecurityException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/lang/ArithmeticException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/lang/ArrayStoreException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/lang/NegativeArraySizeException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/io/UnsupportedEncodingException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/io/UTFDataFormatException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/io/InterruptedIOException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/io/StreamCorruptedException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/io/ObjectStreamException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/io/NotSerializableException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/io/InvalidClassException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/util/MissingResourceException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/util/ConcurrentModificationException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/util/EmptyStackException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/util/UnknownFormatConversionException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/nio/BufferOverflowException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/nio/BufferUnderflowException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/nio/InvalidMarkException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/nio/ReadOnlyBufferException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/sql/SQLException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/util/zip/ZipException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/util/concurrent/CancellationException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/util/concurrent/RejectedExecutionException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/lang/reflect/UndeclaredThrowableException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/lang/CloneNotSupportedException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/util/regex/PatternSyntaxException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("javax/net/ssl/SSLException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/security/KeyManagementException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/security/cert/CertificateEncodingException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/security/cert/CertificateParsingException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/security/UnrecoverableKeyException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/security/InvalidAlgorithmParameterException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/security/NoSuchProviderException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/security/spec/InvalidKeySpecException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/security/DigestException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/security/ProviderException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/util/TooManyListenersException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("org/json/JSONException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("android/os/RemoteException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("android/content/OperationApplicationException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("android/os/TransactionTooLargeException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("android/os/DeadObjectException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("android/app/PendingIntent$CanceledException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("android/util/AndroidRuntimeException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("android/view/InflateException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("android/database/SQLException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("android/database/sqlite/SQLiteException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("android/media/MediaCodec$CryptoException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("android/os/BadParcelableException", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/lang/VerifyError", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/lang/UnsatisfiedLinkError", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/lang/ExceptionInInitializerError", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/lang/NoClassDefFoundError", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/lang/IncompatibleClassChangeError", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/lang/AbstractMethodError", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/lang/NoSuchMethodError", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/lang/NoSuchFieldError", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/lang/IllegalAccessError", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/lang/InstantiationError", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/lang/LinkageError", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/lang/VirtualMachineError", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/lang/InternalError", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/lang/ThreadDeath", "fillInStackTrace", NULL, Thr_fillInStackTrace),
+    M("java/lang/Throwable", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/lang/Exception", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/lang/RuntimeException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/lang/Error", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/lang/IllegalArgumentException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/lang/IllegalStateException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/lang/NullPointerException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/lang/IndexOutOfBoundsException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/lang/ArrayIndexOutOfBoundsException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/lang/StringIndexOutOfBoundsException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/lang/UnsupportedOperationException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/lang/NumberFormatException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/lang/ClassCastException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/lang/ClassNotFoundException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/lang/NoSuchMethodException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/lang/NoSuchFieldException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/io/IOException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/io/FileNotFoundException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/io/EOFException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/net/SocketException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/net/UnknownHostException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/net/ConnectException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/net/SocketTimeoutException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/security/GeneralSecurityException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/security/NoSuchAlgorithmException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/security/InvalidKeyException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/security/SignatureException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/security/KeyStoreException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/security/cert/CertificateException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("javax/crypto/NoSuchPaddingException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("javax/crypto/BadPaddingException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("javax/crypto/IllegalBlockSizeException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/text/ParseException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/util/NoSuchElementException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/util/concurrent/ExecutionException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/util/concurrent/TimeoutException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/lang/InterruptedException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/lang/InstantiationException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/lang/IllegalAccessException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/lang/reflect/InvocationTargetException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/lang/OutOfMemoryError", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/lang/StackOverflowError", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/lang/AssertionError", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/lang/SecurityException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/lang/ArithmeticException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/lang/ArrayStoreException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/lang/NegativeArraySizeException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/io/UnsupportedEncodingException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/io/UTFDataFormatException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/io/InterruptedIOException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/io/StreamCorruptedException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/io/ObjectStreamException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/io/NotSerializableException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/io/InvalidClassException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/util/MissingResourceException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/util/ConcurrentModificationException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/util/EmptyStackException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/util/UnknownFormatConversionException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/nio/BufferOverflowException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/nio/BufferUnderflowException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/nio/InvalidMarkException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/nio/ReadOnlyBufferException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/sql/SQLException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/util/zip/ZipException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/util/concurrent/CancellationException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/util/concurrent/RejectedExecutionException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/lang/reflect/UndeclaredThrowableException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/lang/CloneNotSupportedException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/util/regex/PatternSyntaxException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("javax/net/ssl/SSLException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/security/KeyManagementException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/security/cert/CertificateEncodingException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/security/cert/CertificateParsingException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/security/UnrecoverableKeyException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/security/InvalidAlgorithmParameterException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/security/NoSuchProviderException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/security/spec/InvalidKeySpecException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/security/DigestException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/security/ProviderException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/util/TooManyListenersException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("org/json/JSONException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("android/os/RemoteException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("android/content/OperationApplicationException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("android/os/TransactionTooLargeException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("android/os/DeadObjectException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("android/app/PendingIntent$CanceledException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("android/util/AndroidRuntimeException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("android/view/InflateException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("android/database/SQLException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("android/database/sqlite/SQLiteException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("android/media/MediaCodec$CryptoException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("android/os/BadParcelableException", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/lang/VerifyError", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/lang/UnsatisfiedLinkError", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/lang/ExceptionInInitializerError", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/lang/NoClassDefFoundError", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/lang/IncompatibleClassChangeError", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/lang/AbstractMethodError", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/lang/NoSuchMethodError", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/lang/NoSuchFieldError", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/lang/IllegalAccessError", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/lang/InstantiationError", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/lang/LinkageError", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/lang/VirtualMachineError", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/lang/InternalError", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/lang/ThreadDeath", "addSuppressed", NULL, Thr_addSuppressed),
+    M("java/lang/Throwable", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/lang/Exception", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/lang/RuntimeException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/lang/Error", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/lang/IllegalArgumentException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/lang/IllegalStateException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/lang/NullPointerException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/lang/IndexOutOfBoundsException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/lang/ArrayIndexOutOfBoundsException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/lang/StringIndexOutOfBoundsException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/lang/UnsupportedOperationException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/lang/NumberFormatException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/lang/ClassCastException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/lang/ClassNotFoundException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/lang/NoSuchMethodException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/lang/NoSuchFieldException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/io/IOException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/io/FileNotFoundException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/io/EOFException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/net/SocketException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/net/UnknownHostException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/net/ConnectException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/net/SocketTimeoutException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/security/GeneralSecurityException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/security/NoSuchAlgorithmException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/security/InvalidKeyException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/security/SignatureException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/security/KeyStoreException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/security/cert/CertificateException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("javax/crypto/NoSuchPaddingException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("javax/crypto/BadPaddingException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("javax/crypto/IllegalBlockSizeException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/text/ParseException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/util/NoSuchElementException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/util/concurrent/ExecutionException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/util/concurrent/TimeoutException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/lang/InterruptedException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/lang/InstantiationException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/lang/IllegalAccessException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/lang/reflect/InvocationTargetException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/lang/OutOfMemoryError", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/lang/StackOverflowError", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/lang/AssertionError", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/lang/SecurityException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/lang/ArithmeticException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/lang/ArrayStoreException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/lang/NegativeArraySizeException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/io/UnsupportedEncodingException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/io/UTFDataFormatException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/io/InterruptedIOException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/io/StreamCorruptedException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/io/ObjectStreamException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/io/NotSerializableException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/io/InvalidClassException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/util/MissingResourceException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/util/ConcurrentModificationException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/util/EmptyStackException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/util/UnknownFormatConversionException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/nio/BufferOverflowException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/nio/BufferUnderflowException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/nio/InvalidMarkException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/nio/ReadOnlyBufferException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/sql/SQLException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/util/zip/ZipException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/util/concurrent/CancellationException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/util/concurrent/RejectedExecutionException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/lang/reflect/UndeclaredThrowableException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/lang/CloneNotSupportedException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/util/regex/PatternSyntaxException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("javax/net/ssl/SSLException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/security/KeyManagementException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/security/cert/CertificateEncodingException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/security/cert/CertificateParsingException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/security/UnrecoverableKeyException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/security/InvalidAlgorithmParameterException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/security/NoSuchProviderException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/security/spec/InvalidKeySpecException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/security/DigestException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/security/ProviderException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/util/TooManyListenersException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("org/json/JSONException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("android/os/RemoteException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("android/content/OperationApplicationException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("android/os/TransactionTooLargeException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("android/os/DeadObjectException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("android/app/PendingIntent$CanceledException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("android/util/AndroidRuntimeException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("android/view/InflateException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("android/database/SQLException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("android/database/sqlite/SQLiteException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("android/media/MediaCodec$CryptoException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("android/os/BadParcelableException", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/lang/VerifyError", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/lang/UnsatisfiedLinkError", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/lang/ExceptionInInitializerError", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/lang/NoClassDefFoundError", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/lang/IncompatibleClassChangeError", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/lang/AbstractMethodError", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/lang/NoSuchMethodError", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/lang/NoSuchFieldError", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/lang/IllegalAccessError", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/lang/InstantiationError", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/lang/LinkageError", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/lang/VirtualMachineError", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/lang/InternalError", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/lang/ThreadDeath", "getSuppressed", NULL, Thr_getSuppressed),
+    M("java/lang/StackTraceElement", "<init>", "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;I)V", STE_init),
+    M("java/lang/StackTraceElement", "getClassName", NULL, STE_getClassName),
+    M("java/lang/StackTraceElement", "getMethodName", NULL, STE_getMethodName),
+    M("java/lang/StackTraceElement", "getFileName", NULL, STE_getFileName),
+    M("java/lang/StackTraceElement", "getLineNumber", NULL, STE_getLineNumber),
+    M("java/lang/StackTraceElement", "isNativeMethod", NULL, STE_isNativeMethod),
+    M("java/lang/StackTraceElement", "toString", NULL, STE_toString),
+    M("java/lang/Enum", "name", NULL, Enum_name),
+    M("java/lang/Enum", "ordinal", NULL, Enum_ordinal),
+    M("java/lang/Enum", "toString", NULL, Enum_toString),
+    M("java/lang/Enum", "equals", "(Ljava/lang/Object;)Z", Enum_equals),
+    M("java/lang/Enum", "hashCode", NULL, Enum_hashCode),
+    M("java/lang/Enum", "compareTo", "(Ljava/lang/Object;)I", Enum_compareTo),
+    M("java/lang/Enum", "getDeclaringClass", NULL, Enum_getDeclaringClass),
+    M("java/lang/Enum", "valueOf", "(Ljava/lang/Object;Ljava/lang/Object;)V", Enum_valueOf),
+    M("java/lang/Enum", "clone", NULL, Enum_clone),
+    M("java/lang/Runtime", "getRuntime", NULL, Runtime_getRuntime),
+    M("java/lang/Runtime", "availableProcessors", NULL, Runtime_availableProcessors),
+    M("java/lang/Runtime", "freeMemory", NULL, Runtime_freeMemory),
+    M("java/lang/Runtime", "totalMemory", NULL, Runtime_totalMemory),
+    M("java/lang/Runtime", "maxMemory", NULL, Runtime_maxMemory),
+    M("java/lang/Runtime", "gc", NULL, Runtime_gc),
+    M("java/lang/Runtime", "runFinalization", NULL, Runtime_runFinalization),
+    M("java/lang/Runtime", "exit", "(I)V", Runtime_exit),
+    M("java/lang/Runtime", "halt", NULL, Runtime_halt),
+    M("java/lang/Runtime", "load", "(I)V", Runtime_load),
+    M("java/lang/Runtime", "loadLibrary", "(I)V", Runtime_loadLibrary),
+    M("java/lang/Runtime", "exec", NULL, Runtime_exec),
+    M("java/lang/Runtime", "addShutdownHook", NULL, Runtime_addShutdownHook),
+    M("java/lang/Runtime", "removeShutdownHook", NULL, Runtime_removeShutdownHook),
+    M("java/lang/Runtime", "version", NULL, Runtime_version),
+    M("java/lang/Runtime", "traceInstructions", NULL, Runtime_traceInstructions),
+    M("java/lang/Runtime", "traceMethodCalls", NULL, Runtime_traceMethodCalls),
+    M("java/lang/Process", "destroy", NULL, Proc_destroy),
+    M("java/lang/Process", "destroyForcibly", NULL, Proc_destroyForcibly),
+    M("java/lang/Process", "waitFor", NULL, Proc_waitFor),
+    M("java/lang/Process", "exitValue", NULL, Proc_exitValue),
+    M("java/lang/Process", "isAlive", NULL, Proc_isAlive),
+    M("java/lang/Process", "pid", NULL, Proc_pid),
+    M("java/lang/Process", "inputStream", NULL, Proc_inputStream),
+    M("java/lang/Process", "errorStream", NULL, Proc_errorStream),
+    M("java/lang/Process", "outputStream", NULL, Proc_outputStream),
+    M("java/lang/Process", "descendants", NULL, Proc_descendants),
+    M("java/lang/Process", "children", NULL, Proc_children),
+    M("java/lang/Process", "info", NULL, Proc_info),
+    M("java/lang/Process", "toHandle", NULL, Proc_toHandle),
+    M("java/lang/Process", "onExit", NULL, Proc_onExit),
+    M("java/lang/Process", "supportsNormalTermination", NULL, Proc_supportsNormalTermination),
+    M("java/lang/ProcessBuilder", "<init>", NULL, ProcBuilder_init),
+    M("java/lang/ProcessBuilder", "start", NULL, ProcBuilder_start),
+    M("java/lang/ProcessBuilder", "command", NULL, ProcBuilder_command),
+    M("java/lang/ProcessBuilder", "env", NULL, ProcBuilder_env),
+    M("java/lang/ProcessBuilder", "self", NULL, ProcBuilder_self),
+    M("java/lang/Thread", "<init>", "()V", Thread_init),
+    M("java/lang/Thread", "<init>", "(I)V", Thread_init_r),
+    M("java/lang/Thread", "<init>", "(Ljava/lang/Object;)V", Thread_init_s),
+    M("java/lang/Thread", "<init>", "(ILjava/lang/Object;)V", Thread_init_rs),
+    M("java/lang/Thread", "start", NULL, Thread_start),
+    M("java/lang/Thread", "run", NULL, Thread_run),
+    M("java/lang/Thread", "currentThread", NULL, Thread_currentThread),
+    M("java/lang/Thread", "getName", NULL, Thread_getName),
+    M("java/lang/Thread", "setName", "(Ljava/lang/Object;)V", Thread_setName),
+    M("java/lang/Thread", "getId", NULL, Thread_getId),
+    M("java/lang/Thread", "isAlive", NULL, Thread_isAlive),
+    M("java/lang/Thread", "isDaemon", NULL, Thread_isDaemon),
+    M("java/lang/Thread", "setDaemon", "(Z)V", Thread_setDaemon),
+    M("java/lang/Thread", "getPriority", NULL, Thread_getPriority),
+    M("java/lang/Thread", "setPriority", "(I)V", Thread_setPriority),
+    M("java/lang/Thread", "getState", NULL, Thread_getState),
+    M("java/lang/Thread", "isInterrupted", NULL, Thread_isInterrupted),
+    M("java/lang/Thread", "interrupt", NULL, Thread_interrupt),
+    M("java/lang/Thread", "interrupted", NULL, Thread_interrupted),
+    M("java/lang/Thread", "sleep", "(J)V", Thread_sleep),
+    M("java/lang/Thread", "yield", NULL, Thread_yield),
+    M("java/lang/Thread", "join", "()V", Thread_join),
+    M("java/lang/Thread", "join", "(J)V", Thread_join_ms),
+    M("java/lang/Thread", "getContextClassLoader", NULL, Thread_getContextClassLoader),
+    M("java/lang/Thread", "setContextClassLoader", "(I)V", Thread_setContextClassLoader),
+    M("java/lang/Thread", "getUncaughtExceptionHandler", NULL, Thread_getUncaughtExceptionHandler),
+    M("java/lang/Thread", "setUncaughtExceptionHandler", "(I)V", Thread_setUncaughtExceptionHandler),
+    M("java/lang/Thread", "getDefaultUncaughtExceptionHandler", NULL, Thread_getDefaultUncaughtExceptionHandler),
+    M("java/lang/Thread", "setDefaultUncaughtExceptionHandler", "(I)V", Thread_setDefaultUncaughtExceptionHandler),
+    M("java/lang/Thread", "holdsLock", NULL, Thread_holdsLock),
+    M("java/lang/Thread", "getThreadGroup", NULL, Thread_getThreadGroup),
+    M("java/lang/Thread", "dumpStack", NULL, Thread_dumpStack),
+    M("java/lang/Thread", "activeCount", NULL, Thread_activeCount),
+    M("java/lang/ThreadGroup", "getName", NULL, ThreadGroup_getName),
+    M("java/lang/ThreadGroup", "getParent", NULL, ThreadGroup_getParent),
+    M("java/lang/ThreadGroup", "activeCount", NULL, ThreadGroup_activeCount),
+    M("java/lang/ThreadGroup", "toString", NULL, ThreadGroup_toString),
+    M("java/lang/Object", "wait0", NULL, Object_wait0),
+    M("java/lang/Object", "wait1", "(J)V", Object_wait1),
+    M("java/lang/Object", "wait2", "(JI)V", Object_wait2),
+    M("java/lang/Object", "notify", NULL, Object_notify),
+    M("java/lang/Object", "notifyAll", NULL, Object_notifyAll),
+    M("java/lang/System", "arraycopy", "([Ljava/lang/Object;ILjava/lang/Object;II)V", System_arraycopy),
+    M("java/lang/System", "identityHashCode", "(Ljava/lang/Object;)I", System_identityHashCode),
+    M("java/lang/System", "getenv", "(Ljava/lang/Object;)Ljava/lang/Object;", System_getenv),
+    M("java/lang/System", "getenv", "()Ljava/lang/Object;", System_getenv_all),
+    M("java/lang/System", "mapLibraryName", "(Ljava/lang/Object;)Ljava/lang/Object;", System_mapLibraryName),
+    M("java/lang/System", "gc", NULL, System_gc),
+    M("java/lang/System", "runFinalization", NULL, System_runFinalization),
+    M("java/lang/System", "lineSeparator", NULL, System_lineSeparator),
+    M("java/lang/System", "setProperty", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", System_setProperty),
+    M("java/lang/System", "clearProperty", "(Ljava/lang/Object;)Ljava/lang/Object;", System_clearProperty),
+    M("java/lang/System", "exit", "(I)V", System_exit),
+    M("java/lang/System", "getProperties", NULL, System_getProperties),
+    M("java/lang/System", "inheritedChannel", NULL, System_inheritedChannel),
+    M("android/os/SystemProperties", "get", "(Ljava/lang/Object;)Ljava/lang/Object;", SysProps_get),
+    M("android/os/SystemProperties", "get", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", SysProps_get_d),
+    M("android/os/SystemProperties", "getInt", "(Ljava/lang/Object;I)I", SysProps_getInt),
+    M("android/os/SystemProperties", "getLong", "(Ljava/lang/Object;J)J", SysProps_getLong),
+    M("android/os/SystemProperties", "getBool", "(Ljava/lang/Object;Z)Z", SysProps_getBool),
+    M("android/os/SystemProperties", "set", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", SysProps_set),
+    M("java/lang/Number", "intValue", NULL, Num_intValue),
+    M("java/lang/Number", "longValue", NULL, Num_longValue),
+    M("java/lang/Number", "shortValue", NULL, Num_shortValue),
+    M("java/lang/Number", "byteValue", NULL, Num_byteValue),
+    M("java/lang/Number", "floatValue", NULL, Num_floatValue),
+    M("java/lang/Number", "doubleValue", NULL, Num_doubleValue),
+    M("java/lang/Integer", "toString", "()Ljava/lang/Object;", Box_toString),
+    M("java/lang/Long", "toString", "()Ljava/lang/Object;", Box_toString),
+    M("java/lang/Short", "toString", "()Ljava/lang/Object;", Box_toString),
+    M("java/lang/Byte", "toString", "()Ljava/lang/Object;", Box_toString),
+    M("java/lang/Float", "toString", "()Ljava/lang/Object;", Box_toString),
+    M("java/lang/Double", "toString", "()Ljava/lang/Object;", Box_toString),
+    M("java/lang/Boolean", "toString", "()Ljava/lang/Object;", Box_toString),
+    M("java/lang/Character", "toString", "()Ljava/lang/Object;", Box_toString),
+    M("java/lang/Integer", "toString", "(I)Ljava/lang/Object;", Box_toString_radix),
+    M("java/lang/Long", "toString", "(I)Ljava/lang/Object;", Box_toString_radix),
+    M("java/lang/Short", "toString", "(I)Ljava/lang/Object;", Box_toString_radix),
+    M("java/lang/Byte", "toString", "(I)Ljava/lang/Object;", Box_toString_radix),
+    M("java/lang/Float", "toString", "(I)Ljava/lang/Object;", Box_toString_radix),
+    M("java/lang/Double", "toString", "(I)Ljava/lang/Object;", Box_toString_radix),
+    M("java/lang/Boolean", "toString", "(I)Ljava/lang/Object;", Box_toString_radix),
+    M("java/lang/Character", "toString", "(I)Ljava/lang/Object;", Box_toString_radix),
+    M("java/lang/Integer", "equals", "(Ljava/lang/Object;)Z", Box_equals),
+    M("java/lang/Long", "equals", "(Ljava/lang/Object;)Z", Box_equals),
+    M("java/lang/Short", "equals", "(Ljava/lang/Object;)Z", Box_equals),
+    M("java/lang/Byte", "equals", "(Ljava/lang/Object;)Z", Box_equals),
+    M("java/lang/Float", "equals", "(Ljava/lang/Object;)Z", Box_equals),
+    M("java/lang/Double", "equals", "(Ljava/lang/Object;)Z", Box_equals),
+    M("java/lang/Boolean", "equals", "(Ljava/lang/Object;)Z", Box_equals),
+    M("java/lang/Character", "equals", "(Ljava/lang/Object;)Z", Box_equals),
+    M("java/lang/Integer", "hashCode", "()I", Box_hashCode),
+    M("java/lang/Long", "hashCode", "()I", Box_hashCode),
+    M("java/lang/Short", "hashCode", "()I", Box_hashCode),
+    M("java/lang/Byte", "hashCode", "()I", Box_hashCode),
+    M("java/lang/Float", "hashCode", "()I", Box_hashCode),
+    M("java/lang/Double", "hashCode", "()I", Box_hashCode),
+    M("java/lang/Boolean", "hashCode", "()I", Box_hashCode),
+    M("java/lang/Character", "hashCode", "()I", Box_hashCode),
+    M("java/lang/Integer", "compareTo", "(Ljava/lang/Object;)I", Box_compareTo),
+    M("java/lang/Long", "compareTo", "(Ljava/lang/Object;)I", Box_compareTo),
+    M("java/lang/Short", "compareTo", "(Ljava/lang/Object;)I", Box_compareTo),
+    M("java/lang/Byte", "compareTo", "(Ljava/lang/Object;)I", Box_compareTo),
+    M("java/lang/Float", "compareTo", "(Ljava/lang/Object;)I", Box_compareTo),
+    M("java/lang/Double", "compareTo", "(Ljava/lang/Object;)I", Box_compareTo),
+    M("java/lang/Boolean", "compareTo", "(Ljava/lang/Object;)I", Box_compareTo),
+    M("java/lang/Character", "compareTo", "(Ljava/lang/Object;)I", Box_compareTo),
+    M("java/lang/Integer", "parseInt", "(Ljava/lang/Object;)I", Int_parseInt),
+    M("java/lang/Integer", "parseInt", "(Ljava/lang/Object;I)I", Int_parseInt_r),
+    M("java/lang/Long", "parseLong", "(Ljava/lang/Object;)J", Long_parseLong),
+    M("java/lang/Long", "parseLong", "(Ljava/lang/Object;I)J", Long_parseLong_r),
+    M("java/lang/Short", "parseShort", "(Ljava/lang/Object;)S", Short_parseShort),
+    M("java/lang/Byte", "parseByte", "(Ljava/lang/Object;)B", Byte_parseByte),
+    M("java/lang/Double", "parseDouble", "(Ljava/lang/Object;)D", Double_parseDouble),
+    M("java/lang/Float", "parseFloat", "(Ljava/lang/Object;)F", Float_parseFloat),
+    M("java/lang/Boolean", "parseBoolean", "(Ljava/lang/Object;)Z", Bool_parseBoolean),
+    M("java/lang/Integer", "valueOf", "(Ljava/lang/Object;)Ljava/lang/Object;", Int_valueOf_s),
+    M("java/lang/Long", "valueOf", "(Ljava/lang/Object;)Ljava/lang/Object;", Long_valueOf_s),
+    M("java/lang/Double", "valueOf", "(Ljava/lang/Object;)Ljava/lang/Object;", Double_valueOf_s),
+    M("java/lang/Float", "valueOf", "(Ljava/lang/Object;)Ljava/lang/Object;", Float_valueOf_s),
+    M("java/lang/Boolean", "valueOf", "(Ljava/lang/Object;)Ljava/lang/Object;", Bool_valueOf_s),
+    M("java/lang/Byte", "valueOf", "(Ljava/lang/Object;)Ljava/lang/Object;", Byte_valueOf_s),
+    M("java/lang/Short", "valueOf", "(Ljava/lang/Object;)Ljava/lang/Object;", Short_valueOf_s),
+    M("java/lang/Integer", "decode", "(Ljava/lang/Object;)Ljava/lang/Object;", Int_decode),
+    M("java/lang/Integer", "toHexString", "(I)Ljava/lang/Object;", Int_toHexString),
+    M("java/lang/Integer", "toOctalString", "(I)Ljava/lang/Object;", Int_toOctalString),
+    M("java/lang/Integer", "toBinaryString", "(I)Ljava/lang/Object;", Int_toBinaryString),
+    M("java/lang/Long", "toHexString", "(J)Ljava/lang/Object;", Long_toHexString),
+    M("java/lang/Long", "toOctalString", "(J)Ljava/lang/Object;", Long_toOctalString),
+    M("java/lang/Long", "toBinaryString", "(J)Ljava/lang/Object;", Long_toBinaryString),
+    M("java/lang/Integer", "toString", "(II)Ljava/lang/Object;", Int_toString_radix),
+    M("java/lang/Long", "toString", "(JI)Ljava/lang/Object;", Long_toString_radix),
+    M("java/lang/Long", "toString", "(J)Ljava/lang/Object;", Long_toString_j),
+    M("java/lang/Double", "toString", "(D)Ljava/lang/Object;", Double_toString_d),
+    M("java/lang/Float", "toString", "(F)Ljava/lang/Object;", Float_toString_f),
+    M("java/lang/Boolean", "toString", "(Z)Ljava/lang/Object;", Bool_toString_z),
+    M("java/lang/Character", "toString", "(C)Ljava/lang/Object;", Char_toString_c),
+    M("java/lang/Integer", "compare", "(II)I", Int_compare),
+    M("java/lang/Long", "compare", "(JJ)I", Long_compare),
+    M("java/lang/Double", "compare", "(DD)I", Double_compare),
+    M("java/lang/Float", "compare", "(FF)I", Float_compare),
+    M("java/lang/Integer", "signum", "(I)I", Int_signum),
+    M("java/lang/Long", "signum", "(J)I", Long_signum),
+    M("java/lang/Integer", "reverse", "(I)I", Int_reverse),
+    M("java/lang/Long", "reverse", "(J)J", Long_reverse),
+    M("java/lang/Integer", "highestOneBit", "(I)I", Int_highestOneBit),
+    M("java/lang/Integer", "lowestOneBit", "(I)I", Int_lowestOneBit),
+    M("java/lang/Integer", "bitCount", "(I)I", Int_bitCount),
+    M("java/lang/Long", "bitCount", "(J)I", Long_bitCount),
+    M("java/lang/Integer", "numberOfLeadingZeros", "(I)I", Int_numberOfLeadingZeros),
+    M("java/lang/Integer", "numberOfTrailingZeros", "(I)I", Int_numberOfTrailingZeros),
+    M("java/lang/Long", "numberOfLeadingZeros", "(J)I", Long_numberOfLeadingZeros),
+    M("java/lang/Long", "numberOfTrailingZeros", "(J)I", Long_numberOfTrailingZeros),
+    M("java/lang/Integer", "rotateLeft", "(II)I", Int_rotateLeft),
+    M("java/lang/Integer", "rotateRight", "(II)I", Int_rotateRight),
+    M("java/lang/Integer", "hashCode", "(I)Ljava/lang/Object;", Int_hashCode_s),
+    M("java/lang/Long", "hashCode", "(J)I", Long_hashCode_s),
+    M("java/lang/Integer", "getInteger", "(Ljava/lang/Object;)Ljava/lang/Object;", Int_getInteger),
+    M("java/lang/Long", "getLong", "(Ljava/lang/Object;)Ljava/lang/Object;", Long_getLong),
+    M("java/lang/Boolean", "getBoolean", "(Ljava/lang/Object;)Z", Bool_getBoolean),
+    M("java/lang/Character", "valueOf", "(C)Ljava/lang/Object;", Char_valueOf_c),
+    M("java/lang/Character", "charValue", NULL, Char_charValue),
+    M("java/lang/Character", "isDigit", "(C)Z", Char_isDigit),
+    M("java/lang/Character", "isLetter", "(C)Z", Char_isLetter),
+    M("java/lang/Character", "isLetterOrDigit", "(C)Z", Char_isLetterOrDigit),
+    M("java/lang/Character", "isWhitespace", "(C)Z", Char_isWhitespace),
+    M("java/lang/Character", "isSpaceChar", "(C)Z", Char_isSpaceChar),
+    M("java/lang/Character", "isUpperCase", "(C)Z", Char_isUpperCase),
+    M("java/lang/Character", "isLowerCase", "(C)Z", Char_isLowerCase),
+    M("java/lang/Character", "toUpperCase", "(C)C", Char_toUpperCase),
+    M("java/lang/Character", "toLowerCase", "(C)C", Char_toLowerCase),
+    M("java/lang/Character", "digit", "(CI)I", Char_digit),
+    M("java/lang/Character", "forDigit", "(I)C", Char_forDigit),
+    M("java/lang/Character", "compare", "(CC)I", Char_compare),
+    M("java/lang/Character", "isISOControl", "(C)Z", Char_isISOControl),
+    M("java/lang/Character", "isDefined", NULL, Char_isDefined),
+    M("java/lang/Character", "isHighSurrogate", "(C)Z", Char_isHighSurrogate),
+    M("java/lang/Character", "isLowSurrogate", "(C)Z", Char_isLowSurrogate),
+    M("java/lang/Character", "isSurrogate", "(C)Z", Char_isSurrogate),
+    M("java/lang/Character", "getNumericValue", "(C)I", Char_getNumericValue),
+    M("java/lang/Character", "toChars", "(I[Ljava/lang/Object;I)I", Char_toChars),
+    M("java/lang/Character", "charCount", "(I)I", Char_charCount),
+    M("java/lang/Character", "codePointToString", "(I)Ljava/lang/Object;", Char_codePointToString),
+    M("java/lang/Math", "sin", "(D)D", SM_sin),
+    M("java/lang/StrictMath", "sin", "(D)D", SM_sin),
+    M("java/lang/Math", "cos", "(D)D", SM_cos),
+    M("java/lang/StrictMath", "cos", "(D)D", SM_cos),
+    M("java/lang/Math", "tan", "(D)D", SM_tan),
+    M("java/lang/StrictMath", "tan", "(D)D", SM_tan),
+    M("java/lang/Math", "sqrt", "(D)D", SM_sqrt),
+    M("java/lang/StrictMath", "sqrt", "(D)D", SM_sqrt),
+    M("java/lang/Math", "abs", "(I)I", SM_abs_i),
+    M("java/lang/StrictMath", "abs", "(I)I", SM_abs_i),
+    M("java/lang/Math", "abs", "(J)J", SM_abs_j),
+    M("java/lang/StrictMath", "abs", "(J)J", SM_abs_j),
+    M("java/lang/Math", "abs", "(F)F", SM_abs_f),
+    M("java/lang/StrictMath", "abs", "(F)F", SM_abs_f),
+    M("java/lang/Math", "abs", "(D)D", SM_abs_d),
+    M("java/lang/StrictMath", "abs", "(D)D", SM_abs_d),
+    M("java/lang/Math", "max", "(II)I", SM_max_i),
+    M("java/lang/StrictMath", "max", "(II)I", SM_max_i),
+    M("java/lang/Math", "min", "(II)I", SM_min_i),
+    M("java/lang/StrictMath", "min", "(II)I", SM_min_i),
+    M("java/lang/Math", "max", "(JJ)J", SM_max_j),
+    M("java/lang/StrictMath", "max", "(JJ)J", SM_max_j),
+    M("java/lang/Math", "min", "(JJ)J", SM_min_j),
+    M("java/lang/StrictMath", "min", "(JJ)J", SM_min_j),
+    M("java/lang/Math", "max", "(FF)F", SM_max_f),
+    M("java/lang/StrictMath", "max", "(FF)F", SM_max_f),
+    M("java/lang/Math", "min", "(FF)F", SM_min_f),
+    M("java/lang/StrictMath", "min", "(FF)F", SM_min_f),
+    M("java/lang/Math", "max", "(DD)D", SM_max_d),
+    M("java/lang/StrictMath", "max", "(DD)D", SM_max_d),
+    M("java/lang/Math", "min", "(DD)D", SM_min_d),
+    M("java/lang/StrictMath", "min", "(DD)D", SM_min_d),
+    M("java/lang/Math", "pow", "(DD)D", SM_pow),
+    M("java/lang/StrictMath", "pow", "(DD)D", SM_pow),
+    M("java/lang/Math", "exp", "(D)D", SM_exp),
+    M("java/lang/StrictMath", "exp", "(D)D", SM_exp),
+    M("java/lang/Math", "log", "(D)D", SM_log),
+    M("java/lang/StrictMath", "log", "(D)D", SM_log),
+    M("java/lang/Math", "log10", "(D)D", SM_log10),
+    M("java/lang/StrictMath", "log10", "(D)D", SM_log10),
+    M("java/lang/Math", "floor", "(D)D", SM_floor),
+    M("java/lang/StrictMath", "floor", "(D)D", SM_floor),
+    M("java/lang/Math", "ceil", "(D)D", SM_ceil),
+    M("java/lang/StrictMath", "ceil", "(D)D", SM_ceil),
+    M("java/lang/Math", "round", "(F)I", SM_round_f),
+    M("java/lang/StrictMath", "round", "(F)I", SM_round_f),
+    M("java/lang/Math", "round", "(D)J", SM_round_d),
+    M("java/lang/StrictMath", "round", "(D)J", SM_round_d),
+    M("java/lang/Math", "random", NULL, SM_random),
+    M("java/lang/StrictMath", "random", NULL, SM_random),
+    M("java/lang/Math", "asin", "(D)D", SM_asin),
+    M("java/lang/StrictMath", "asin", "(D)D", SM_asin),
+    M("java/lang/Math", "acos", "(D)D", SM_acos),
+    M("java/lang/StrictMath", "acos", "(D)D", SM_acos),
+    M("java/lang/Math", "atan", "(D)D", SM_atan),
+    M("java/lang/StrictMath", "atan", "(D)D", SM_atan),
+    M("java/lang/Math", "atan2", "(DD)D", SM_atan2),
+    M("java/lang/StrictMath", "atan2", "(DD)D", SM_atan2),
+    M("java/lang/Math", "hypot", "(DD)D", SM_hypot),
+    M("java/lang/StrictMath", "hypot", "(DD)D", SM_hypot),
+    M("java/lang/Math", "cbrt", "(D)D", SM_cbrt),
+    M("java/lang/StrictMath", "cbrt", "(D)D", SM_cbrt),
+    M("java/lang/Math", "sinh", "(D)D", SM_sinh),
+    M("java/lang/StrictMath", "sinh", "(D)D", SM_sinh),
+    M("java/lang/Math", "cosh", "(D)D", SM_cosh),
+    M("java/lang/StrictMath", "cosh", "(D)D", SM_cosh),
+    M("java/lang/Math", "tanh", "(D)D", SM_tanh),
+    M("java/lang/StrictMath", "tanh", "(D)D", SM_tanh),
+    M("java/lang/Math", "expm1", "(D)D", SM_expm1),
+    M("java/lang/StrictMath", "expm1", "(D)D", SM_expm1),
+    M("java/lang/Math", "log1p", "(D)D", SM_log1p),
+    M("java/lang/StrictMath", "log1p", "(D)D", SM_log1p),
+    M("java/lang/Math", "signum", "(D)D", SM_signum_d),
+    M("java/lang/StrictMath", "signum", "(D)D", SM_signum_d),
+    M("java/lang/Math", "signum", "(F)F", SM_signum_f),
+    M("java/lang/StrictMath", "signum", "(F)F", SM_signum_f),
+    M("java/lang/Math", "toDegrees", "(D)D", SM_toDegrees),
+    M("java/lang/StrictMath", "toDegrees", "(D)D", SM_toDegrees),
+    M("java/lang/Math", "toRadians", "(D)D", SM_toRadians),
+    M("java/lang/StrictMath", "toRadians", "(D)D", SM_toRadians),
+    M("java/lang/Math", "IEEEremainder", "(DD)D", SM_IEEEremainder),
+    M("java/lang/StrictMath", "IEEEremainder", "(DD)D", SM_IEEEremainder),
+    M("java/lang/Math", "ulp", "(D)D", SM_ulp_d),
+    M("java/lang/StrictMath", "ulp", "(D)D", SM_ulp_d),
+    M("java/lang/Math", "copySign", "(DD)D", SM_copySign_d),
+    M("java/lang/StrictMath", "copySign", "(DD)D", SM_copySign_d),
+    M("java/lang/Math", "copySign", "(FF)F", SM_copySign_f),
+    M("java/lang/StrictMath", "copySign", "(FF)F", SM_copySign_f),
+    M("java/lang/Math", "scalb", "(DI)D", SM_scalb_d),
+    M("java/lang/StrictMath", "scalb", "(DI)D", SM_scalb_d),
+    M("java/lang/Math", "nextAfter", "(DD)D", SM_nextAfter_d),
+    M("java/lang/StrictMath", "nextAfter", "(DD)D", SM_nextAfter_d),
+    M("java/lang/Math", "nextUp", "(D)D", SM_nextUp_d),
+    M("java/lang/StrictMath", "nextUp", "(D)D", SM_nextUp_d),
+    M("java/lang/Math", "nextDown", "(D)D", SM_nextDown_d),
+    M("java/lang/StrictMath", "nextDown", "(D)D", SM_nextDown_d),
+    M("java/lang/Math", "floorDiv", "(II)I", SM_floorDiv_i),
+    M("java/lang/StrictMath", "floorDiv", "(II)I", SM_floorDiv_i),
+    M("java/lang/Math", "floorMod", "(II)I", SM_floorMod_i),
+    M("java/lang/StrictMath", "floorMod", "(II)I", SM_floorMod_i),
+    M("java/lang/Math", "rint", "(D)D", SM_rint),
+    M("java/lang/StrictMath", "rint", "(D)D", SM_rint),
+    M("java/util/ArrayList", "<init>", "()V", List_init),
+    M("java/util/LinkedList", "<init>", "()V", List_init),
+    M("java/util/Vector", "<init>", "()V", List_init),
+    M("java/util/Stack", "<init>", "()V", List_init),
+    M("java/util/concurrent/CopyOnWriteArrayList", "<init>", "()V", List_init),
+    M("java/util/ArrayList", "<init>", "(Ljava/lang/Object;)V", List_init_coll),
+    M("java/util/LinkedList", "<init>", "(Ljava/lang/Object;)V", List_init_coll),
+    M("java/util/Vector", "<init>", "(Ljava/lang/Object;)V", List_init_coll),
+    M("java/util/Stack", "<init>", "(Ljava/lang/Object;)V", List_init_coll),
+    M("java/util/concurrent/CopyOnWriteArrayList", "<init>", "(Ljava/lang/Object;)V", List_init_coll),
+    M("java/util/ArrayList", "add", "(Ljava/lang/Object;)Z", List_add),
+    M("java/util/LinkedList", "add", "(Ljava/lang/Object;)Z", List_add),
+    M("java/util/Vector", "add", "(Ljava/lang/Object;)Z", List_add),
+    M("java/util/Stack", "add", "(Ljava/lang/Object;)Z", List_add),
+    M("java/util/concurrent/CopyOnWriteArrayList", "add", "(Ljava/lang/Object;)Z", List_add),
+    M("java/util/ArrayList", "add", "(ILjava/lang/Object;)V", List_add_at),
+    M("java/util/LinkedList", "add", "(ILjava/lang/Object;)V", List_add_at),
+    M("java/util/Vector", "add", "(ILjava/lang/Object;)V", List_add_at),
+    M("java/util/Stack", "add", "(ILjava/lang/Object;)V", List_add_at),
+    M("java/util/concurrent/CopyOnWriteArrayList", "add", "(ILjava/lang/Object;)V", List_add_at),
+    M("java/util/ArrayList", "addAt", "(ILjava/lang/Object;)Z", List_addAt_ret),
+    M("java/util/LinkedList", "addAt", "(ILjava/lang/Object;)Z", List_addAt_ret),
+    M("java/util/Vector", "addAt", "(ILjava/lang/Object;)Z", List_addAt_ret),
+    M("java/util/Stack", "addAt", "(ILjava/lang/Object;)Z", List_addAt_ret),
+    M("java/util/concurrent/CopyOnWriteArrayList", "addAt", "(ILjava/lang/Object;)Z", List_addAt_ret),
+    M("java/util/ArrayList", "get", "(I)Ljava/lang/Object;", List_get),
+    M("java/util/LinkedList", "get", "(I)Ljava/lang/Object;", List_get),
+    M("java/util/Vector", "get", "(I)Ljava/lang/Object;", List_get),
+    M("java/util/Stack", "get", "(I)Ljava/lang/Object;", List_get),
+    M("java/util/concurrent/CopyOnWriteArrayList", "get", "(I)Ljava/lang/Object;", List_get),
+    M("java/util/ArrayList", "set", "(ILjava/lang/Object;)Ljava/lang/Object;", List_set),
+    M("java/util/LinkedList", "set", "(ILjava/lang/Object;)Ljava/lang/Object;", List_set),
+    M("java/util/Vector", "set", "(ILjava/lang/Object;)Ljava/lang/Object;", List_set),
+    M("java/util/Stack", "set", "(ILjava/lang/Object;)Ljava/lang/Object;", List_set),
+    M("java/util/concurrent/CopyOnWriteArrayList", "set", "(ILjava/lang/Object;)Ljava/lang/Object;", List_set),
+    M("java/util/ArrayList", "remove", "(I)Ljava/lang/Object;", List_remove_at),
+    M("java/util/LinkedList", "remove", "(I)Ljava/lang/Object;", List_remove_at),
+    M("java/util/Vector", "remove", "(I)Ljava/lang/Object;", List_remove_at),
+    M("java/util/Stack", "remove", "(I)Ljava/lang/Object;", List_remove_at),
+    M("java/util/concurrent/CopyOnWriteArrayList", "remove", "(I)Ljava/lang/Object;", List_remove_at),
+    M("java/util/ArrayList", "remove", "(Ljava/lang/Object;)Z", List_remove_o),
+    M("java/util/LinkedList", "remove", "(Ljava/lang/Object;)Z", List_remove_o),
+    M("java/util/Vector", "remove", "(Ljava/lang/Object;)Z", List_remove_o),
+    M("java/util/Stack", "remove", "(Ljava/lang/Object;)Z", List_remove_o),
+    M("java/util/concurrent/CopyOnWriteArrayList", "remove", "(Ljava/lang/Object;)Z", List_remove_o),
+    M("java/util/ArrayList", "removeAll", "(Ljava/lang/Object;)Z", List_removeAll),
+    M("java/util/LinkedList", "removeAll", "(Ljava/lang/Object;)Z", List_removeAll),
+    M("java/util/Vector", "removeAll", "(Ljava/lang/Object;)Z", List_removeAll),
+    M("java/util/Stack", "removeAll", "(Ljava/lang/Object;)Z", List_removeAll),
+    M("java/util/concurrent/CopyOnWriteArrayList", "removeAll", "(Ljava/lang/Object;)Z", List_removeAll),
+    M("java/util/ArrayList", "retainAll", "(Ljava/lang/Object;)Z", List_retainAll),
+    M("java/util/LinkedList", "retainAll", "(Ljava/lang/Object;)Z", List_retainAll),
+    M("java/util/Vector", "retainAll", "(Ljava/lang/Object;)Z", List_retainAll),
+    M("java/util/Stack", "retainAll", "(Ljava/lang/Object;)Z", List_retainAll),
+    M("java/util/concurrent/CopyOnWriteArrayList", "retainAll", "(Ljava/lang/Object;)Z", List_retainAll),
+    M("java/util/ArrayList", "addAll", "(Ljava/lang/Object;)Z", List_addAll),
+    M("java/util/LinkedList", "addAll", "(Ljava/lang/Object;)Z", List_addAll),
+    M("java/util/Vector", "addAll", "(Ljava/lang/Object;)Z", List_addAll),
+    M("java/util/Stack", "addAll", "(Ljava/lang/Object;)Z", List_addAll),
+    M("java/util/concurrent/CopyOnWriteArrayList", "addAll", "(Ljava/lang/Object;)Z", List_addAll),
+    M("java/util/ArrayList", "addAll", "(ILjava/lang/Object;)Z", List_addAll_at),
+    M("java/util/LinkedList", "addAll", "(ILjava/lang/Object;)Z", List_addAll_at),
+    M("java/util/Vector", "addAll", "(ILjava/lang/Object;)Z", List_addAll_at),
+    M("java/util/Stack", "addAll", "(ILjava/lang/Object;)Z", List_addAll_at),
+    M("java/util/concurrent/CopyOnWriteArrayList", "addAll", "(ILjava/lang/Object;)Z", List_addAll_at),
+    M("java/util/ArrayList", "clear", NULL, List_clear),
+    M("java/util/LinkedList", "clear", NULL, List_clear),
+    M("java/util/Vector", "clear", NULL, List_clear),
+    M("java/util/Stack", "clear", NULL, List_clear),
+    M("java/util/concurrent/CopyOnWriteArrayList", "clear", NULL, List_clear),
+    M("java/util/ArrayList", "size", NULL, List_size),
+    M("java/util/LinkedList", "size", NULL, List_size),
+    M("java/util/Vector", "size", NULL, List_size),
+    M("java/util/Stack", "size", NULL, List_size),
+    M("java/util/concurrent/CopyOnWriteArrayList", "size", NULL, List_size),
+    M("java/util/ArrayList", "isEmpty", NULL, List_isEmpty),
+    M("java/util/LinkedList", "isEmpty", NULL, List_isEmpty),
+    M("java/util/Vector", "isEmpty", NULL, List_isEmpty),
+    M("java/util/Stack", "isEmpty", NULL, List_isEmpty),
+    M("java/util/concurrent/CopyOnWriteArrayList", "isEmpty", NULL, List_isEmpty),
+    M("java/util/ArrayList", "contains", "(Ljava/lang/Object;)Z", List_contains),
+    M("java/util/LinkedList", "contains", "(Ljava/lang/Object;)Z", List_contains),
+    M("java/util/Vector", "contains", "(Ljava/lang/Object;)Z", List_contains),
+    M("java/util/Stack", "contains", "(Ljava/lang/Object;)Z", List_contains),
+    M("java/util/concurrent/CopyOnWriteArrayList", "contains", "(Ljava/lang/Object;)Z", List_contains),
+    M("java/util/ArrayList", "indexOf", "(Ljava/lang/Object;)I", List_indexOf),
+    M("java/util/LinkedList", "indexOf", "(Ljava/lang/Object;)I", List_indexOf),
+    M("java/util/Vector", "indexOf", "(Ljava/lang/Object;)I", List_indexOf),
+    M("java/util/Stack", "indexOf", "(Ljava/lang/Object;)I", List_indexOf),
+    M("java/util/concurrent/CopyOnWriteArrayList", "indexOf", "(Ljava/lang/Object;)I", List_indexOf),
+    M("java/util/ArrayList", "lastIndexOf", "(Ljava/lang/Object;)I", List_lastIndexOf),
+    M("java/util/LinkedList", "lastIndexOf", "(Ljava/lang/Object;)I", List_lastIndexOf),
+    M("java/util/Vector", "lastIndexOf", "(Ljava/lang/Object;)I", List_lastIndexOf),
+    M("java/util/Stack", "lastIndexOf", "(Ljava/lang/Object;)I", List_lastIndexOf),
+    M("java/util/concurrent/CopyOnWriteArrayList", "lastIndexOf", "(Ljava/lang/Object;)I", List_lastIndexOf),
+    M("java/util/ArrayList", "containsAll", "(Ljava/lang/Object;)Z", List_containsAll),
+    M("java/util/LinkedList", "containsAll", "(Ljava/lang/Object;)Z", List_containsAll),
+    M("java/util/Vector", "containsAll", "(Ljava/lang/Object;)Z", List_containsAll),
+    M("java/util/Stack", "containsAll", "(Ljava/lang/Object;)Z", List_containsAll),
+    M("java/util/concurrent/CopyOnWriteArrayList", "containsAll", "(Ljava/lang/Object;)Z", List_containsAll),
+    M("java/util/ArrayList", "iterator", NULL, List_iterator),
+    M("java/util/LinkedList", "iterator", NULL, List_iterator),
+    M("java/util/Vector", "iterator", NULL, List_iterator),
+    M("java/util/Stack", "iterator", NULL, List_iterator),
+    M("java/util/concurrent/CopyOnWriteArrayList", "iterator", NULL, List_iterator),
+    M("java/util/ArrayList", "listIterator", NULL, List_listIterator),
+    M("java/util/LinkedList", "listIterator", NULL, List_listIterator),
+    M("java/util/Vector", "listIterator", NULL, List_listIterator),
+    M("java/util/Stack", "listIterator", NULL, List_listIterator),
+    M("java/util/concurrent/CopyOnWriteArrayList", "listIterator", NULL, List_listIterator),
+    M("java/util/ArrayList", "toArray", "()Ljava/lang/Object;", List_toArray),
+    M("java/util/LinkedList", "toArray", "()Ljava/lang/Object;", List_toArray),
+    M("java/util/Vector", "toArray", "()Ljava/lang/Object;", List_toArray),
+    M("java/util/Stack", "toArray", "()Ljava/lang/Object;", List_toArray),
+    M("java/util/concurrent/CopyOnWriteArrayList", "toArray", "()Ljava/lang/Object;", List_toArray),
+    M("java/util/ArrayList", "toArray", "(Ljava/lang/Object;)Ljava/lang/Object;", List_toArray_t),
+    M("java/util/LinkedList", "toArray", "(Ljava/lang/Object;)Ljava/lang/Object;", List_toArray_t),
+    M("java/util/Vector", "toArray", "(Ljava/lang/Object;)Ljava/lang/Object;", List_toArray_t),
+    M("java/util/Stack", "toArray", "(Ljava/lang/Object;)Ljava/lang/Object;", List_toArray_t),
+    M("java/util/concurrent/CopyOnWriteArrayList", "toArray", "(Ljava/lang/Object;)Ljava/lang/Object;", List_toArray_t),
+    M("java/util/ArrayList", "subList", "(II)Ljava/lang/Object;", List_subList),
+    M("java/util/LinkedList", "subList", "(II)Ljava/lang/Object;", List_subList),
+    M("java/util/Vector", "subList", "(II)Ljava/lang/Object;", List_subList),
+    M("java/util/Stack", "subList", "(II)Ljava/lang/Object;", List_subList),
+    M("java/util/concurrent/CopyOnWriteArrayList", "subList", "(II)Ljava/lang/Object;", List_subList),
+    M("java/util/ArrayList", "equals", "(Ljava/lang/Object;)Z", List_equals),
+    M("java/util/LinkedList", "equals", "(Ljava/lang/Object;)Z", List_equals),
+    M("java/util/Vector", "equals", "(Ljava/lang/Object;)Z", List_equals),
+    M("java/util/Stack", "equals", "(Ljava/lang/Object;)Z", List_equals),
+    M("java/util/concurrent/CopyOnWriteArrayList", "equals", "(Ljava/lang/Object;)Z", List_equals),
+    M("java/util/ArrayList", "hashCode", NULL, List_hashCode),
+    M("java/util/LinkedList", "hashCode", NULL, List_hashCode),
+    M("java/util/Vector", "hashCode", NULL, List_hashCode),
+    M("java/util/Stack", "hashCode", NULL, List_hashCode),
+    M("java/util/concurrent/CopyOnWriteArrayList", "hashCode", NULL, List_hashCode),
+    M("java/util/ArrayList", "toString", NULL, List_toString),
+    M("java/util/LinkedList", "toString", NULL, List_toString),
+    M("java/util/Vector", "toString", NULL, List_toString),
+    M("java/util/Stack", "toString", NULL, List_toString),
+    M("java/util/concurrent/CopyOnWriteArrayList", "toString", NULL, List_toString),
+    M("java/util/ArrayList", "forEach", "(Ljava/lang/Object;)V", List_forEach),
+    M("java/util/LinkedList", "forEach", "(Ljava/lang/Object;)V", List_forEach),
+    M("java/util/Vector", "forEach", "(Ljava/lang/Object;)V", List_forEach),
+    M("java/util/Stack", "forEach", "(Ljava/lang/Object;)V", List_forEach),
+    M("java/util/concurrent/CopyOnWriteArrayList", "forEach", "(Ljava/lang/Object;)V", List_forEach),
+    M("java/util/ArrayDeque", "addFirst", "(Ljava/lang/Object;)V", DQ_addFirst),
+    M("java/util/LinkedList", "addFirst", "(Ljava/lang/Object;)V", DQ_addFirst),
+    M("java/util/concurrent/ConcurrentLinkedDeque", "addFirst", "(Ljava/lang/Object;)V", DQ_addFirst),
+    M("java/util/ArrayDeque", "addLast", "(Ljava/lang/Object;)V", DQ_addLast),
+    M("java/util/LinkedList", "addLast", "(Ljava/lang/Object;)V", DQ_addLast),
+    M("java/util/concurrent/ConcurrentLinkedDeque", "addLast", "(Ljava/lang/Object;)V", DQ_addLast),
+    M("java/util/ArrayDeque", "offerFirst", "(Ljava/lang/Object;)Z", DQ_offerFirst),
+    M("java/util/LinkedList", "offerFirst", "(Ljava/lang/Object;)Z", DQ_offerFirst),
+    M("java/util/concurrent/ConcurrentLinkedDeque", "offerFirst", "(Ljava/lang/Object;)Z", DQ_offerFirst),
+    M("java/util/ArrayDeque", "offerLast", "(Ljava/lang/Object;)Z", DQ_offerLast),
+    M("java/util/LinkedList", "offerLast", "(Ljava/lang/Object;)Z", DQ_offerLast),
+    M("java/util/concurrent/ConcurrentLinkedDeque", "offerLast", "(Ljava/lang/Object;)Z", DQ_offerLast),
+    M("java/util/ArrayDeque", "offer", "(Ljava/lang/Object;)Z", DQ_offer),
+    M("java/util/LinkedList", "offer", "(Ljava/lang/Object;)Z", DQ_offer),
+    M("java/util/concurrent/ConcurrentLinkedDeque", "offer", "(Ljava/lang/Object;)Z", DQ_offer),
+    M("java/util/ArrayDeque", "poll", NULL, DQ_poll),
+    M("java/util/LinkedList", "poll", NULL, DQ_poll),
+    M("java/util/concurrent/ConcurrentLinkedDeque", "poll", NULL, DQ_poll),
+    M("java/util/ArrayDeque", "pollFirst", NULL, DQ_pollFirst),
+    M("java/util/LinkedList", "pollFirst", NULL, DQ_pollFirst),
+    M("java/util/concurrent/ConcurrentLinkedDeque", "pollFirst", NULL, DQ_pollFirst),
+    M("java/util/ArrayDeque", "pollLast", NULL, DQ_pollLast),
+    M("java/util/LinkedList", "pollLast", NULL, DQ_pollLast),
+    M("java/util/concurrent/ConcurrentLinkedDeque", "pollLast", NULL, DQ_pollLast),
+    M("java/util/ArrayDeque", "removeFirst", NULL, DQ_removeFirst),
+    M("java/util/LinkedList", "removeFirst", NULL, DQ_removeFirst),
+    M("java/util/concurrent/ConcurrentLinkedDeque", "removeFirst", NULL, DQ_removeFirst),
+    M("java/util/ArrayDeque", "removeLast", NULL, DQ_removeLast),
+    M("java/util/LinkedList", "removeLast", NULL, DQ_removeLast),
+    M("java/util/concurrent/ConcurrentLinkedDeque", "removeLast", NULL, DQ_removeLast),
+    M("java/util/ArrayDeque", "peek", NULL, DQ_peek),
+    M("java/util/LinkedList", "peek", NULL, DQ_peek),
+    M("java/util/concurrent/ConcurrentLinkedDeque", "peek", NULL, DQ_peek),
+    M("java/util/ArrayDeque", "peekFirst", NULL, DQ_peekFirst),
+    M("java/util/LinkedList", "peekFirst", NULL, DQ_peekFirst),
+    M("java/util/concurrent/ConcurrentLinkedDeque", "peekFirst", NULL, DQ_peekFirst),
+    M("java/util/ArrayDeque", "peekLast", NULL, DQ_peekLast),
+    M("java/util/LinkedList", "peekLast", NULL, DQ_peekLast),
+    M("java/util/concurrent/ConcurrentLinkedDeque", "peekLast", NULL, DQ_peekLast),
+    M("java/util/ArrayDeque", "element", NULL, DQ_element),
+    M("java/util/LinkedList", "element", NULL, DQ_element),
+    M("java/util/concurrent/ConcurrentLinkedDeque", "element", NULL, DQ_element),
+    M("java/util/ArrayDeque", "getFirst", NULL, DQ_getFirst),
+    M("java/util/LinkedList", "getFirst", NULL, DQ_getFirst),
+    M("java/util/concurrent/ConcurrentLinkedDeque", "getFirst", NULL, DQ_getFirst),
+    M("java/util/ArrayDeque", "getLast", NULL, DQ_getLast),
+    M("java/util/LinkedList", "getLast", NULL, DQ_getLast),
+    M("java/util/concurrent/ConcurrentLinkedDeque", "getLast", NULL, DQ_getLast),
+    M("java/util/ArrayDeque", "pop", NULL, DQ_pop),
+    M("java/util/LinkedList", "pop", NULL, DQ_pop),
+    M("java/util/concurrent/ConcurrentLinkedDeque", "pop", NULL, DQ_pop),
+    M("java/util/ArrayDeque", "push", "(Ljava/lang/Object;)V", DQ_push),
+    M("java/util/LinkedList", "push", "(Ljava/lang/Object;)V", DQ_push),
+    M("java/util/concurrent/ConcurrentLinkedDeque", "push", "(Ljava/lang/Object;)V", DQ_push),
+    M("java/util/ArrayDeque", "remove", NULL, DQ_remove),
+    M("java/util/LinkedList", "remove", NULL, DQ_remove),
+    M("java/util/concurrent/ConcurrentLinkedDeque", "remove", NULL, DQ_remove),
+    M("java/util/ArrayDeque", "descIterator", NULL, DQ_descIterator),
+    M("java/util/LinkedList", "descIterator", NULL, DQ_descIterator),
+    M("java/util/concurrent/ConcurrentLinkedDeque", "descIterator", NULL, DQ_descIterator),
+    M("java/util/HashMap", "<init>", "()V", Map_init),
+    M("java/util/LinkedHashMap", "<init>", "()V", Map_init),
+    M("java/util/TreeMap", "<init>", "()V", Map_init),
+    M("java/util/Hashtable", "<init>", "()V", Map_init),
+    M("java/util/concurrent/ConcurrentHashMap", "<init>", "()V", Map_init),
+    M("java/util/WeakHashMap", "<init>", "()V", Map_init),
+    M("java/util/HashMap", "<init>", "(Ljava/lang/Object;)V", Map_init_m),
+    M("java/util/LinkedHashMap", "<init>", "(Ljava/lang/Object;)V", Map_init_m),
+    M("java/util/TreeMap", "<init>", "(Ljava/lang/Object;)V", Map_init_m),
+    M("java/util/Hashtable", "<init>", "(Ljava/lang/Object;)V", Map_init_m),
+    M("java/util/concurrent/ConcurrentHashMap", "<init>", "(Ljava/lang/Object;)V", Map_init_m),
+    M("java/util/WeakHashMap", "<init>", "(Ljava/lang/Object;)V", Map_init_m),
+    M("java/util/HashMap", "put", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Map_put),
+    M("java/util/LinkedHashMap", "put", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Map_put),
+    M("java/util/TreeMap", "put", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Map_put),
+    M("java/util/Hashtable", "put", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Map_put),
+    M("java/util/concurrent/ConcurrentHashMap", "put", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Map_put),
+    M("java/util/WeakHashMap", "put", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Map_put),
+    M("java/util/HashMap", "putIfAbsent", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Map_putIfAbsent),
+    M("java/util/LinkedHashMap", "putIfAbsent", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Map_putIfAbsent),
+    M("java/util/TreeMap", "putIfAbsent", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Map_putIfAbsent),
+    M("java/util/Hashtable", "putIfAbsent", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Map_putIfAbsent),
+    M("java/util/concurrent/ConcurrentHashMap", "putIfAbsent", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Map_putIfAbsent),
+    M("java/util/WeakHashMap", "putIfAbsent", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Map_putIfAbsent),
+    M("java/util/HashMap", "get", "(Ljava/lang/Object;)Ljava/lang/Object;", Map_get),
+    M("java/util/LinkedHashMap", "get", "(Ljava/lang/Object;)Ljava/lang/Object;", Map_get),
+    M("java/util/TreeMap", "get", "(Ljava/lang/Object;)Ljava/lang/Object;", Map_get),
+    M("java/util/Hashtable", "get", "(Ljava/lang/Object;)Ljava/lang/Object;", Map_get),
+    M("java/util/concurrent/ConcurrentHashMap", "get", "(Ljava/lang/Object;)Ljava/lang/Object;", Map_get),
+    M("java/util/WeakHashMap", "get", "(Ljava/lang/Object;)Ljava/lang/Object;", Map_get),
+    M("java/util/HashMap", "getOrDefault", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Map_getOrDefault),
+    M("java/util/LinkedHashMap", "getOrDefault", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Map_getOrDefault),
+    M("java/util/TreeMap", "getOrDefault", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Map_getOrDefault),
+    M("java/util/Hashtable", "getOrDefault", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Map_getOrDefault),
+    M("java/util/concurrent/ConcurrentHashMap", "getOrDefault", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Map_getOrDefault),
+    M("java/util/WeakHashMap", "getOrDefault", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Map_getOrDefault),
+    M("java/util/HashMap", "containsKey", "(Ljava/lang/Object;)Z", Map_containsKey),
+    M("java/util/LinkedHashMap", "containsKey", "(Ljava/lang/Object;)Z", Map_containsKey),
+    M("java/util/TreeMap", "containsKey", "(Ljava/lang/Object;)Z", Map_containsKey),
+    M("java/util/Hashtable", "containsKey", "(Ljava/lang/Object;)Z", Map_containsKey),
+    M("java/util/concurrent/ConcurrentHashMap", "containsKey", "(Ljava/lang/Object;)Z", Map_containsKey),
+    M("java/util/WeakHashMap", "containsKey", "(Ljava/lang/Object;)Z", Map_containsKey),
+    M("java/util/HashMap", "containsValue", "(Ljava/lang/Object;)Z", Map_containsValue),
+    M("java/util/LinkedHashMap", "containsValue", "(Ljava/lang/Object;)Z", Map_containsValue),
+    M("java/util/TreeMap", "containsValue", "(Ljava/lang/Object;)Z", Map_containsValue),
+    M("java/util/Hashtable", "containsValue", "(Ljava/lang/Object;)Z", Map_containsValue),
+    M("java/util/concurrent/ConcurrentHashMap", "containsValue", "(Ljava/lang/Object;)Z", Map_containsValue),
+    M("java/util/WeakHashMap", "containsValue", "(Ljava/lang/Object;)Z", Map_containsValue),
+    M("java/util/HashMap", "remove", "(Ljava/lang/Object;)Ljava/lang/Object;", Map_remove),
+    M("java/util/LinkedHashMap", "remove", "(Ljava/lang/Object;)Ljava/lang/Object;", Map_remove),
+    M("java/util/TreeMap", "remove", "(Ljava/lang/Object;)Ljava/lang/Object;", Map_remove),
+    M("java/util/Hashtable", "remove", "(Ljava/lang/Object;)Ljava/lang/Object;", Map_remove),
+    M("java/util/concurrent/ConcurrentHashMap", "remove", "(Ljava/lang/Object;)Ljava/lang/Object;", Map_remove),
+    M("java/util/WeakHashMap", "remove", "(Ljava/lang/Object;)Ljava/lang/Object;", Map_remove),
+    M("java/util/HashMap", "remove", "(Ljava/lang/Object;Ljava/lang/Object;)Z", Map_remove_kv),
+    M("java/util/LinkedHashMap", "remove", "(Ljava/lang/Object;Ljava/lang/Object;)Z", Map_remove_kv),
+    M("java/util/TreeMap", "remove", "(Ljava/lang/Object;Ljava/lang/Object;)Z", Map_remove_kv),
+    M("java/util/Hashtable", "remove", "(Ljava/lang/Object;Ljava/lang/Object;)Z", Map_remove_kv),
+    M("java/util/concurrent/ConcurrentHashMap", "remove", "(Ljava/lang/Object;Ljava/lang/Object;)Z", Map_remove_kv),
+    M("java/util/WeakHashMap", "remove", "(Ljava/lang/Object;Ljava/lang/Object;)Z", Map_remove_kv),
+    M("java/util/HashMap", "replace", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Map_replace),
+    M("java/util/LinkedHashMap", "replace", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Map_replace),
+    M("java/util/TreeMap", "replace", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Map_replace),
+    M("java/util/Hashtable", "replace", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Map_replace),
+    M("java/util/concurrent/ConcurrentHashMap", "replace", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Map_replace),
+    M("java/util/WeakHashMap", "replace", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Map_replace),
+    M("java/util/HashMap", "replace", "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Z", Map_replace_kv),
+    M("java/util/LinkedHashMap", "replace", "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Z", Map_replace_kv),
+    M("java/util/TreeMap", "replace", "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Z", Map_replace_kv),
+    M("java/util/Hashtable", "replace", "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Z", Map_replace_kv),
+    M("java/util/concurrent/ConcurrentHashMap", "replace", "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Z", Map_replace_kv),
+    M("java/util/WeakHashMap", "replace", "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Z", Map_replace_kv),
+    M("java/util/HashMap", "size", NULL, Map_size),
+    M("java/util/LinkedHashMap", "size", NULL, Map_size),
+    M("java/util/TreeMap", "size", NULL, Map_size),
+    M("java/util/Hashtable", "size", NULL, Map_size),
+    M("java/util/concurrent/ConcurrentHashMap", "size", NULL, Map_size),
+    M("java/util/WeakHashMap", "size", NULL, Map_size),
+    M("java/util/HashMap", "isEmpty", NULL, Map_isEmpty),
+    M("java/util/LinkedHashMap", "isEmpty", NULL, Map_isEmpty),
+    M("java/util/TreeMap", "isEmpty", NULL, Map_isEmpty),
+    M("java/util/Hashtable", "isEmpty", NULL, Map_isEmpty),
+    M("java/util/concurrent/ConcurrentHashMap", "isEmpty", NULL, Map_isEmpty),
+    M("java/util/WeakHashMap", "isEmpty", NULL, Map_isEmpty),
+    M("java/util/HashMap", "clear", NULL, Map_clear),
+    M("java/util/LinkedHashMap", "clear", NULL, Map_clear),
+    M("java/util/TreeMap", "clear", NULL, Map_clear),
+    M("java/util/Hashtable", "clear", NULL, Map_clear),
+    M("java/util/concurrent/ConcurrentHashMap", "clear", NULL, Map_clear),
+    M("java/util/WeakHashMap", "clear", NULL, Map_clear),
+    M("java/util/HashMap", "putAll", "(Ljava/lang/Object;)V", Map_putAll),
+    M("java/util/LinkedHashMap", "putAll", "(Ljava/lang/Object;)V", Map_putAll),
+    M("java/util/TreeMap", "putAll", "(Ljava/lang/Object;)V", Map_putAll),
+    M("java/util/Hashtable", "putAll", "(Ljava/lang/Object;)V", Map_putAll),
+    M("java/util/concurrent/ConcurrentHashMap", "putAll", "(Ljava/lang/Object;)V", Map_putAll),
+    M("java/util/WeakHashMap", "putAll", "(Ljava/lang/Object;)V", Map_putAll),
+    M("java/util/HashMap", "entrySet", NULL, Map_entrySet),
+    M("java/util/LinkedHashMap", "entrySet", NULL, Map_entrySet),
+    M("java/util/TreeMap", "entrySet", NULL, Map_entrySet),
+    M("java/util/Hashtable", "entrySet", NULL, Map_entrySet),
+    M("java/util/concurrent/ConcurrentHashMap", "entrySet", NULL, Map_entrySet),
+    M("java/util/WeakHashMap", "entrySet", NULL, Map_entrySet),
+    M("java/util/HashMap", "keySet", NULL, Map_keySet),
+    M("java/util/LinkedHashMap", "keySet", NULL, Map_keySet),
+    M("java/util/TreeMap", "keySet", NULL, Map_keySet),
+    M("java/util/Hashtable", "keySet", NULL, Map_keySet),
+    M("java/util/concurrent/ConcurrentHashMap", "keySet", NULL, Map_keySet),
+    M("java/util/WeakHashMap", "keySet", NULL, Map_keySet),
+    M("java/util/HashMap", "values", NULL, Map_values),
+    M("java/util/LinkedHashMap", "values", NULL, Map_values),
+    M("java/util/TreeMap", "values", NULL, Map_values),
+    M("java/util/Hashtable", "values", NULL, Map_values),
+    M("java/util/concurrent/ConcurrentHashMap", "values", NULL, Map_values),
+    M("java/util/WeakHashMap", "values", NULL, Map_values),
+    M("java/util/HashMap", "forEach", "(Ljava/lang/Object;)V", Map_forEach),
+    M("java/util/LinkedHashMap", "forEach", "(Ljava/lang/Object;)V", Map_forEach),
+    M("java/util/TreeMap", "forEach", "(Ljava/lang/Object;)V", Map_forEach),
+    M("java/util/Hashtable", "forEach", "(Ljava/lang/Object;)V", Map_forEach),
+    M("java/util/concurrent/ConcurrentHashMap", "forEach", "(Ljava/lang/Object;)V", Map_forEach),
+    M("java/util/WeakHashMap", "forEach", "(Ljava/lang/Object;)V", Map_forEach),
+    M("java/util/HashMap", "toString", NULL, Map_toString),
+    M("java/util/LinkedHashMap", "toString", NULL, Map_toString),
+    M("java/util/TreeMap", "toString", NULL, Map_toString),
+    M("java/util/Hashtable", "toString", NULL, Map_toString),
+    M("java/util/concurrent/ConcurrentHashMap", "toString", NULL, Map_toString),
+    M("java/util/WeakHashMap", "toString", NULL, Map_toString),
+    M("java/util/HashMap", "equals", "(Ljava/lang/Object;)Z", Map_equals),
+    M("java/util/LinkedHashMap", "equals", "(Ljava/lang/Object;)Z", Map_equals),
+    M("java/util/TreeMap", "equals", "(Ljava/lang/Object;)Z", Map_equals),
+    M("java/util/Hashtable", "equals", "(Ljava/lang/Object;)Z", Map_equals),
+    M("java/util/concurrent/ConcurrentHashMap", "equals", "(Ljava/lang/Object;)Z", Map_equals),
+    M("java/util/WeakHashMap", "equals", "(Ljava/lang/Object;)Z", Map_equals),
+    M("java/util/HashMap", "hashCode", NULL, Map_hashCode),
+    M("java/util/LinkedHashMap", "hashCode", NULL, Map_hashCode),
+    M("java/util/TreeMap", "hashCode", NULL, Map_hashCode),
+    M("java/util/Hashtable", "hashCode", NULL, Map_hashCode),
+    M("java/util/concurrent/ConcurrentHashMap", "hashCode", NULL, Map_hashCode),
+    M("java/util/WeakHashMap", "hashCode", NULL, Map_hashCode),
+    M("java/util/HashMap", "of", NULL, Map_of),
+    M("java/util/LinkedHashMap", "of", NULL, Map_of),
+    M("java/util/TreeMap", "of", NULL, Map_of),
+    M("java/util/Hashtable", "of", NULL, Map_of),
+    M("java/util/concurrent/ConcurrentHashMap", "of", NULL, Map_of),
+    M("java/util/WeakHashMap", "of", NULL, Map_of),
+    M("java/util/HashMap", "of1", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Map_of1),
+    M("java/util/LinkedHashMap", "of1", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Map_of1),
+    M("java/util/TreeMap", "of1", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Map_of1),
+    M("java/util/Hashtable", "of1", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Map_of1),
+    M("java/util/concurrent/ConcurrentHashMap", "of1", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Map_of1),
+    M("java/util/WeakHashMap", "of1", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Map_of1),
+    M("java/util/HashMap", "computeIfAbsent", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Map_computeIfAbsent),
+    M("java/util/LinkedHashMap", "computeIfAbsent", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Map_computeIfAbsent),
+    M("java/util/TreeMap", "computeIfAbsent", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Map_computeIfAbsent),
+    M("java/util/Hashtable", "computeIfAbsent", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Map_computeIfAbsent),
+    M("java/util/concurrent/ConcurrentHashMap", "computeIfAbsent", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Map_computeIfAbsent),
+    M("java/util/WeakHashMap", "computeIfAbsent", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Map_computeIfAbsent),
+    M("java/util/HashMap", "merge", "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Map_merge),
+    M("java/util/LinkedHashMap", "merge", "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Map_merge),
+    M("java/util/TreeMap", "merge", "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Map_merge),
+    M("java/util/Hashtable", "merge", "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Map_merge),
+    M("java/util/concurrent/ConcurrentHashMap", "merge", "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Map_merge),
+    M("java/util/WeakHashMap", "merge", "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Map_merge),
+    M("java/util/Map$Entry", "getKey", NULL, ME_getKey),
+    M("java/util/Map$Entry", "getValue", NULL, ME_getValue),
+    M("java/util/Map$Entry", "setValue", "(Ljava/lang/Object;)V", ME_setValue),
+    M("java/util/Map$Entry", "equals", "(Ljava/lang/Object;)Z", ME_equals),
+    M("java/util/Map$Entry", "hashCode", NULL, ME_hashCode),
+    M("java/util/Map$Entry", "toString", NULL, ME_toString),
+    M("java/util/Map$Entry", "comparingByKey", NULL, ME_comparingByKey),
+    M("java/util/Map$Entry", "comparingByValue", NULL, ME_comparingByValue),
+    M("java/util/HashSet", "add", "(Ljava/lang/Object;)Z", Set_add),
+    M("java/util/LinkedHashSet", "add", "(Ljava/lang/Object;)Z", Set_add),
+    M("java/util/TreeSet", "add", "(Ljava/lang/Object;)Z", Set_add),
+    M("java/util/concurrent/CopyOnWriteArraySet", "add", "(Ljava/lang/Object;)Z", Set_add),
+    M("java/util/HashSet", "remove", "(Ljava/lang/Object;)Z", Set_remove),
+    M("java/util/LinkedHashSet", "remove", "(Ljava/lang/Object;)Z", Set_remove),
+    M("java/util/TreeSet", "remove", "(Ljava/lang/Object;)Z", Set_remove),
+    M("java/util/concurrent/CopyOnWriteArraySet", "remove", "(Ljava/lang/Object;)Z", Set_remove),
+    M("java/util/HashSet", "of", NULL, Set_of),
+    M("java/util/LinkedHashSet", "of", NULL, Set_of),
+    M("java/util/TreeSet", "of", NULL, Set_of),
+    M("java/util/concurrent/CopyOnWriteArraySet", "of", NULL, Set_of),
+    M("java/util/HashSet", "of1", "(Ljava/lang/Object;)Ljava/lang/Object;", Set_of1),
+    M("java/util/LinkedHashSet", "of1", "(Ljava/lang/Object;)Ljava/lang/Object;", Set_of1),
+    M("java/util/TreeSet", "of1", "(Ljava/lang/Object;)Ljava/lang/Object;", Set_of1),
+    M("java/util/concurrent/CopyOnWriteArraySet", "of1", "(Ljava/lang/Object;)Ljava/lang/Object;", Set_of1),
+    M("java/util/Iterator", "forEachRemaining", "(Ljava/lang/Object;)V", It_forEachRemaining),
+    M("java/util/ListIterator", "forEachRemaining", "(Ljava/lang/Object;)V", It_forEachRemaining),
+    M("java/util/Iterator", "remove", NULL, It_remove),
+    M("java/util/ListIterator", "remove", NULL, It_remove),
+    M("java/util/Spliterator", "estimateSize", NULL, Spliterator_estSize),
+    M("java/util/Optional", "of", "(Ljava/lang/Object;)Ljava/lang/Object;", Opt_of),
+    M("java/util/Optional", "ofNullable", "(Ljava/lang/Object;)Ljava/lang/Object;", Opt_ofNullable),
+    M("java/util/Optional", "empty", NULL, Opt_empty),
+    M("java/util/Optional", "isPresent", NULL, Opt_isPresent),
+    M("java/util/Optional", "isEmpty", NULL, Opt_isEmpty),
+    M("java/util/Optional", "get", NULL, Opt_get),
+    M("java/util/Optional", "orElse", "(Ljava/lang/Object;)Ljava/lang/Object;", Opt_orElse),
+    M("java/util/Optional", "orElseGet", "(Ljava/lang/Object;)V", Opt_orElseGet),
+    M("java/util/Optional", "orElseThrow", NULL, Opt_orElseThrow),
+    M("java/util/Optional", "ifPresent", "(Ljava/lang/Object;)V", Opt_ifPresent),
+    M("java/util/Optional", "map", "(Ljava/lang/Object;)Ljava/lang/Object;", Opt_map),
+    M("java/util/Optional", "filter", "(Ljava/lang/Object;)Ljava/lang/Object;", Opt_filter),
+    M("java/util/Optional", "equals", "(Ljava/lang/Object;)Z", Opt_equals),
+    M("java/util/Optional", "hashCode", NULL, Opt_hashCode),
+    M("java/util/Optional", "toString", NULL, Opt_toString),
+    M("java/util/Optional", "stream", NULL, Opt_stream),
+    M("java/util/Collections", "sort1", "(Ljava/lang/Object;)V", Colls_sort1),
+    M("java/util/Collections", "sort2", "(Ljava/lang/Object;Ljava/lang/Object;)V", Colls_sort2),
+    M("java/util/Collections", "reverse", "(Ljava/lang/Object;)V", Colls_reverse),
+    M("java/util/Collections", "shuffle", "(Ljava/lang/Object;)V", Colls_shuffle),
+    M("java/util/Collections", "emptyList", NULL, Colls_emptyList),
+    M("java/util/Collections", "emptySet", NULL, Colls_emptySet),
+    M("java/util/Collections", "emptyMap", NULL, Colls_emptyMap),
+    M("java/util/Collections", "emptyIterator", NULL, Colls_emptyIterator),
+    M("java/util/Collections", "singletonList", "(Ljava/lang/Object;)Ljava/lang/Object;", Colls_singletonList),
+    M("java/util/Collections", "singleton", "(Ljava/lang/Object;)Ljava/lang/Object;", Colls_singleton),
+    M("java/util/Collections", "singletonMap", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Colls_singletonMap),
+    M("java/util/Collections", "nCopies", "(ILjava/lang/Object;)Ljava/lang/Object;", Colls_nCopies),
+    M("java/util/Collections", "unmodifiable", "(Ljava/lang/Object;)Ljava/lang/Object;", Colls_unmodifiable),
+    M("java/util/Collections", "synchronized", "(Ljava/lang/Object;)Ljava/lang/Object;", Colls_synchronized),
+    M("java/util/Collections", "checked", "(Ljava/lang/Object;)Ljava/lang/Object;", Colls_checked),
+    M("java/util/Collections", "min", "(Ljava/lang/Object;)Ljava/lang/Object;", Colls_min),
+    M("java/util/Collections", "max", "(Ljava/lang/Object;)Ljava/lang/Object;", Colls_max),
+    M("java/util/Collections", "frequency", "(Ljava/lang/Object;Ljava/lang/Object;)I", Colls_frequency),
+    M("java/util/Collections", "fill", "(Ljava/lang/Object;Ljava/lang/Object;)V", Colls_fill),
+    M("java/util/Collections", "copy", "(Ljava/lang/Object;Ljava/lang/Object;)V", Colls_copy),
+    M("java/util/Collections", "swap", "(Ljava/lang/Object;II)V", Colls_swap),
+    M("java/util/Collections", "binarySearch", "(Ljava/lang/Object;Ljava/lang/Object;)I", Colls_binarySearch),
+    M("java/util/Collections", "indexOfSubList", "(Ljava/lang/Object;Ljava/lang/Object;)I", Colls_indexOfSubList),
+    M("java/util/Collections", "addAll", "(Ljava/lang/Object;[Ljava/lang/Object;)Z", Colls_addAll),
+    M("java/util/Collections", "disjoint", "(Ljava/lang/Object;Ljava/lang/Object;)Z", Colls_disjoint),
+    M("java/util/Collections", "replaceAll", "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Z", Colls_replaceAll),
+    M("java/util/Collections", "rotate", "(Ljava/lang/Object;I)V", Colls_rotate),
+    M("java/util/Collections", "list", "(Ljava/lang/Object;)Ljava/lang/Object;", Colls_list),
+    M("java/util/Arrays", "sort", "([Ljava/lang/Object;)V", Arr_sort),
+    M("java/util/Arrays", "binarySearch", "([Ljava/lang/Object;J)I", Arr_binarySearch),
+    M("java/util/Arrays", "copyOf", "([Ljava/lang/Object;I)Ljava/lang/Object;", Arr_copyOf),
+    M("java/util/Arrays", "copyOfRange", "([Ljava/lang/Object;II)Ljava/lang/Object;", Arr_copyOfRange),
+    M("java/util/Arrays", "fill", "([Ljava/lang/Object;Ljava/lang/Object;)V", Arr_fill),
+    M("java/util/Arrays", "equals", "([Ljava/lang/Object;Ljava/lang/Object;)Z", Arr_equals),
+    M("java/util/Arrays", "hashCode", "([Ljava/lang/Object;)I", Arr_hashCode),
+    M("java/util/Arrays", "asList", "([Ljava/lang/Object;)Ljava/lang/Object;", Arr_asList),
+    M("java/util/Arrays", "toString", "([Ljava/lang/Object;)Ljava/lang/Object;", Arr_toString),
+    M("java/util/Arrays", "deepToString", NULL, Arr_deepToString),
+    M("java/util/Arrays", "stream", NULL, Arr_stream),
+    M("java/util/Arrays", "parallelSort", NULL, Arr_parallelSort),
+    M("java/util/Random", "<init>", "()V", Rnd_init),
+    M("java/util/Random", "<init>", "(J)V", Rnd_init_seed),
+    M("java/util/Random", "setSeed", "(J)V", Rnd_setSeed),
+    M("java/util/Random", "next", "(I)I", Rnd_next),
+    M("java/util/Random", "nextInt", NULL, Rnd_nextInt),
+    M("java/util/Random", "nextIntBound", "(I)I", Rnd_nextIntBound),
+    M("java/util/Random", "nextLong", NULL, Rnd_nextLong),
+    M("java/util/Random", "nextFloat", NULL, Rnd_nextFloat),
+    M("java/util/Random", "nextDouble", NULL, Rnd_nextDouble),
+    M("java/util/Random", "nextBoolean", NULL, Rnd_nextBoolean),
+    M("java/util/Random", "nextBytes", "([Ljava/lang/Object;)V", Rnd_nextBytes),
+    M("java/util/Random", "nextGaussian", NULL, Rnd_nextGaussian),
+    M("java/security/SecureRandom", "nextBytes", "([Ljava/lang/Object;)V", SRnd_nextBytes),
+    M("java/security/SecureRandom", "getInstance", NULL, SRnd_getInstance),
+    M("java/security/SecureRandom", "getSeed", "()Ljava/lang/Object;", SRnd_getSeed),
+    M("java/security/SecureRandom", "generateSeed", "(I)Ljava/lang/Object;", SRnd_generateSeed),
+    M("java/security/SecureRandom", "setSeed", NULL, SRnd_setSeed),
+    M("java/util/UUID", "<init>", "()V", UUID_init),
+    M("java/util/UUID", "<init>", "(JJ)V", UUID_init_ll),
+    M("java/util/UUID", "randomUUID", NULL, UUID_randomUUID),
+    M("java/util/UUID", "toString", NULL, UUID_toString),
+    M("java/util/UUID", "fromString", "(Ljava/lang/Object;)Ljava/lang/Object;", UUID_fromString),
+    M("java/util/UUID", "getMostSignificantBits", NULL, UUID_getMostSignificantBits),
+    M("java/util/UUID", "getLeastSignificantBits", NULL, UUID_getLeastSignificantBits),
+    M("java/util/UUID", "equals", "(Ljava/lang/Object;)Z", UUID_equals),
+    M("java/util/UUID", "hashCode", NULL, UUID_hashCode),
+    M("java/util/UUID", "compareTo", "(Ljava/lang/Object;)I", UUID_compareTo),
+    M("java/util/UUID", "version", NULL, UUID_version),
+    M("java/util/UUID", "variant", NULL, UUID_variant),
+    M("java/util/UUID", "nameUUIDFromBytes", "([Ljava/lang/Object;)Ljava/lang/Object;", UUID_nameUUIDFromBytes),
+    M("java/util/UUID", "timestamp", NULL, UUID_timestamp),
+    M("java/util/UUID", "clockSequence", NULL, UUID_clockSequence),
+    M("java/util/UUID", "node", NULL, UUID_node),
+    M("java/util/Properties", "getProperty", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Prop_getProperty),
+    M("java/util/Properties", "setProperty", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Prop_setProperty),
+    M("java/util/Properties", "load", "(Ljava/lang/Object;)V", Prop_load),
+    M("java/util/Properties", "store", "(Ljava/lang/Object;)V", Prop_store),
+    M("java/util/Properties", "propertyNames", NULL, Prop_propertyNames),
+    M("java/util/Properties", "stringPropertyNames", NULL, Prop_stringPropertyNames),
+    M("java/util/Properties", "forEach", NULL, Prop_forEach),
+    M("java/util/Properties", "keys", NULL, Prop_keys),
+    M("java/util/Properties", "containsKey", NULL, Prop_containsKey),
+    M("java/util/Properties", "size", NULL, Prop_size),
+    M("java/util/Properties", "loadFromXML", NULL, Prop_loadFromXML),
+    M("java/util/Properties", "storeToXML", NULL, Prop_storeToXML),
+    M("java/util/Properties", "putAll", NULL, Prop_putAll),
+    M("java/util/Properties", "clear", NULL, Prop_clear),
+    M("java/util/Properties", "replaceAll", NULL, Prop_replaceAll),
+    M("java/util/Date", "<init>", "()V", Date_init),
+    M("java/util/Date", "<init>", "(J)V", Date_init_ms),
+    M("java/util/Date", "getTime", NULL, Date_getTime),
+    M("java/util/Date", "setTime", "(J)V", Date_setTime),
+    M("java/util/Date", "before", "(Ljava/lang/Object;)Z", Date_before),
+    M("java/util/Date", "after", "(Ljava/lang/Object;)Z", Date_after),
+    M("java/util/Date", "compareTo", "(Ljava/lang/Object;)I", Date_compareTo),
+    M("java/util/Date", "equals", "(Ljava/lang/Object;)Z", Date_equals),
+    M("java/util/Date", "hashCode", NULL, Date_hashCode),
+    M("java/util/Date", "clone", NULL, Date_clone),
+    M("java/util/Date", "toString", NULL, Date_toString),
+    M("java/util/Date", "from", NULL, Date_from),
+    M("java/util/Date", "toInstant", NULL, Date_toInstant),
+    M("java/util/Date", "getYear", NULL, Date_getYear),
+    M("java/util/Date", "getMonth", NULL, Date_getMonth),
+    M("java/util/Date", "getDate", NULL, Date_getDate),
+    M("java/util/Date", "getDay", NULL, Date_getDay),
+    M("java/util/Date", "getHours", NULL, Date_getHours),
+    M("java/util/Date", "getMinutes", NULL, Date_getMinutes),
+    M("java/util/Date", "getSeconds", NULL, Date_getSeconds),
+    M("java/util/Calendar", "getInstance", NULL, Cal_getInstance),
+    M("java/util/GregorianCalendar", "getInstance", NULL, Cal_getInstance),
+    M("java/util/Calendar", "getTime", NULL, Cal_getTime),
+    M("java/util/GregorianCalendar", "getTime", NULL, Cal_getTime),
+    M("java/util/Calendar", "setTime", "(Ljava/lang/Object;)V", Cal_setTime),
+    M("java/util/GregorianCalendar", "setTime", "(Ljava/lang/Object;)V", Cal_setTime),
+    M("java/util/Calendar", "getTimeInMillis", NULL, Cal_getTimeInMillis),
+    M("java/util/GregorianCalendar", "getTimeInMillis", NULL, Cal_getTimeInMillis),
+    M("java/util/Calendar", "setTimeInMillis", "(J)V", Cal_setTimeInMillis),
+    M("java/util/GregorianCalendar", "setTimeInMillis", "(J)V", Cal_setTimeInMillis),
+    M("java/util/Calendar", "get", "(I)I", Cal_get),
+    M("java/util/GregorianCalendar", "get", "(I)I", Cal_get),
+    M("java/util/Calendar", "set", "(II)V", Cal_set),
+    M("java/util/GregorianCalendar", "set", "(II)V", Cal_set),
+    M("java/util/Calendar", "set", "(III)V", Cal_set_ymd),
+    M("java/util/GregorianCalendar", "set", "(III)V", Cal_set_ymd),
+    M("java/util/Calendar", "set", "(IIIIII)V", Cal_set_ymdhms),
+    M("java/util/GregorianCalendar", "set", "(IIIIII)V", Cal_set_ymdhms),
+    M("java/util/Calendar", "add", "(II)V", Cal_add),
+    M("java/util/GregorianCalendar", "add", "(II)V", Cal_add),
+    M("java/util/Calendar", "roll", NULL, Cal_roll),
+    M("java/util/GregorianCalendar", "roll", NULL, Cal_roll),
+    M("java/util/Calendar", "clear", NULL, Cal_clear),
+    M("java/util/GregorianCalendar", "clear", NULL, Cal_clear),
+    M("java/util/Calendar", "before", "(Ljava/lang/Object;)Z", Cal_before),
+    M("java/util/GregorianCalendar", "before", "(Ljava/lang/Object;)Z", Cal_before),
+    M("java/util/Calendar", "after", "(Ljava/lang/Object;)Z", Cal_after),
+    M("java/util/GregorianCalendar", "after", "(Ljava/lang/Object;)Z", Cal_after),
+    M("java/util/Calendar", "compareTo", "(Ljava/lang/Object;)I", Cal_compareTo),
+    M("java/util/GregorianCalendar", "compareTo", "(Ljava/lang/Object;)I", Cal_compareTo),
+    M("java/util/Calendar", "clone", NULL, Cal_clone),
+    M("java/util/GregorianCalendar", "clone", NULL, Cal_clone),
+    M("java/util/Calendar", "getFirstDayOfWeek", NULL, Cal_getFirstDayOfWeek),
+    M("java/util/GregorianCalendar", "getFirstDayOfWeek", NULL, Cal_getFirstDayOfWeek),
+    M("java/util/Calendar", "setFirstDayOfWeek", NULL, Cal_setFirstDayOfWeek),
+    M("java/util/GregorianCalendar", "setFirstDayOfWeek", NULL, Cal_setFirstDayOfWeek),
+    M("java/util/Calendar", "getMinimalDaysInFirstWeek", NULL, Cal_getMinimalDaysInFirstWeek),
+    M("java/util/GregorianCalendar", "getMinimalDaysInFirstWeek", NULL, Cal_getMinimalDaysInFirstWeek),
+    M("java/util/Calendar", "getTimeZone", NULL, Cal_getTimeZone),
+    M("java/util/GregorianCalendar", "getTimeZone", NULL, Cal_getTimeZone),
+    M("java/util/Calendar", "setTimeZone", NULL, Cal_setTimeZone),
+    M("java/util/GregorianCalendar", "setTimeZone", NULL, Cal_setTimeZone),
+    M("java/util/Calendar", "isSet", NULL, Cal_isSet),
+    M("java/util/GregorianCalendar", "isSet", NULL, Cal_isSet),
+    M("java/util/Calendar", "getActualMaximum", "(I)I", Cal_getActualMaximum),
+    M("java/util/GregorianCalendar", "getActualMaximum", "(I)I", Cal_getActualMaximum),
+    M("java/util/Calendar", "getActualMinimum", NULL, Cal_getActualMinimum),
+    M("java/util/GregorianCalendar", "getActualMinimum", NULL, Cal_getActualMinimum),
+    M("java/util/Calendar", "getWeeksInWeekYear", NULL, Cal_getWeeksInWeekYear),
+    M("java/util/GregorianCalendar", "getWeeksInWeekYear", NULL, Cal_getWeeksInWeekYear),
+    M("java/util/Calendar", "toInstant", NULL, Cal_toInstant),
+    M("java/util/GregorianCalendar", "toInstant", NULL, Cal_toInstant),
+    M("java/util/Calendar", "getWeekYear", NULL, Cal_getWeekYear),
+    M("java/util/GregorianCalendar", "getWeekYear", NULL, Cal_getWeekYear),
+    M("java/util/Calendar", "setWeekDate", NULL, Cal_setWeekDate),
+    M("java/util/GregorianCalendar", "setWeekDate", NULL, Cal_setWeekDate),
+    M("java/util/Calendar", "isWeekDateSupported", NULL, Cal_isWeekDateSupported),
+    M("java/util/GregorianCalendar", "isWeekDateSupported", NULL, Cal_isWeekDateSupported),
+    M("java/util/TimeZone", "getDefault", NULL, TZ_getDefault),
+    M("java/util/SimpleTimeZone", "getDefault", NULL, TZ_getDefault),
+    M("java/util/TimeZone", "getTimeZone", "(Ljava/lang/Object;)Ljava/lang/Object;", TZ_getTimeZone),
+    M("java/util/SimpleTimeZone", "getTimeZone", "(Ljava/lang/Object;)Ljava/lang/Object;", TZ_getTimeZone),
+    M("java/util/TimeZone", "getID", NULL, TZ_getID),
+    M("java/util/SimpleTimeZone", "getID", NULL, TZ_getID),
+    M("java/util/TimeZone", "setID", "(Ljava/lang/Object;)V", TZ_setID),
+    M("java/util/SimpleTimeZone", "setID", "(Ljava/lang/Object;)V", TZ_setID),
+    M("java/util/TimeZone", "getDisplayName", NULL, TZ_getDisplayName),
+    M("java/util/SimpleTimeZone", "getDisplayName", NULL, TZ_getDisplayName),
+    M("java/util/TimeZone", "getOffset", NULL, TZ_getOffset),
+    M("java/util/SimpleTimeZone", "getOffset", NULL, TZ_getOffset),
+    M("java/util/TimeZone", "getRawOffset", NULL, TZ_getRawOffset),
+    M("java/util/SimpleTimeZone", "getRawOffset", NULL, TZ_getRawOffset),
+    M("java/util/TimeZone", "getDSTSavings", NULL, TZ_getDSTSavings),
+    M("java/util/SimpleTimeZone", "getDSTSavings", NULL, TZ_getDSTSavings),
+    M("java/util/TimeZone", "useDaylightTime", NULL, TZ_useDaylightTime),
+    M("java/util/SimpleTimeZone", "useDaylightTime", NULL, TZ_useDaylightTime),
+    M("java/util/TimeZone", "observesDaylightTime", NULL, TZ_observesDaylightTime),
+    M("java/util/SimpleTimeZone", "observesDaylightTime", NULL, TZ_observesDaylightTime),
+    M("java/util/TimeZone", "inDaylightTime", NULL, TZ_inDaylightTime),
+    M("java/util/SimpleTimeZone", "inDaylightTime", NULL, TZ_inDaylightTime),
+    M("java/util/TimeZone", "getAvailableIDs", NULL, TZ_getAvailableIDs),
+    M("java/util/SimpleTimeZone", "getAvailableIDs", NULL, TZ_getAvailableIDs),
+    M("java/util/TimeZone", "setDefault", NULL, TZ_setDefault),
+    M("java/util/SimpleTimeZone", "setDefault", NULL, TZ_setDefault),
+    M("java/util/TimeZone", "clone", NULL, TZ_clone),
+    M("java/util/SimpleTimeZone", "clone", NULL, TZ_clone),
+    M("java/text/SimpleDateFormat", "<init>", "(Ljava/lang/Object;)V", SDF_init_p),
+    M("java/text/SimpleDateFormat", "format", "(Ljava/lang/Object;)Ljava/lang/Object;", SDF_format),
+    M("java/text/SimpleDateFormat", "format", "()V", SDF_format_obj),
+    M("java/text/SimpleDateFormat", "parse", "(Ljava/lang/Object;)Ljava/lang/Object;", SDF_parse),
+    M("java/text/SimpleDateFormat", "applyPattern", "(Ljava/lang/Object;)V", SDF_applyPattern),
+    M("java/text/SimpleDateFormat", "toPattern", NULL, SDF_toPattern),
+    M("java/text/SimpleDateFormat", "toLocalizedPattern", NULL, SDF_toLocalizedPattern),
+    M("java/text/SimpleDateFormat", "setLenient", NULL, SDF_setLenient),
+    M("java/text/SimpleDateFormat", "isLenient", NULL, SDF_isLenient),
+    M("java/text/SimpleDateFormat", "clone", NULL, SDF_clone),
+    M("java/text/SimpleDateFormat", "setTimeZone", NULL, SDF_setTimeZone),
+    M("java/text/SimpleDateFormat", "getTimeZone", NULL, SDF_getTimeZone),
+    M("java/text/SimpleDateFormat", "setCalendar", NULL, SDF_setCalendar),
+    M("java/text/SimpleDateFormat", "getCalendar", NULL, SDF_getCalendar),
+    M("java/text/SimpleDateFormat", "setNumberFormat", NULL, SDF_setNumberFormat),
+    M("java/text/SimpleDateFormat", "getNumberFormat", NULL, SDF_getNumberFormat),
+    M("java/text/SimpleDateFormat", "getDateFormatSymbols", NULL, SDF_getDateFormatSymbols),
+    M("java/text/DateFormat", "getInstance", NULL, DF_getInstance),
+    M("java/text/DateFormat", "getDateInstance", NULL, DF_getDateInstance),
+    M("java/text/DateFormat", "getTimeInstance", NULL, DF_getTimeInstance),
+    M("java/text/DateFormat", "getDateTimeInstance", NULL, DF_getDateTimeInstance),
+    M("java/text/DateFormat", "format", NULL, DF_format),
+    M("java/text/DateFormat", "parse", NULL, DF_parse),
+    M("java/text/NumberFormat", "getInstance", NULL, NF_getInstance),
+    M("java/text/NumberFormat", "format", "(D)Ljava/lang/Object;", NF_format_d),
+    M("java/text/NumberFormat", "format", "(J)Ljava/lang/Object;", NF_format_j),
+    M("java/text/NumberFormat", "parse", "(Ljava/lang/Object;)Ljava/lang/Object;", NF_parse),
+    M("java/text/NumberFormat", "setGroupingUsed", NULL, NF_setGroupingUsed),
+    M("java/text/NumberFormat", "setMinimumFractionDigits", "(I)V", NF_setMinimumFractionDigits),
+    M("java/text/NumberFormat", "setMaximumFractionDigits", "(I)V", NF_setMaximumFractionDigits),
+    M("java/text/DecimalFormat", "<init>", "(Ljava/lang/Object;)V", DecF_init_p),
+    M("java/text/DecimalFormat", "format", "(D)Ljava/lang/Object;", DecF_format),
+    M("java/text/DecimalFormat", "format", "()Ljava/lang/Object;", DecF_format_obj),
+    M("java/text/DecimalFormat", "applyPattern", "(Ljava/lang/Object;)V", DecF_applyPattern),
+    M("java/text/DecimalFormat", "toPattern", NULL, DecF_toPattern),
+    M("java/text/DecimalFormat", "setDecimalSeparatorAlwaysShown", NULL, DecF_setDecimalSeparatorAlwaysShown),
+    M("java/text/DecimalFormat", "setGroupingSize", NULL, DecF_setGroupingSize),
+    M("java/util/regex/Pattern", "compile", "(Ljava/lang/Object;)Ljava/lang/Object;", Pat_compile),
+    M("java/util/regex/Pattern", "compile", "(Ljava/lang/Object;)V", Pat_compile_f),
+    M("java/util/regex/Pattern", "matches", "(Ljava/lang/Object;Ljava/lang/Object;)Z", Pat_matches_s),
+    M("java/util/regex/Pattern", "pattern", NULL, Pat_pattern),
+    M("java/util/regex/Pattern", "toString", NULL, Pat_toString),
+    M("java/util/regex/Pattern", "flags", NULL, Pat_flags),
+    M("java/util/regex/Pattern", "matcher", "(Ljava/lang/Object;)Ljava/lang/Object;", Pat_matcher),
+    M("java/util/regex/Pattern", "split", "(Ljava/lang/Object;)Ljava/lang/Object;", Pat_split),
+    M("java/util/regex/Pattern", "quote", "(Ljava/lang/Object;)Ljava/lang/Object;", Pat_quote),
+    M("java/util/regex/Pattern", "asPredicate", NULL, Pat_asPredicate),
+    M("java/util/regex/Pattern", "splitAsStream", NULL, Pat_splitAsStream),
+    M("java/util/regex/Matcher", "find", "()Z", Mat_find),
+    M("java/util/regex/Matcher", "find", "(I)V", Mat_find_at),
+    M("java/util/regex/Matcher", "lookingAt", NULL, Mat_lookingAt),
+    M("java/util/regex/Matcher", "matches", NULL, Mat_matches),
+    M("java/util/regex/Matcher", "group", "()Ljava/lang/Object;", Mat_group),
+    M("java/util/regex/Matcher", "group", "(I)Ljava/lang/Object;", Mat_group_i),
+    M("java/util/regex/Matcher", "groupCount", NULL, Mat_groupCount),
+    M("java/util/regex/Matcher", "start", "()I", Mat_start),
+    M("java/util/regex/Matcher", "end", "()I", Mat_end),
+    M("java/util/regex/Matcher", "start", "(I)I", Mat_start_i),
+    M("java/util/regex/Matcher", "end", "(I)I", Mat_end_i),
+    M("java/util/regex/Matcher", "reset", "()Ljava/lang/Object;", Mat_reset),
+    M("java/util/regex/Matcher", "reset", "(Ljava/lang/Object;)Ljava/lang/Object;", Mat_reset_s),
+    M("java/util/regex/Matcher", "region", "(I)Ljava/lang/Object;", Mat_region),
+    M("java/util/regex/Matcher", "replaceAll", "(Ljava/lang/Object;)Ljava/lang/Object;", Mat_replaceAll),
+    M("java/util/regex/Matcher", "replaceFirst", "(Ljava/lang/Object;)Ljava/lang/Object;", Mat_replaceFirst),
+    M("java/util/regex/Matcher", "quoteReplacement", "(Ljava/lang/Object;)Ljava/lang/Object;", Mat_quoteReplacement),
+    M("java/util/regex/Matcher", "appendReplacement", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Mat_appendReplacement),
+    M("java/util/regex/Matcher", "appendTail", "(Ljava/lang/Object;)Ljava/lang/Object;", Mat_appendTail),
+    M("java/util/regex/Matcher", "toMatchResult", NULL, Mat_toMatchResult),
+    M("java/util/regex/Matcher", "usePattern", NULL, Mat_usePattern),
+    M("java/util/regex/Matcher", "hitEnd", NULL, Mat_hitEnd),
+    M("java/util/regex/Matcher", "requireEnd", NULL, Mat_requireEnd),
+    M("java/util/regex/Matcher", "hasTransparentBounds", NULL, Mat_hasTransparentBounds),
+    M("java/util/regex/Matcher", "hasAnchoringBounds", NULL, Mat_hasAnchoringBounds),
+    M("java/util/regex/Matcher", "useTransparentBounds", NULL, Mat_useTransparentBounds),
+    M("java/util/regex/Matcher", "useAnchoringBounds", NULL, Mat_useAnchoringBounds),
+    M("java/util/regex/Matcher", "region", "()I", Mat_region_start),
+    M("java/lang/String", "format", NULL, String_format),
+    M("java/util/concurrent/CountDownLatch", "<init>", "(I)V", CDL_init),
+    M("java/util/concurrent/CountDownLatch", "await", "()V", CDL_await),
+    M("java/util/concurrent/CountDownLatch", "await", "(J)Z", CDL_await_to),
+    M("java/util/concurrent/CountDownLatch", "countDown", NULL, CDL_countDown),
+    M("java/util/concurrent/CountDownLatch", "getCount", NULL, CDL_getCount),
+    M("java/util/concurrent/CountDownLatch", "toString", NULL, CDL_toString),
+    M("java/util/concurrent/Semaphore", "<init>", "(I)V", Sem_init),
+    M("java/util/concurrent/Semaphore", "acquire", "()V", Sem_acquire),
+    M("java/util/concurrent/Semaphore", "acquire", "(I)V", Sem_acquire_n),
+    M("java/util/concurrent/Semaphore", "tryAcquire", NULL, Sem_tryAcquire),
+    M("java/util/concurrent/Semaphore", "release", NULL, Sem_release),
+    M("java/util/concurrent/Semaphore", "availablePermits", NULL, Sem_availablePermits),
+    M("java/util/concurrent/Semaphore", "drainPermits", NULL, Sem_drainPermits),
+    M("java/util/concurrent/Semaphore", "isFair", NULL, Sem_isFair),
+    M("java/util/concurrent/Semaphore", "hasQueuedThreads", NULL, Sem_hasQueuedThreads),
+    M("java/util/concurrent/Semaphore", "getQueueLength", NULL, Sem_getQueueLength),
+    M("java/util/concurrent/LinkedBlockingQueue", "<init>", NULL, LBQ_init),
+    M("java/util/concurrent/ArrayBlockingQueue", "<init>", NULL, LBQ_init),
+    M("java/util/concurrent/LinkedBlockingDeque", "<init>", NULL, LBQ_init),
+    M("java/util/concurrent/LinkedBlockingQueue", "put", "(Ljava/lang/Object;)V", LBQ_put),
+    M("java/util/concurrent/ArrayBlockingQueue", "put", "(Ljava/lang/Object;)V", LBQ_put),
+    M("java/util/concurrent/LinkedBlockingDeque", "put", "(Ljava/lang/Object;)V", LBQ_put),
+    M("java/util/concurrent/LinkedBlockingQueue", "offer", NULL, LBQ_offer),
+    M("java/util/concurrent/ArrayBlockingQueue", "offer", NULL, LBQ_offer),
+    M("java/util/concurrent/LinkedBlockingDeque", "offer", NULL, LBQ_offer),
+    M("java/util/concurrent/LinkedBlockingQueue", "add", NULL, LBQ_add),
+    M("java/util/concurrent/ArrayBlockingQueue", "add", NULL, LBQ_add),
+    M("java/util/concurrent/LinkedBlockingDeque", "add", NULL, LBQ_add),
+    M("java/util/concurrent/LinkedBlockingQueue", "take", NULL, LBQ_take),
+    M("java/util/concurrent/ArrayBlockingQueue", "take", NULL, LBQ_take),
+    M("java/util/concurrent/LinkedBlockingDeque", "take", NULL, LBQ_take),
+    M("java/util/concurrent/LinkedBlockingQueue", "poll", NULL, LBQ_poll),
+    M("java/util/concurrent/ArrayBlockingQueue", "poll", NULL, LBQ_poll),
+    M("java/util/concurrent/LinkedBlockingDeque", "poll", NULL, LBQ_poll),
+    M("java/util/concurrent/LinkedBlockingQueue", "peek", NULL, LBQ_peek),
+    M("java/util/concurrent/ArrayBlockingQueue", "peek", NULL, LBQ_peek),
+    M("java/util/concurrent/LinkedBlockingDeque", "peek", NULL, LBQ_peek),
+    M("java/util/concurrent/LinkedBlockingQueue", "size", NULL, LBQ_size),
+    M("java/util/concurrent/ArrayBlockingQueue", "size", NULL, LBQ_size),
+    M("java/util/concurrent/LinkedBlockingDeque", "size", NULL, LBQ_size),
+    M("java/util/concurrent/LinkedBlockingQueue", "isEmpty", NULL, LBQ_isEmpty),
+    M("java/util/concurrent/ArrayBlockingQueue", "isEmpty", NULL, LBQ_isEmpty),
+    M("java/util/concurrent/LinkedBlockingDeque", "isEmpty", NULL, LBQ_isEmpty),
+    M("java/util/concurrent/LinkedBlockingQueue", "remainingCapacity", NULL, LBQ_remainingCapacity),
+    M("java/util/concurrent/ArrayBlockingQueue", "remainingCapacity", NULL, LBQ_remainingCapacity),
+    M("java/util/concurrent/LinkedBlockingDeque", "remainingCapacity", NULL, LBQ_remainingCapacity),
+    M("java/util/concurrent/LinkedBlockingQueue", "clear", NULL, LBQ_clear),
+    M("java/util/concurrent/ArrayBlockingQueue", "clear", NULL, LBQ_clear),
+    M("java/util/concurrent/LinkedBlockingDeque", "clear", NULL, LBQ_clear),
+    M("java/util/concurrent/LinkedBlockingQueue", "contains", "(Ljava/lang/Object;)Z", LBQ_contains),
+    M("java/util/concurrent/ArrayBlockingQueue", "contains", "(Ljava/lang/Object;)Z", LBQ_contains),
+    M("java/util/concurrent/LinkedBlockingDeque", "contains", "(Ljava/lang/Object;)Z", LBQ_contains),
+    M("java/util/concurrent/LinkedBlockingQueue", "iterator", NULL, LBQ_iterator),
+    M("java/util/concurrent/ArrayBlockingQueue", "iterator", NULL, LBQ_iterator),
+    M("java/util/concurrent/LinkedBlockingDeque", "iterator", NULL, LBQ_iterator),
+    M("java/util/concurrent/Executor", "execute", "(Ljava/lang/Object;)V", Exec_execute),
+    M("java/util/concurrent/ExecutorService", "execute", "(Ljava/lang/Object;)V", Exec_execute),
+    M("java/util/concurrent/AbstractExecutorService", "execute", "(Ljava/lang/Object;)V", Exec_execute),
+    M("java/util/concurrent/ThreadPoolExecutor", "execute", "(Ljava/lang/Object;)V", Exec_execute),
+    M("java/util/concurrent/ScheduledThreadPoolExecutor", "execute", "(Ljava/lang/Object;)V", Exec_execute),
+    M("java/util/concurrent/Executor", "submit", "(I)Ljava/lang/Object;", Exec_submit),
+    M("java/util/concurrent/ExecutorService", "submit", "(I)Ljava/lang/Object;", Exec_submit),
+    M("java/util/concurrent/AbstractExecutorService", "submit", "(I)Ljava/lang/Object;", Exec_submit),
+    M("java/util/concurrent/ThreadPoolExecutor", "submit", "(I)Ljava/lang/Object;", Exec_submit),
+    M("java/util/concurrent/ScheduledThreadPoolExecutor", "submit", "(I)Ljava/lang/Object;", Exec_submit),
+    M("java/util/concurrent/Executors", "newFixedThreadPool", NULL, Execs_newFixedThreadPool),
+    M("java/util/concurrent/Executors", "newSingleThreadExecutor", NULL, Execs_newSingleThreadExecutor),
+    M("java/util/concurrent/Executors", "newCachedThreadPool", NULL, Execs_newCachedThreadPool),
+    M("java/util/concurrent/Executors", "newScheduledThreadPool", NULL, Execs_newScheduledThreadPool),
+    M("java/util/concurrent/Executors", "callable", "(I)Ljava/lang/Object;", Execs_callable),
+    M("java/util/concurrent/Executors", "defaultThreadFactory", NULL, Execs_defaultThreadFactory),
+    M("java/util/concurrent/Executor", "shutdown", NULL, Exec_shutdown),
+    M("java/util/concurrent/ExecutorService", "shutdown", NULL, Exec_shutdown),
+    M("java/util/concurrent/AbstractExecutorService", "shutdown", NULL, Exec_shutdown),
+    M("java/util/concurrent/ThreadPoolExecutor", "shutdown", NULL, Exec_shutdown),
+    M("java/util/concurrent/ScheduledThreadPoolExecutor", "shutdown", NULL, Exec_shutdown),
+    M("java/util/concurrent/Executor", "shutdownNow", NULL, Exec_shutdownNow),
+    M("java/util/concurrent/ExecutorService", "shutdownNow", NULL, Exec_shutdownNow),
+    M("java/util/concurrent/AbstractExecutorService", "shutdownNow", NULL, Exec_shutdownNow),
+    M("java/util/concurrent/ThreadPoolExecutor", "shutdownNow", NULL, Exec_shutdownNow),
+    M("java/util/concurrent/ScheduledThreadPoolExecutor", "shutdownNow", NULL, Exec_shutdownNow),
+    M("java/util/concurrent/Executor", "isShutdown", NULL, Exec_isShutdown),
+    M("java/util/concurrent/ExecutorService", "isShutdown", NULL, Exec_isShutdown),
+    M("java/util/concurrent/AbstractExecutorService", "isShutdown", NULL, Exec_isShutdown),
+    M("java/util/concurrent/ThreadPoolExecutor", "isShutdown", NULL, Exec_isShutdown),
+    M("java/util/concurrent/ScheduledThreadPoolExecutor", "isShutdown", NULL, Exec_isShutdown),
+    M("java/util/concurrent/Executor", "isTerminated", NULL, Exec_isTerminated),
+    M("java/util/concurrent/ExecutorService", "isTerminated", NULL, Exec_isTerminated),
+    M("java/util/concurrent/AbstractExecutorService", "isTerminated", NULL, Exec_isTerminated),
+    M("java/util/concurrent/ThreadPoolExecutor", "isTerminated", NULL, Exec_isTerminated),
+    M("java/util/concurrent/ScheduledThreadPoolExecutor", "isTerminated", NULL, Exec_isTerminated),
+    M("java/util/concurrent/Executor", "awaitTermination", NULL, Exec_awaitTermination),
+    M("java/util/concurrent/ExecutorService", "awaitTermination", NULL, Exec_awaitTermination),
+    M("java/util/concurrent/AbstractExecutorService", "awaitTermination", NULL, Exec_awaitTermination),
+    M("java/util/concurrent/ThreadPoolExecutor", "awaitTermination", NULL, Exec_awaitTermination),
+    M("java/util/concurrent/ScheduledThreadPoolExecutor", "awaitTermination", NULL, Exec_awaitTermination),
+    M("java/util/concurrent/Executor", "invokeAll", NULL, Exec_invokeAll),
+    M("java/util/concurrent/ExecutorService", "invokeAll", NULL, Exec_invokeAll),
+    M("java/util/concurrent/AbstractExecutorService", "invokeAll", NULL, Exec_invokeAll),
+    M("java/util/concurrent/ThreadPoolExecutor", "invokeAll", NULL, Exec_invokeAll),
+    M("java/util/concurrent/ScheduledThreadPoolExecutor", "invokeAll", NULL, Exec_invokeAll),
+    M("java/util/concurrent/Executor", "invokeAny", NULL, Exec_invokeAny),
+    M("java/util/concurrent/ExecutorService", "invokeAny", NULL, Exec_invokeAny),
+    M("java/util/concurrent/AbstractExecutorService", "invokeAny", NULL, Exec_invokeAny),
+    M("java/util/concurrent/ThreadPoolExecutor", "invokeAny", NULL, Exec_invokeAny),
+    M("java/util/concurrent/ScheduledThreadPoolExecutor", "invokeAny", NULL, Exec_invokeAny),
+    M("java/util/concurrent/FutureTask", "get", NULL, Fut_get),
+    M("java/util/concurrent/FutureTask", "isDone", NULL, Fut_isDone),
+    M("java/util/concurrent/FutureTask", "isCancelled", NULL, Fut_isCancelled),
+    M("java/util/concurrent/FutureTask", "cancel", NULL, Fut_cancel),
+    M("java/util/concurrent/FutureTask", "run", NULL, Fut_run),
+    M("java/util/concurrent/CompletableFuture", "<init>", NULL, CF_new),
+    M("java/util/concurrent/CompletableFuture", "completedFuture", "(I)Ljava/lang/Object;", CF_completedFuture),
+    M("java/util/concurrent/CompletableFuture", "supplyAsync", "(Ljava/lang/Object;)Ljava/lang/Object;", CF_supplyAsync),
+    M("java/util/concurrent/CompletableFuture", "runAsync", "(Ljava/lang/Object;)V", CF_runAsync),
+    M("java/util/concurrent/CompletableFuture", "thenApply", NULL, CF_thenApply),
+    M("java/util/concurrent/CompletableFuture", "thenAccept", NULL, CF_thenAccept),
+    M("java/util/concurrent/CompletableFuture", "thenCompose", NULL, CF_thenCompose),
+    M("java/util/concurrent/CompletableFuture", "thenRun", NULL, CF_thenRun),
+    M("java/util/concurrent/CompletableFuture", "whenComplete", NULL, CF_whenComplete),
+    M("java/util/concurrent/CompletableFuture", "exceptionally", NULL, CF_exceptionally),
+    M("java/util/concurrent/CompletableFuture", "complete", "(I)Z", CF_complete),
+    M("java/util/concurrent/CompletableFuture", "completeExceptionally", NULL, CF_completeExceptionally),
+    M("java/util/concurrent/CompletableFuture", "join", NULL, CF_join),
+    M("java/util/concurrent/CompletableFuture", "getNow", "(Ljava/lang/Object;)Ljava/lang/Object;", CF_getNow),
+    M("java/util/concurrent/CompletableFuture", "allOf", NULL, CF_allOf),
+    M("java/util/concurrent/CompletableFuture", "anyOf", NULL, CF_anyOf),
+    M("java/util/Timer", "schedule", "(Ljava/lang/Object;J)V", Timer_schedule),
+    M("java/util/Timer", "schedule", "(Ljava/lang/Object;JJ)V", Timer_schedule_period),
+    M("java/util/Timer", "scheduleAtFixedRate", NULL, Timer_scheduleAtFixedRate),
+    M("java/util/Timer", "cancel", NULL, Timer_cancel),
+    M("java/util/Timer", "purge", NULL, Timer_purge),
+    M("java/util/TimerTask", "cancel", NULL, TimerTask_cancel),
+    M("java/util/TimerTask", "run", NULL, TimerTask_run),
+    M("java/util/TimerTask", "scheduledExecutionTime", NULL, TimerTask_scheduledExecutionTime),
+    M("java/util/concurrent/atomic/AtomicInteger", "<init>", "(I)V", AtomInt_init),
+    M("java/util/concurrent/atomic/AtomicInteger", "get", NULL, AtomInt_get),
+    M("java/util/concurrent/atomic/AtomicInteger", "set", "(I)V", AtomInt_set),
+    M("java/util/concurrent/atomic/AtomicInteger", "getAndSet", "(I)V", AtomInt_getAndSet),
+    M("java/util/concurrent/atomic/AtomicInteger", "compareAndSet", "(II)Z", AtomInt_compareAndSet),
+    M("java/util/concurrent/atomic/AtomicInteger", "getAndIncrement", NULL, AtomInt_getAndIncrement),
+    M("java/util/concurrent/atomic/AtomicInteger", "getAndDecrement", NULL, AtomInt_getAndDecrement),
+    M("java/util/concurrent/atomic/AtomicInteger", "incrementAndGet", NULL, AtomInt_incrementAndGet),
+    M("java/util/concurrent/atomic/AtomicInteger", "decrementAndGet", NULL, AtomInt_decrementAndGet),
+    M("java/util/concurrent/atomic/AtomicInteger", "addAndGet", "(I)I", AtomInt_addAndGet),
+    M("java/util/concurrent/atomic/AtomicInteger", "getAndAdd", "(I)V", AtomInt_getAndAdd),
+    M("java/util/concurrent/atomic/AtomicInteger", "lazySet", NULL, AtomInt_lazySet),
+    M("java/util/concurrent/atomic/AtomicInteger", "weakCompareAndSet", NULL, AtomInt_weakCompareAndSet),
+    M("java/util/concurrent/atomic/AtomicInteger", "intValue", NULL, AtomInt_intValue),
+    M("java/util/concurrent/atomic/AtomicInteger", "longValue", NULL, AtomInt_longValue),
+    M("java/util/concurrent/atomic/AtomicInteger", "floatValue", NULL, AtomInt_floatValue),
+    M("java/util/concurrent/atomic/AtomicInteger", "doubleValue", NULL, AtomInt_doubleValue),
+    M("java/util/concurrent/atomic/AtomicInteger", "toString", NULL, AtomInt_toString),
+    M("java/util/concurrent/atomic/AtomicLong", "<init>", "(J)V", AtomLong_init),
+    M("java/util/concurrent/atomic/AtomicLong", "get", NULL, AtomLong_get),
+    M("java/util/concurrent/atomic/AtomicLong", "set", "(J)V", AtomLong_set),
+    M("java/util/concurrent/atomic/AtomicLong", "getAndSet", "(J)V", AtomLong_getAndSet),
+    M("java/util/concurrent/atomic/AtomicLong", "compareAndSet", "(JJ)Z", AtomLong_compareAndSet),
+    M("java/util/concurrent/atomic/AtomicLong", "incrementAndGet", NULL, AtomLong_incrementAndGet),
+    M("java/util/concurrent/atomic/AtomicLong", "decrementAndGet", NULL, AtomLong_decrementAndGet),
+    M("java/util/concurrent/atomic/AtomicLong", "getAndIncrement", NULL, AtomLong_getAndIncrement),
+    M("java/util/concurrent/atomic/AtomicLong", "getAndDecrement", NULL, AtomLong_getAndDecrement),
+    M("java/util/concurrent/atomic/AtomicLong", "addAndGet", "(J)J", AtomLong_addAndGet),
+    M("java/util/concurrent/atomic/AtomicLong", "getAndAdd", "(J)V", AtomLong_getAndAdd),
+    M("java/util/concurrent/atomic/AtomicLong", "intValue", NULL, AtomLong_intValue),
+    M("java/util/concurrent/atomic/AtomicLong", "longValue", NULL, AtomLong_longValue),
+    M("java/util/concurrent/atomic/AtomicLong", "floatValue", NULL, AtomLong_floatValue),
+    M("java/util/concurrent/atomic/AtomicLong", "doubleValue", NULL, AtomLong_doubleValue),
+    M("java/util/concurrent/atomic/AtomicLong", "toString", NULL, AtomLong_toString),
+    M("java/util/concurrent/atomic/AtomicBoolean", "<init>", "(Z)V", AtomBool_init),
+    M("java/util/concurrent/atomic/AtomicBoolean", "get", NULL, AtomBool_get),
+    M("java/util/concurrent/atomic/AtomicBoolean", "set", "(Z)V", AtomBool_set),
+    M("java/util/concurrent/atomic/AtomicBoolean", "getAndSet", "(Z)V", AtomBool_getAndSet),
+    M("java/util/concurrent/atomic/AtomicBoolean", "compareAndSet", "(ZZ)Z", AtomBool_compareAndSet),
+    M("java/util/concurrent/atomic/AtomicBoolean", "toString", NULL, AtomBool_toString),
+    M("java/util/concurrent/atomic/AtomicReference", "<init>", "(I)V", AtomRef_init),
+    M("java/util/concurrent/atomic/AtomicReference", "get", NULL, AtomRef_get),
+    M("java/util/concurrent/atomic/AtomicReference", "set", "(I)V", AtomRef_set),
+    M("java/util/concurrent/atomic/AtomicReference", "getAndSet", "(I)V", AtomRef_getAndSet),
+    M("java/util/concurrent/atomic/AtomicReference", "compareAndSet", "(Ljava/lang/Object;I)Z", AtomRef_compareAndSet),
+    M("java/util/concurrent/atomic/AtomicReference", "lazySet", NULL, AtomRef_lazySet),
+    M("java/util/concurrent/atomic/AtomicReference", "getAndUpdate", NULL, AtomRef_getAndUpdate),
+    M("java/util/concurrent/atomic/AtomicReference", "toString", NULL, AtomRef_toString),
+    M("java/util/concurrent/atomic/AtomicIntegerArray", "get", "(I)I", AtomIntArr_get),
+    M("java/util/concurrent/atomic/AtomicIntegerArray", "set", "(II)V", AtomIntArr_set),
+    M("java/util/concurrent/atomic/AtomicIntegerArray", "<init>", "(I)V", AtomIntArr_init),
+    M("java/util/concurrent/atomic/AtomicIntegerArray", "length", NULL, AtomIntArr_length),
+    M("java/util/concurrent/atomic/AtomicIntegerArray", "getAndSet", "(II)I", AtomIntArr_getAndSet),
+    M("java/util/concurrent/atomic/AtomicIntegerArray", "compareAndSet", "(III)Z", AtomIntArr_compareAndSet),
+    M("java/util/concurrent/atomic/AtomicIntegerArray", "incrementAndGet", "(I)I", AtomIntArr_incrementAndGet),
+    M("java/util/concurrent/locks/ReentrantLock", "lock", NULL, Lock_lock),
+    M("java/util/concurrent/locks/ReentrantLock", "unlock", NULL, Lock_unlock),
+    M("java/util/concurrent/locks/ReentrantLock", "tryLock", NULL, Lock_tryLock),
+    M("java/util/concurrent/locks/ReentrantLock", "newCondition", NULL, Lock_newCondition),
+    M("java/util/concurrent/locks/ReentrantLock", "lockInterruptibly", NULL, Lock_lockInterruptibly),
+    M("java/util/concurrent/locks/Condition", "await", NULL, Cond_await),
+    M("java/util/concurrent/locks/Condition", "signal", NULL, Cond_signal),
+    M("java/util/concurrent/locks/Condition", "signalAll", NULL, Cond_signalAll),
+    M("java/io/FileInputStream", "<init>", "(Ljava/lang/Object;)V", FIS_init_file),
+    M("java/io/FileInputStream", "read0", NULL, FIS_read0),
+    M("java/io/FileInputStream", "read", "([Ljava/lang/Object;)I", FIS_read_arr),
+    M("java/io/FileInputStream", "read", "([Ljava/lang/Object;II)I", FIS_read_range),
+    M("java/io/FileInputStream", "available", NULL, FIS_available),
+    M("java/io/FileInputStream", "skip", "(J)J", FIS_skip),
+    M("java/io/FileInputStream", "close", NULL, FIS_close),
+    M("java/io/FileInputStream", "mark", NULL, FIS_mark),
+    M("java/io/FileInputStream", "reset", NULL, FIS_reset),
+    M("java/io/FileInputStream", "markSupported", NULL, FIS_markSupported),
+    M("java/io/FileInputStream", "getFD", NULL, FIS_getFD),
+    M("java/io/FileInputStream", "getChannel", NULL, FIS_getChannel),
+    M("java/io/FileDescriptor", "sync", NULL, FD_sync),
+    M("java/io/FileDescriptor", "valid", NULL, FD_valid),
+    M("java/io/ByteArrayInputStream", "<init>", "(I)V", BAIS_init),
+    M("java/io/ByteArrayInputStream", "<init>", "(III)V", BAIS_init_range),
+    M("java/io/ByteArrayInputStream", "read0", NULL, BAIS_read0),
+    M("java/io/ByteArrayInputStream", "read", "([Ljava/lang/Object;)I", BAIS_read_arr),
+    M("java/io/ByteArrayInputStream", "read", "([Ljava/lang/Object;II)I", BAIS_read_range),
+    M("java/io/ByteArrayInputStream", "available", NULL, BAIS_available),
+    M("java/io/ByteArrayInputStream", "skip", "(J)J", BAIS_skip),
+    M("java/io/ByteArrayInputStream", "reset", NULL, BAIS_reset),
+    M("java/io/ByteArrayInputStream", "mark", NULL, BAIS_mark),
+    M("java/io/ByteArrayInputStream", "markSupported", NULL, BAIS_markSupported),
+    M("java/io/ByteArrayInputStream", "close", NULL, BAIS_close),
+    M("java/io/ByteArrayOutputStream", "<init>", NULL, BAOS_init),
+    M("java/io/ByteArrayOutputStream", "write", "(I)V", BAOS_write_byte),
+    M("java/io/ByteArrayOutputStream", "write", "([Ljava/lang/Object;)V", BAOS_write_arr),
+    M("java/io/ByteArrayOutputStream", "write", "([Ljava/lang/Object;II)V", BAOS_write_range),
+    M("java/io/ByteArrayOutputStream", "toByteArray", NULL, BAOS_toByteArray),
+    M("java/io/ByteArrayOutputStream", "toString", NULL, BAOS_toString),
+    M("java/io/ByteArrayOutputStream", "size", NULL, BAOS_size),
+    M("java/io/ByteArrayOutputStream", "reset", NULL, BAOS_reset),
+    M("java/io/ByteArrayOutputStream", "flush", NULL, BAOS_flush),
+    M("java/io/ByteArrayOutputStream", "close", NULL, BAOS_close),
+    M("java/io/ByteArrayOutputStream", "writeTo", "(Ljava/lang/Object;)V", BAOS_writeTo),
+    M("java/io/InputStreamReader", "<init>", "(I)V", ISR_init),
+    M("java/io/FileReader", "<init>", "(I)V", ISR_init),
+    M("java/io/InputStreamReader", "<init>", "()V", ISR_init_cs),
+    M("java/io/FileReader", "<init>", "()V", ISR_init_cs),
+    M("java/io/InputStreamReader", "read", "()I", ISR_read0),
+    M("java/io/FileReader", "read", "()I", ISR_read0),
+    M("java/io/InputStreamReader", "read", "([Ljava/lang/Object;II)I", ISR_read_chars),
+    M("java/io/FileReader", "read", "([Ljava/lang/Object;II)I", ISR_read_chars),
+    M("java/io/InputStreamReader", "ready", NULL, ISR_ready),
+    M("java/io/FileReader", "ready", NULL, ISR_ready),
+    M("java/io/InputStreamReader", "close", NULL, ISR_close),
+    M("java/io/FileReader", "close", NULL, ISR_close),
+    M("java/io/InputStreamReader", "getEncoding", NULL, ISR_getEncoding),
+    M("java/io/FileReader", "getEncoding", NULL, ISR_getEncoding),
+    M("java/io/BufferedReader", "<init>", "(I)V", BR_init),
+    M("java/io/LineNumberReader", "<init>", "(I)V", BR_init),
+    M("java/io/BufferedReader", "readLine", NULL, BR_readLine),
+    M("java/io/LineNumberReader", "readLine", NULL, BR_readLine),
+    M("java/io/BufferedReader", "read", NULL, BR_read0),
+    M("java/io/LineNumberReader", "read", NULL, BR_read0),
+    M("java/io/BufferedReader", "ready", NULL, BR_ready),
+    M("java/io/LineNumberReader", "ready", NULL, BR_ready),
+    M("java/io/BufferedReader", "close", NULL, BR_close),
+    M("java/io/LineNumberReader", "close", NULL, BR_close),
+    M("java/io/BufferedReader", "lines", NULL, BR_lines),
+    M("java/io/LineNumberReader", "lines", NULL, BR_lines),
+    M("java/security/SecureRandom", "<init>", "(Ljava/lang/Object;)V", SR_init),
+    M("java/security/SecureRandom", "read0", NULL, SR_read0),
+    M("java/security/SecureRandom", "read", "([Ljava/lang/Object;II)I", SR_read_chars),
+    M("java/security/SecureRandom", "ready", NULL, SR_ready),
+    M("java/security/SecureRandom", "close", NULL, SR_close),
+    M("java/io/PrintWriter", "<init>", "(I)V", PW_init_os),
+    M("java/io/PrintWriter", "<init>", "(Ljava/lang/Object;)V", PW_init_path),
+    M("java/io/PrintWriter", "print", "(Ljava/lang/Object;)V", PW_print),
+    M("java/io/PrintWriter", "print", "(I)V", PW_print_i),
+    M("java/io/PrintWriter", "print", "(J)V", PW_print_j),
+    M("java/io/PrintWriter", "print", "(Z)V", PW_print_z),
+    M("java/io/PrintWriter", "print", "(D)V", PW_print_d),
+    M("java/io/PrintWriter", "print", "(F)V", PW_print_f),
+    M("java/io/PrintWriter", "print", "(C)V", PW_print_c),
+    M("java/io/PrintWriter", "println", "()V", PW_println),
+    M("java/io/PrintWriter", "println", "(Ljava/lang/Object;)V", PW_println_s),
+    M("java/io/PrintWriter", "println", "(I)V", PW_println_i),
+    M("java/io/PrintWriter", "flush", NULL, PW_flush),
+    M("java/io/PrintWriter", "close", NULL, PW_close),
+    M("java/io/PrintWriter", "checkError", NULL, PW_checkError),
+    M("java/io/PrintWriter", "write", "(I)V", PW_write_i),
+    M("java/io/PrintWriter", "write", "(Ljava/lang/Object;)V", PW_write_s),
+    M("java/io/PrintWriter", "append", NULL, PW_append),
+    M("java/io/RandomAccessFile", "<init>", "(Ljava/lang/Object;Ljava/lang/Object;)V", RAF_init),
+    M("java/io/RandomAccessFile", "<init>", "(Ljava/lang/Object;I)V", RAF_init_path),
+    M("java/io/RandomAccessFile", "read0", NULL, RAF_read0),
+    M("java/io/RandomAccessFile", "read", NULL, RAF_read_arr),
+    M("java/io/RandomAccessFile", "readFully", "([Ljava/lang/Object;)V", RAF_readFully),
+    M("java/io/RandomAccessFile", "readByte", NULL, RAF_readByte),
+    M("java/io/RandomAccessFile", "readInt", NULL, RAF_readInt),
+    M("java/io/RandomAccessFile", "readLong", NULL, RAF_readLong),
+    M("java/io/RandomAccessFile", "readShort", NULL, RAF_readShort),
+    M("java/io/RandomAccessFile", "readChar", NULL, RAF_readChar),
+    M("java/io/RandomAccessFile", "readBoolean", NULL, RAF_readBoolean),
+    M("java/io/RandomAccessFile", "readFloat", NULL, RAF_readFloat),
+    M("java/io/RandomAccessFile", "readDouble", NULL, RAF_readDouble),
+    M("java/io/RandomAccessFile", "readLine", NULL, RAF_readLine),
+    M("java/io/RandomAccessFile", "readUTF", NULL, RAF_readUTF),
+    M("java/io/RandomAccessFile", "readUnsignedByte", NULL, RAF_readUnsignedByte),
+    M("java/io/RandomAccessFile", "readUnsignedShort", NULL, RAF_readUnsignedShort),
+    M("java/io/RandomAccessFile", "skipBytes", "(I)I", RAF_skipBytes),
+    M("java/io/RandomAccessFile", "write", "(I)V", RAF_write_byte),
+    M("java/io/RandomAccessFile", "write", "([Ljava/lang/Object;)V", RAF_write_arr),
+    M("java/io/RandomAccessFile", "write", "([Ljava/lang/Object;II)V", RAF_write_range),
+    M("java/io/RandomAccessFile", "writeInt", "(I)V", RAF_writeInt),
+    M("java/io/RandomAccessFile", "writeLong", "(J)V", RAF_writeLong),
+    M("java/io/RandomAccessFile", "writeShort", "(I)V", RAF_writeShort),
+    M("java/io/RandomAccessFile", "writeBoolean", NULL, RAF_writeBoolean),
+    M("java/io/RandomAccessFile", "writeBytes", "(Ljava/lang/Object;)V", RAF_writeBytes),
+    M("java/io/RandomAccessFile", "writeChars", NULL, RAF_writeChars),
+    M("java/io/RandomAccessFile", "writeUTF", "(Ljava/lang/Object;)V", RAF_writeUTF),
+    M("java/io/RandomAccessFile", "seek", "(J)V", RAF_seek),
+    M("java/io/RandomAccessFile", "getFilePointer", NULL, RAF_getFilePointer),
+    M("java/io/RandomAccessFile", "length", NULL, RAF_length),
+    M("java/io/RandomAccessFile", "setLength", "(J)V", RAF_setLength),
+    M("java/io/RandomAccessFile", "close", NULL, RAF_close),
+    M("java/io/RandomAccessFile", "getFD", NULL, RAF_getFD),
+    M("java/io/RandomAccessFile", "getChannel", NULL, RAF_getChannel),
+    M("java/io/RandomAccessFile", "sync", NULL, RAF_sync),
+    M("java/io/File", "list", NULL, File_list),
+    M("java/io/File", "listFiles", NULL, File_listFiles),
+    M("java/io/File", "renameTo", "(Ljava/lang/Object;)Z", File_renameTo),
+    M("java/io/File", "createNewFile", NULL, File_createNewFile),
+    M("java/io/File", "lastModified", NULL, File_lastModified),
+    M("java/io/File", "setLastModified", "(J)Z", File_setLastModified),
+    M("java/io/File", "getAbsoluteFile", NULL, File_getAbsoluteFile),
+    M("java/io/File", "getCanonicalFile", NULL, File_getCanonicalFile),
+    M("java/io/File", "isAbsolute", NULL, File_isAbsolute),
+    M("java/io/File", "canExecute", NULL, File_canExecute),
+    M("java/io/File", "setExecutable", NULL, File_setExecutable),
+    M("java/io/File", "setReadable", NULL, File_setReadable),
+    M("java/io/File", "setWritable", NULL, File_setWritable),
+    M("java/io/File", "isHidden", NULL, File_isHidden),
+    M("java/io/File", "getFreeSpace", NULL, File_getFreeSpace),
+    M("java/io/File", "getTotalSpace", NULL, File_getTotalSpace),
+    M("java/io/File", "getUsableSpace", NULL, File_getUsableSpace),
+    M("java/io/File", "toURI", NULL, File_toURI),
+    M("java/io/File", "toPath", NULL, File_toPath),
+    M("java/io/File", "equals", "(Ljava/lang/Object;)Z", File_equals),
+    M("java/io/File", "hashCode", NULL, File_hashCode),
+    M("java/io/File", "compareTo", "(Ljava/lang/Object;)I", File_compareTo),
+    M("java/io/File", "deleteOnExit", NULL, File_deleteOnExit),
+    M("java/io/File", "createTempFile", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", File_createTempFile),
+    M("java/io/File", "listRoots", NULL, File_listRoots),
+    M("java/io/File", "<init>", "(Ljava/lang/Object;)V", File_init_uri),
+    M("java/nio/file/Path", "toString", NULL, Path_toString),
+    M("java/nio/file/Path", "toFile", NULL, Path_toFile),
+    M("java/nio/file/Path", "getFileName", NULL, Path_getFileName),
+    M("java/nio/file/Path", "getParent", NULL, Path_getParent),
+    M("java/nio/file/Path", "resolve", "(Ljava/lang/Object;)Ljava/lang/Object;", Path_resolve),
+    M("java/nio/file/Path", "toAbsolutePath", NULL, Path_toAbsolutePath),
+    M("java/nio/file/Path", "normalize", NULL, Path_normalize),
+    M("java/nio/file/Path", "toUri", NULL, Path_toUri),
+    M("java/nio/file/Path", "startsWith", "(Ljava/lang/Object;)Z", Path_startsWith),
+    M("java/nio/file/Path", "endsWith", "(Ljava/lang/Object;)Z", Path_endsWith),
+    M("java/nio/file/Path", "compareTo", "(Ljava/lang/Object;)I", Path_compareTo),
+    M("java/nio/file/Path", "equals", "(Ljava/lang/Object;)Z", Path_equals),
+    M("java/nio/file/Path", "hashCode", NULL, Path_hashCode),
+    M("java/nio/file/Paths", "get", "(Ljava/lang/Object;)Ljava/lang/Object;", Paths_get),
+    M("java/nio/file/Files", "exists", "(Ljava/lang/Object;)Z", Files_exists),
+    M("java/nio/file/Files", "isDirectory", "(Ljava/lang/Object;)Z", Files_isDirectory),
+    M("java/nio/file/Files", "size", "(Ljava/lang/Object;)J", Files_size),
+    M("java/nio/file/Files", "readAllBytes", "(Ljava/lang/Object;)Ljava/lang/Object;", Files_readAllBytes),
+    M("java/nio/file/Files", "write", "(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;", Files_write),
+    M("java/nio/file/Files", "copy", "(Ljava/lang/Object;Ljava/lang/Object;)J", Files_copy),
+    M("java/nio/file/Files", "move", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Files_move),
+    M("java/nio/file/Files", "delete", "(Ljava/lang/Object;)V", Files_delete),
+    M("java/nio/file/Files", "createDirectories", "(Ljava/lang/Object;)Ljava/lang/Object;", Files_createDirectories),
+    M("java/nio/file/Files", "createFile", "(Ljava/lang/Object;)Ljava/lang/Object;", Files_createFile),
+    M("java/nio/file/Files", "readAllLines", "(Ljava/lang/Object;)Ljava/lang/Object;", Files_readAllLines),
+    M("java/nio/file/Files", "lines", NULL, Files_lines),
+    M("java/nio/file/Files", "newInputStream", "(Ljava/lang/Object;)Ljava/lang/Object;", Files_newInputStream),
+    M("java/nio/file/Files", "newOutputStream", "(Ljava/lang/Object;)Ljava/lang/Object;", Files_newOutputStream),
+    M("java/nio/file/Files", "isRegularFile", "(Ljava/lang/Object;)Z", Files_isRegularFile),
+    M("java/nio/file/Files", "notExists", NULL, Files_notExists),
+    M("java/nio/file/Files", "isReadable", "(Ljava/lang/Object;)Z", Files_isReadable),
+    M("java/nio/file/Files", "isWritable", "(Ljava/lang/Object;)Z", Files_isWritable),
+    M("java/nio/file/Files", "isExecutable", "(Ljava/lang/Object;)Z", Files_isExecutable),
+    M("java/nio/file/Files", "isHidden", "(Ljava/lang/Object;)Z", Files_isHidden),
+    M("java/nio/file/Files", "getLastModifiedTime", "(Ljava/lang/Object;)Ljava/lang/Object;", Files_getLastModifiedTime),
+    M("java/nio/file/attribute/FileTime", "toMillis", NULL, FileTime_toMillis),
+    M("java/nio/file/Files", "createDirectory", "(Ljava/lang/Object;)Ljava/lang/Object;", Files_createDirectory),
+    M("java/nio/file/Files", "createSymbolicLink", "(Ljava/lang/Object;)Ljava/lang/Object;", Files_createSymbolicLink),
+    M("java/nio/file/Files", "createLink", "(Ljava/lang/Object;)Ljava/lang/Object;", Files_createLink),
+    M("java/nio/file/Files", "walkFileTree", "(Ljava/lang/Object;)Ljava/lang/Object;", Files_walkFileTree),
+    M("java/nio/file/Files", "list", NULL, Files_list),
+    M("java/nio/file/Files", "walk", NULL, Files_walk),
+    M("java/nio/file/Files", "find", NULL, Files_find),
+    M("java/nio/file/Files", "probeContentType", "(Ljava/lang/Object;)Ljava/lang/Object;", Files_probeContentType),
+    M("java/nio/ByteBuffer", "allocate", "(I)Ljava/lang/Object;", BB_allocate),
+    M("java/nio/HeapByteBuffer", "allocate", "(I)Ljava/lang/Object;", BB_allocate),
+    M("java/nio/DirectByteBuffer", "allocate", "(I)Ljava/lang/Object;", BB_allocate),
+    M("java/nio/MappedByteBuffer", "allocate", "(I)Ljava/lang/Object;", BB_allocate),
+    M("java/nio/ByteBuffer", "allocateDirect", "(I)Ljava/lang/Object;", BB_allocateDirect),
+    M("java/nio/HeapByteBuffer", "allocateDirect", "(I)Ljava/lang/Object;", BB_allocateDirect),
+    M("java/nio/DirectByteBuffer", "allocateDirect", "(I)Ljava/lang/Object;", BB_allocateDirect),
+    M("java/nio/MappedByteBuffer", "allocateDirect", "(I)Ljava/lang/Object;", BB_allocateDirect),
+    M("java/nio/ByteBuffer", "wrap", "([Ljava/lang/Object;)Ljava/lang/Object;", BB_wrap),
+    M("java/nio/HeapByteBuffer", "wrap", "([Ljava/lang/Object;)Ljava/lang/Object;", BB_wrap),
+    M("java/nio/DirectByteBuffer", "wrap", "([Ljava/lang/Object;)Ljava/lang/Object;", BB_wrap),
+    M("java/nio/MappedByteBuffer", "wrap", "([Ljava/lang/Object;)Ljava/lang/Object;", BB_wrap),
+    M("java/nio/ByteBuffer", "wrap", "([Ljava/lang/Object;II)Ljava/lang/Object;", BB_wrap_range),
+    M("java/nio/HeapByteBuffer", "wrap", "([Ljava/lang/Object;II)Ljava/lang/Object;", BB_wrap_range),
+    M("java/nio/DirectByteBuffer", "wrap", "([Ljava/lang/Object;II)Ljava/lang/Object;", BB_wrap_range),
+    M("java/nio/MappedByteBuffer", "wrap", "([Ljava/lang/Object;II)Ljava/lang/Object;", BB_wrap_range),
+    M("java/nio/ByteBuffer", "get", "()B", BB_get),
+    M("java/nio/HeapByteBuffer", "get", "()B", BB_get),
+    M("java/nio/DirectByteBuffer", "get", "()B", BB_get),
+    M("java/nio/MappedByteBuffer", "get", "()B", BB_get),
+    M("java/nio/ByteBuffer", "get", "(I)B", BB_get_at),
+    M("java/nio/HeapByteBuffer", "get", "(I)B", BB_get_at),
+    M("java/nio/DirectByteBuffer", "get", "(I)B", BB_get_at),
+    M("java/nio/MappedByteBuffer", "get", "(I)B", BB_get_at),
+    M("java/nio/ByteBuffer", "get", "([Ljava/lang/Object;)Ljava/lang/Object;", BB_get_arr),
+    M("java/nio/HeapByteBuffer", "get", "([Ljava/lang/Object;)Ljava/lang/Object;", BB_get_arr),
+    M("java/nio/DirectByteBuffer", "get", "([Ljava/lang/Object;)Ljava/lang/Object;", BB_get_arr),
+    M("java/nio/MappedByteBuffer", "get", "([Ljava/lang/Object;)Ljava/lang/Object;", BB_get_arr),
+    M("java/nio/ByteBuffer", "get", "([Ljava/lang/Object;II)Ljava/lang/Object;", BB_get_range),
+    M("java/nio/HeapByteBuffer", "get", "([Ljava/lang/Object;II)Ljava/lang/Object;", BB_get_range),
+    M("java/nio/DirectByteBuffer", "get", "([Ljava/lang/Object;II)Ljava/lang/Object;", BB_get_range),
+    M("java/nio/MappedByteBuffer", "get", "([Ljava/lang/Object;II)Ljava/lang/Object;", BB_get_range),
+    M("java/nio/ByteBuffer", "put", "(Ljava/lang/Object;)Ljava/lang/Object;", BB_put_bb),
+    M("java/nio/HeapByteBuffer", "put", "(Ljava/lang/Object;)Ljava/lang/Object;", BB_put_bb),
+    M("java/nio/DirectByteBuffer", "put", "(Ljava/lang/Object;)Ljava/lang/Object;", BB_put_bb),
+    M("java/nio/MappedByteBuffer", "put", "(Ljava/lang/Object;)Ljava/lang/Object;", BB_put_bb),
+    M("java/nio/ByteBuffer", "getChar", NULL, BB_getChar),
+    M("java/nio/HeapByteBuffer", "getChar", NULL, BB_getChar),
+    M("java/nio/DirectByteBuffer", "getChar", NULL, BB_getChar),
+    M("java/nio/MappedByteBuffer", "getChar", NULL, BB_getChar),
+    M("java/nio/ByteBuffer", "getCharAt", "(I)C", BB_getCharAt),
+    M("java/nio/HeapByteBuffer", "getCharAt", "(I)C", BB_getCharAt),
+    M("java/nio/DirectByteBuffer", "getCharAt", "(I)C", BB_getCharAt),
+    M("java/nio/MappedByteBuffer", "getCharAt", "(I)C", BB_getCharAt),
+    M("java/nio/ByteBuffer", "getShort", NULL, BB_getShort),
+    M("java/nio/HeapByteBuffer", "getShort", NULL, BB_getShort),
+    M("java/nio/DirectByteBuffer", "getShort", NULL, BB_getShort),
+    M("java/nio/MappedByteBuffer", "getShort", NULL, BB_getShort),
+    M("java/nio/ByteBuffer", "getShortAt", "(I)S", BB_getShortAt),
+    M("java/nio/HeapByteBuffer", "getShortAt", "(I)S", BB_getShortAt),
+    M("java/nio/DirectByteBuffer", "getShortAt", "(I)S", BB_getShortAt),
+    M("java/nio/MappedByteBuffer", "getShortAt", "(I)S", BB_getShortAt),
+    M("java/nio/ByteBuffer", "getInt", NULL, BB_getInt),
+    M("java/nio/HeapByteBuffer", "getInt", NULL, BB_getInt),
+    M("java/nio/DirectByteBuffer", "getInt", NULL, BB_getInt),
+    M("java/nio/MappedByteBuffer", "getInt", NULL, BB_getInt),
+    M("java/nio/ByteBuffer", "getIntAt", "(I)I", BB_getIntAt),
+    M("java/nio/HeapByteBuffer", "getIntAt", "(I)I", BB_getIntAt),
+    M("java/nio/DirectByteBuffer", "getIntAt", "(I)I", BB_getIntAt),
+    M("java/nio/MappedByteBuffer", "getIntAt", "(I)I", BB_getIntAt),
+    M("java/nio/ByteBuffer", "getLong", NULL, BB_getLong),
+    M("java/nio/HeapByteBuffer", "getLong", NULL, BB_getLong),
+    M("java/nio/DirectByteBuffer", "getLong", NULL, BB_getLong),
+    M("java/nio/MappedByteBuffer", "getLong", NULL, BB_getLong),
+    M("java/nio/ByteBuffer", "getLongAt", "(I)J", BB_getLongAt),
+    M("java/nio/HeapByteBuffer", "getLongAt", "(I)J", BB_getLongAt),
+    M("java/nio/DirectByteBuffer", "getLongAt", "(I)J", BB_getLongAt),
+    M("java/nio/MappedByteBuffer", "getLongAt", "(I)J", BB_getLongAt),
+    M("java/nio/ByteBuffer", "getFloat", NULL, BB_getFloat),
+    M("java/nio/HeapByteBuffer", "getFloat", NULL, BB_getFloat),
+    M("java/nio/DirectByteBuffer", "getFloat", NULL, BB_getFloat),
+    M("java/nio/MappedByteBuffer", "getFloat", NULL, BB_getFloat),
+    M("java/nio/ByteBuffer", "getFloatAt", "(I)F", BB_getFloatAt),
+    M("java/nio/HeapByteBuffer", "getFloatAt", "(I)F", BB_getFloatAt),
+    M("java/nio/DirectByteBuffer", "getFloatAt", "(I)F", BB_getFloatAt),
+    M("java/nio/MappedByteBuffer", "getFloatAt", "(I)F", BB_getFloatAt),
+    M("java/nio/ByteBuffer", "getDouble", NULL, BB_getDouble),
+    M("java/nio/HeapByteBuffer", "getDouble", NULL, BB_getDouble),
+    M("java/nio/DirectByteBuffer", "getDouble", NULL, BB_getDouble),
+    M("java/nio/MappedByteBuffer", "getDouble", NULL, BB_getDouble),
+    M("java/nio/ByteBuffer", "getDoubleAt", "(I)D", BB_getDoubleAt),
+    M("java/nio/HeapByteBuffer", "getDoubleAt", "(I)D", BB_getDoubleAt),
+    M("java/nio/DirectByteBuffer", "getDoubleAt", "(I)D", BB_getDoubleAt),
+    M("java/nio/MappedByteBuffer", "getDoubleAt", "(I)D", BB_getDoubleAt),
+    M("java/nio/ByteBuffer", "putChar", "(C)Ljava/lang/Object;", BB_putChar),
+    M("java/nio/HeapByteBuffer", "putChar", "(C)Ljava/lang/Object;", BB_putChar),
+    M("java/nio/DirectByteBuffer", "putChar", "(C)Ljava/lang/Object;", BB_putChar),
+    M("java/nio/MappedByteBuffer", "putChar", "(C)Ljava/lang/Object;", BB_putChar),
+    M("java/nio/ByteBuffer", "putShort", "(S)Ljava/lang/Object;", BB_putShort),
+    M("java/nio/HeapByteBuffer", "putShort", "(S)Ljava/lang/Object;", BB_putShort),
+    M("java/nio/DirectByteBuffer", "putShort", "(S)Ljava/lang/Object;", BB_putShort),
+    M("java/nio/MappedByteBuffer", "putShort", "(S)Ljava/lang/Object;", BB_putShort),
+    M("java/nio/ByteBuffer", "putInt", "(I)Ljava/lang/Object;", BB_putInt),
+    M("java/nio/HeapByteBuffer", "putInt", "(I)Ljava/lang/Object;", BB_putInt),
+    M("java/nio/DirectByteBuffer", "putInt", "(I)Ljava/lang/Object;", BB_putInt),
+    M("java/nio/MappedByteBuffer", "putInt", "(I)Ljava/lang/Object;", BB_putInt),
+    M("java/nio/ByteBuffer", "putLong", "(J)Ljava/lang/Object;", BB_putLong),
+    M("java/nio/HeapByteBuffer", "putLong", "(J)Ljava/lang/Object;", BB_putLong),
+    M("java/nio/DirectByteBuffer", "putLong", "(J)Ljava/lang/Object;", BB_putLong),
+    M("java/nio/MappedByteBuffer", "putLong", "(J)Ljava/lang/Object;", BB_putLong),
+    M("java/nio/ByteBuffer", "putFloat", "(F)Ljava/lang/Object;", BB_putFloat),
+    M("java/nio/HeapByteBuffer", "putFloat", "(F)Ljava/lang/Object;", BB_putFloat),
+    M("java/nio/DirectByteBuffer", "putFloat", "(F)Ljava/lang/Object;", BB_putFloat),
+    M("java/nio/MappedByteBuffer", "putFloat", "(F)Ljava/lang/Object;", BB_putFloat),
+    M("java/nio/ByteBuffer", "putDouble", "(D)Ljava/lang/Object;", BB_putDouble),
+    M("java/nio/HeapByteBuffer", "putDouble", "(D)Ljava/lang/Object;", BB_putDouble),
+    M("java/nio/DirectByteBuffer", "putDouble", "(D)Ljava/lang/Object;", BB_putDouble),
+    M("java/nio/MappedByteBuffer", "putDouble", "(D)Ljava/lang/Object;", BB_putDouble),
+    M("java/nio/ByteBuffer", "putIntAt", "(II)Ljava/lang/Object;", BB_putIntAt),
+    M("java/nio/HeapByteBuffer", "putIntAt", "(II)Ljava/lang/Object;", BB_putIntAt),
+    M("java/nio/DirectByteBuffer", "putIntAt", "(II)Ljava/lang/Object;", BB_putIntAt),
+    M("java/nio/MappedByteBuffer", "putIntAt", "(II)Ljava/lang/Object;", BB_putIntAt),
+    M("java/nio/ByteBuffer", "putLongAt", "(IJ)Ljava/lang/Object;", BB_putLongAt),
+    M("java/nio/HeapByteBuffer", "putLongAt", "(IJ)Ljava/lang/Object;", BB_putLongAt),
+    M("java/nio/DirectByteBuffer", "putLongAt", "(IJ)Ljava/lang/Object;", BB_putLongAt),
+    M("java/nio/MappedByteBuffer", "putLongAt", "(IJ)Ljava/lang/Object;", BB_putLongAt),
+    M("java/nio/ByteBuffer", "putShortAt", "(IS)Ljava/lang/Object;", BB_putShortAt),
+    M("java/nio/HeapByteBuffer", "putShortAt", "(IS)Ljava/lang/Object;", BB_putShortAt),
+    M("java/nio/DirectByteBuffer", "putShortAt", "(IS)Ljava/lang/Object;", BB_putShortAt),
+    M("java/nio/MappedByteBuffer", "putShortAt", "(IS)Ljava/lang/Object;", BB_putShortAt),
+    M("java/nio/ByteBuffer", "putFloatAt", "(IF)Ljava/lang/Object;", BB_putFloatAt),
+    M("java/nio/HeapByteBuffer", "putFloatAt", "(IF)Ljava/lang/Object;", BB_putFloatAt),
+    M("java/nio/DirectByteBuffer", "putFloatAt", "(IF)Ljava/lang/Object;", BB_putFloatAt),
+    M("java/nio/MappedByteBuffer", "putFloatAt", "(IF)Ljava/lang/Object;", BB_putFloatAt),
+    M("java/nio/ByteBuffer", "putDoubleAt", "(ID)Ljava/lang/Object;", BB_putDoubleAt),
+    M("java/nio/HeapByteBuffer", "putDoubleAt", "(ID)Ljava/lang/Object;", BB_putDoubleAt),
+    M("java/nio/DirectByteBuffer", "putDoubleAt", "(ID)Ljava/lang/Object;", BB_putDoubleAt),
+    M("java/nio/MappedByteBuffer", "putDoubleAt", "(ID)Ljava/lang/Object;", BB_putDoubleAt),
+    M("java/nio/ByteBuffer", "putCharAt", "(IC)Ljava/lang/Object;", BB_putCharAt),
+    M("java/nio/HeapByteBuffer", "putCharAt", "(IC)Ljava/lang/Object;", BB_putCharAt),
+    M("java/nio/DirectByteBuffer", "putCharAt", "(IC)Ljava/lang/Object;", BB_putCharAt),
+    M("java/nio/MappedByteBuffer", "putCharAt", "(IC)Ljava/lang/Object;", BB_putCharAt),
+    M("java/nio/ByteBuffer", "position", NULL, BB_position),
+    M("java/nio/HeapByteBuffer", "position", NULL, BB_position),
+    M("java/nio/DirectByteBuffer", "position", NULL, BB_position),
+    M("java/nio/MappedByteBuffer", "position", NULL, BB_position),
+    M("java/nio/ByteBuffer", "setPos", "(I)Ljava/lang/Object;", BB_setPos),
+    M("java/nio/HeapByteBuffer", "setPos", "(I)Ljava/lang/Object;", BB_setPos),
+    M("java/nio/DirectByteBuffer", "setPos", "(I)Ljava/lang/Object;", BB_setPos),
+    M("java/nio/MappedByteBuffer", "setPos", "(I)Ljava/lang/Object;", BB_setPos),
+    M("java/nio/ByteBuffer", "limit", NULL, BB_limit),
+    M("java/nio/HeapByteBuffer", "limit", NULL, BB_limit),
+    M("java/nio/DirectByteBuffer", "limit", NULL, BB_limit),
+    M("java/nio/MappedByteBuffer", "limit", NULL, BB_limit),
+    M("java/nio/ByteBuffer", "setLimit", "(I)Ljava/lang/Object;", BB_setLimit),
+    M("java/nio/HeapByteBuffer", "setLimit", "(I)Ljava/lang/Object;", BB_setLimit),
+    M("java/nio/DirectByteBuffer", "setLimit", "(I)Ljava/lang/Object;", BB_setLimit),
+    M("java/nio/MappedByteBuffer", "setLimit", "(I)Ljava/lang/Object;", BB_setLimit),
+    M("java/nio/ByteBuffer", "capacity", NULL, BB_capacity),
+    M("java/nio/HeapByteBuffer", "capacity", NULL, BB_capacity),
+    M("java/nio/DirectByteBuffer", "capacity", NULL, BB_capacity),
+    M("java/nio/MappedByteBuffer", "capacity", NULL, BB_capacity),
+    M("java/nio/ByteBuffer", "remaining", NULL, BB_remaining),
+    M("java/nio/HeapByteBuffer", "remaining", NULL, BB_remaining),
+    M("java/nio/DirectByteBuffer", "remaining", NULL, BB_remaining),
+    M("java/nio/MappedByteBuffer", "remaining", NULL, BB_remaining),
+    M("java/nio/ByteBuffer", "hasRemaining", NULL, BB_hasRemaining),
+    M("java/nio/HeapByteBuffer", "hasRemaining", NULL, BB_hasRemaining),
+    M("java/nio/DirectByteBuffer", "hasRemaining", NULL, BB_hasRemaining),
+    M("java/nio/MappedByteBuffer", "hasRemaining", NULL, BB_hasRemaining),
+    M("java/nio/ByteBuffer", "clear", NULL, BB_clear),
+    M("java/nio/HeapByteBuffer", "clear", NULL, BB_clear),
+    M("java/nio/DirectByteBuffer", "clear", NULL, BB_clear),
+    M("java/nio/MappedByteBuffer", "clear", NULL, BB_clear),
+    M("java/nio/ByteBuffer", "flip", NULL, BB_flip),
+    M("java/nio/HeapByteBuffer", "flip", NULL, BB_flip),
+    M("java/nio/DirectByteBuffer", "flip", NULL, BB_flip),
+    M("java/nio/MappedByteBuffer", "flip", NULL, BB_flip),
+    M("java/nio/ByteBuffer", "rewind", NULL, BB_rewind),
+    M("java/nio/HeapByteBuffer", "rewind", NULL, BB_rewind),
+    M("java/nio/DirectByteBuffer", "rewind", NULL, BB_rewind),
+    M("java/nio/MappedByteBuffer", "rewind", NULL, BB_rewind),
+    M("java/nio/ByteBuffer", "mark", NULL, BB_mark),
+    M("java/nio/HeapByteBuffer", "mark", NULL, BB_mark),
+    M("java/nio/DirectByteBuffer", "mark", NULL, BB_mark),
+    M("java/nio/MappedByteBuffer", "mark", NULL, BB_mark),
+    M("java/nio/ByteBuffer", "reset", NULL, BB_reset),
+    M("java/nio/HeapByteBuffer", "reset", NULL, BB_reset),
+    M("java/nio/DirectByteBuffer", "reset", NULL, BB_reset),
+    M("java/nio/MappedByteBuffer", "reset", NULL, BB_reset),
+    M("java/nio/ByteBuffer", "array", NULL, BB_array),
+    M("java/nio/HeapByteBuffer", "array", NULL, BB_array),
+    M("java/nio/DirectByteBuffer", "array", NULL, BB_array),
+    M("java/nio/MappedByteBuffer", "array", NULL, BB_array),
+    M("java/nio/ByteBuffer", "hasArray", NULL, BB_hasArray),
+    M("java/nio/HeapByteBuffer", "hasArray", NULL, BB_hasArray),
+    M("java/nio/DirectByteBuffer", "hasArray", NULL, BB_hasArray),
+    M("java/nio/MappedByteBuffer", "hasArray", NULL, BB_hasArray),
+    M("java/nio/ByteBuffer", "isDirect", NULL, BB_isDirect),
+    M("java/nio/HeapByteBuffer", "isDirect", NULL, BB_isDirect),
+    M("java/nio/DirectByteBuffer", "isDirect", NULL, BB_isDirect),
+    M("java/nio/MappedByteBuffer", "isDirect", NULL, BB_isDirect),
+    M("java/nio/ByteBuffer", "isReadOnly", NULL, BB_isReadOnly),
+    M("java/nio/HeapByteBuffer", "isReadOnly", NULL, BB_isReadOnly),
+    M("java/nio/DirectByteBuffer", "isReadOnly", NULL, BB_isReadOnly),
+    M("java/nio/MappedByteBuffer", "isReadOnly", NULL, BB_isReadOnly),
+    M("java/nio/ByteBuffer", "order", NULL, BB_order),
+    M("java/nio/HeapByteBuffer", "order", NULL, BB_order),
+    M("java/nio/DirectByteBuffer", "order", NULL, BB_order),
+    M("java/nio/MappedByteBuffer", "order", NULL, BB_order),
+    M("java/nio/ByteBuffer", "setOrder", "(Ljava/lang/Object;)Ljava/lang/Object;", BB_setOrder),
+    M("java/nio/HeapByteBuffer", "setOrder", "(Ljava/lang/Object;)Ljava/lang/Object;", BB_setOrder),
+    M("java/nio/DirectByteBuffer", "setOrder", "(Ljava/lang/Object;)Ljava/lang/Object;", BB_setOrder),
+    M("java/nio/MappedByteBuffer", "setOrder", "(Ljava/lang/Object;)Ljava/lang/Object;", BB_setOrder),
+    M("java/nio/ByteOrder", "nativeOrder", NULL, BO_nativeOrder),
+    M("java/nio/ByteOrder", "toString", NULL, BO_toString),
+    M("java/nio/ByteBuffer", "slice", NULL, BB_slice),
+    M("java/nio/HeapByteBuffer", "slice", NULL, BB_slice),
+    M("java/nio/DirectByteBuffer", "slice", NULL, BB_slice),
+    M("java/nio/MappedByteBuffer", "slice", NULL, BB_slice),
+    M("java/nio/ByteBuffer", "duplicate", NULL, BB_duplicate),
+    M("java/nio/HeapByteBuffer", "duplicate", NULL, BB_duplicate),
+    M("java/nio/DirectByteBuffer", "duplicate", NULL, BB_duplicate),
+    M("java/nio/MappedByteBuffer", "duplicate", NULL, BB_duplicate),
+    M("java/nio/ByteBuffer", "asReadOnly", NULL, BB_asReadOnly),
+    M("java/nio/HeapByteBuffer", "asReadOnly", NULL, BB_asReadOnly),
+    M("java/nio/DirectByteBuffer", "asReadOnly", NULL, BB_asReadOnly),
+    M("java/nio/MappedByteBuffer", "asReadOnly", NULL, BB_asReadOnly),
+    M("java/nio/ByteBuffer", "compact", NULL, BB_compact),
+    M("java/nio/HeapByteBuffer", "compact", NULL, BB_compact),
+    M("java/nio/DirectByteBuffer", "compact", NULL, BB_compact),
+    M("java/nio/MappedByteBuffer", "compact", NULL, BB_compact),
+    M("java/nio/ByteBuffer", "arrayOffset", NULL, BB_arrayOffset),
+    M("java/nio/HeapByteBuffer", "arrayOffset", NULL, BB_arrayOffset),
+    M("java/nio/DirectByteBuffer", "arrayOffset", NULL, BB_arrayOffset),
+    M("java/nio/MappedByteBuffer", "arrayOffset", NULL, BB_arrayOffset),
+    M("java/nio/ByteBuffer", "toString", NULL, BB_toString),
+    M("java/nio/HeapByteBuffer", "toString", NULL, BB_toString),
+    M("java/nio/DirectByteBuffer", "toString", NULL, BB_toString),
+    M("java/nio/MappedByteBuffer", "toString", NULL, BB_toString),
+    M("java/nio/ByteBuffer", "asFloat", NULL, BB_asFloat),
+    M("java/nio/HeapByteBuffer", "asFloat", NULL, BB_asFloat),
+    M("java/nio/DirectByteBuffer", "asFloat", NULL, BB_asFloat),
+    M("java/nio/MappedByteBuffer", "asFloat", NULL, BB_asFloat),
+    M("java/nio/ByteBuffer", "asInt", NULL, BB_asInt),
+    M("java/nio/HeapByteBuffer", "asInt", NULL, BB_asInt),
+    M("java/nio/DirectByteBuffer", "asInt", NULL, BB_asInt),
+    M("java/nio/MappedByteBuffer", "asInt", NULL, BB_asInt),
+    M("java/nio/ByteBuffer", "asShort", NULL, BB_asShort),
+    M("java/nio/HeapByteBuffer", "asShort", NULL, BB_asShort),
+    M("java/nio/DirectByteBuffer", "asShort", NULL, BB_asShort),
+    M("java/nio/MappedByteBuffer", "asShort", NULL, BB_asShort),
+    M("java/nio/ByteBuffer", "asLong", NULL, BB_asLong),
+    M("java/nio/HeapByteBuffer", "asLong", NULL, BB_asLong),
+    M("java/nio/DirectByteBuffer", "asLong", NULL, BB_asLong),
+    M("java/nio/MappedByteBuffer", "asLong", NULL, BB_asLong),
+    M("java/nio/ByteBuffer", "asDouble", NULL, BB_asDouble),
+    M("java/nio/HeapByteBuffer", "asDouble", NULL, BB_asDouble),
+    M("java/nio/DirectByteBuffer", "asDouble", NULL, BB_asDouble),
+    M("java/nio/MappedByteBuffer", "asDouble", NULL, BB_asDouble),
+    M("java/nio/ByteBuffer", "asChar", NULL, BB_asChar),
+    M("java/nio/HeapByteBuffer", "asChar", NULL, BB_asChar),
+    M("java/nio/DirectByteBuffer", "asChar", NULL, BB_asChar),
+    M("java/nio/MappedByteBuffer", "asChar", NULL, BB_asChar),
+    M("java/nio/FloatBuffer", "get", "()F", VB_get_float),
+    M("java/nio/FloatBuffer", "get", "(I)F", VB_get_floatAt),
+    M("java/nio/FloatBuffer", "put", "(F)Ljava/lang/Object;", VB_put_float),
+    M("java/nio/FloatBuffer", "put", "(IF)Ljava/lang/Object;", VB_put_floatAt),
+    M("java/nio/FloatBuffer", "get", "([Ljava/lang/Object;)Ljava/lang/Object;", VB_get_floatArr),
+    M("java/nio/FloatBuffer", "put", "([Ljava/lang/Object;)Ljava/lang/Object;", VB_put_floatArr),
+    M("java/nio/FloatBuffer", "get", "()I", VB_get_int),
+    M("java/nio/FloatBuffer", "get", "(I)I", VB_get_intAt),
+    M("java/nio/FloatBuffer", "put", "(I)Ljava/lang/Object;", VB_put_int),
+    M("java/nio/FloatBuffer", "put", "(II)Ljava/lang/Object;", VB_put_intAt),
+    M("java/nio/FloatBuffer", "get", "()S", VB_get_short),
+    M("java/nio/FloatBuffer", "get", "(I)S", VB_get_shortAt),
+    M("java/nio/FloatBuffer", "put", "(S)Ljava/lang/Object;", VB_put_short),
+    M("java/nio/FloatBuffer", "put", "(IS)Ljava/lang/Object;", VB_put_shortAt),
+    M("java/nio/FloatBuffer", "get", "()J", VB_get_long),
+    M("java/nio/FloatBuffer", "get", "(I)J", VB_get_longAt),
+    M("java/nio/FloatBuffer", "put", "(J)Ljava/lang/Object;", VB_put_long),
+    M("java/nio/FloatBuffer", "put", "(IJ)Ljava/lang/Object;", VB_put_longAt),
+    M("java/nio/FloatBuffer", "get", "()D", VB_get_double),
+    M("java/nio/FloatBuffer", "get", "(I)D", VB_get_doubleAt),
+    M("java/nio/FloatBuffer", "put", "(D)Ljava/lang/Object;", VB_put_double),
+    M("java/nio/FloatBuffer", "put", "(ID)Ljava/lang/Object;", VB_put_doubleAt),
+    M("java/nio/FloatBuffer", "get", "()C", VB_get_char),
+    M("java/nio/FloatBuffer", "get", "(I)C", VB_get_charAt),
+    M("java/nio/FloatBuffer", "put", "(C)Ljava/lang/Object;", VB_put_char),
+    M("java/nio/FloatBuffer", "put", "(IC)Ljava/lang/Object;", VB_put_charAt),
+    M("java/nio/FloatBuffer", "position", NULL, VB_position),
+    M("java/nio/FloatBuffer", "setPos", "(I)Ljava/lang/Object;", VB_setPos),
+    M("java/nio/FloatBuffer", "limit", NULL, VB_limit),
+    M("java/nio/FloatBuffer", "setLimit", "(I)Ljava/lang/Object;", VB_setLimit),
+    M("java/nio/FloatBuffer", "capacity", NULL, VB_capacity),
+    M("java/nio/FloatBuffer", "remaining", NULL, VB_remaining),
+    M("java/nio/FloatBuffer", "hasRemaining", NULL, VB_hasRemaining),
+    M("java/nio/FloatBuffer", "clear", NULL, VB_clear),
+    M("java/nio/FloatBuffer", "flip", NULL, VB_flip),
+    M("java/nio/FloatBuffer", "rewind", NULL, VB_rewind),
+    M("java/nio/FloatBuffer", "mark", NULL, VB_mark),
+    M("java/nio/FloatBuffer", "reset", NULL, VB_reset),
+    M("java/nio/FloatBuffer", "isDirect", NULL, VB_isDirect),
+    M("java/nio/FloatBuffer", "isReadOnly", NULL, VB_isReadOnly),
+    M("java/nio/FloatBuffer", "hasArray", NULL, VB_hasArray),
+    M("java/nio/FloatBuffer", "order", NULL, VB_order),
+    M("java/nio/FloatBuffer", "duplicate", NULL, VB_duplicate),
+    M("java/nio/FloatBuffer", "slice", NULL, VB_slice),
+    M("java/nio/FloatBuffer", "compact", NULL, VB_compact),
+    M("java/nio/FloatBuffer", "allocate", "(I)Ljava/lang/Object;", FB_allocate),
+    M("java/nio/IntBuffer", "allocate", "(I)Ljava/lang/Object;", IB_allocate),
+    M("java/lang/StringBuilder", "allocate", "(I)Ljava/lang/Object;", SB_allocate),
+    M("java/lang/StringBuffer", "allocate", "(I)Ljava/lang/Object;", SB_allocate),
+    M("java/nio/LongBuffer", "allocate", "(I)Ljava/lang/Object;", LB_allocate),
+    M("java/nio/DoubleBuffer", "allocate", "(I)Ljava/lang/Object;", DB_allocate),
+    M("java/nio/CharBuffer", "allocate", "(I)Ljava/lang/Object;", CB_allocate),
+    M("java/nio/FloatBuffer", "wrap", "([Ljava/lang/Object;)Ljava/lang/Object;", FB_wrap),
+    M("java/nio/IntBuffer", "wrap", "([Ljava/lang/Object;)Ljava/lang/Object;", IB_wrap),
+    M("java/lang/StringBuilder", "wrap", "([Ljava/lang/Object;)Ljava/lang/Object;", SB_wrap),
+    M("java/lang/StringBuffer", "wrap", "([Ljava/lang/Object;)Ljava/lang/Object;", SB_wrap),
+    M("java/nio/LongBuffer", "wrap", "([Ljava/lang/Object;)Ljava/lang/Object;", LB_wrap),
+    M("java/nio/DoubleBuffer", "wrap", "([Ljava/lang/Object;)Ljava/lang/Object;", DB_wrap),
+    M("java/nio/CharBuffer", "wrap", "([Ljava/lang/Object;)Ljava/lang/Object;", CB_wrap),
+    M("java/nio/FloatBuffer", "toString", NULL, VB_toString),
+    M("java/lang/reflect/Method", "invoke", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Method_invoke),
+    M("java/lang/reflect/Constructor", "newInstance", "(Ljava/lang/Object;)Ljava/lang/Object;", Ctor_newInstance),
+    M("java/lang/reflect/Method", "getName", NULL, Method_getName),
+    M("java/lang/reflect/Method", "getReturnType", NULL, Method_getReturnType),
+    M("java/lang/reflect/Method", "getParameterTypes", NULL, Method_getParameterTypes),
+    M("java/lang/reflect/Method", "getModifiers", NULL, Method_getModifiers),
+    M("java/lang/reflect/Method", "toString", NULL, Method_toString),
+    M("java/lang/reflect/Method", "getDeclaringClass", NULL, Method_getDeclaringClass),
+    M("java/lang/reflect/Member", "isSynthetic", NULL, Member_isSynthetic),
+    M("java/lang/reflect/AccessibleObject", "isAccessible", NULL, AO_isAccessible),
+    M("java/lang/reflect/AccessibleObject", "setAccessible", NULL, AO_setAccessible),
+    M("java/lang/reflect/AccessibleObject", "isAnnotationPresent", NULL, AO_isAnnotationPresent),
+    M("java/lang/reflect/AccessibleObject", "getAnnotation", NULL, AO_getAnnotation),
+    M("java/lang/reflect/AccessibleObject", "getAnnotations", NULL, AO_getAnnotations),
+    M("java/lang/reflect/AccessibleObject", "getDeclaredAnnotations", NULL, AO_getDeclaredAnnotations),
+    M("java/lang/reflect/Field", "get", "(Ljava/lang/Object;)Ljava/lang/Object;", Field_get),
+    M("java/lang/reflect/Field", "set", "(Ljava/lang/Object;Ljava/lang/Object;)V", Field_set),
+    M("java/lang/reflect/Field", "getBoolean", "(Ljava/lang/Object;)V", Field_getBoolean),
+    M("java/lang/reflect/Field", "getByte", "(Ljava/lang/Object;)V", Field_getByte),
+    M("java/lang/reflect/Field", "getChar", "(Ljava/lang/Object;)V", Field_getChar),
+    M("java/lang/reflect/Field", "getShort", "(Ljava/lang/Object;)V", Field_getShort),
+    M("java/lang/reflect/Field", "getInt", "(Ljava/lang/Object;)V", Field_getInt),
+    M("java/lang/reflect/Field", "getLong", "(Ljava/lang/Object;)V", Field_getLong),
+    M("java/lang/reflect/Field", "getFloat", "(Ljava/lang/Object;)F", Field_getFloat),
+    M("java/lang/reflect/Field", "getDouble", "(Ljava/lang/Object;)D", Field_getDouble),
+    M("java/lang/reflect/Field", "setBoolean", "(Ljava/lang/Object;I)V", Field_setBoolean),
+    M("java/lang/reflect/Field", "setByte", "(Ljava/lang/Object;I)V", Field_setByte),
+    M("java/lang/reflect/Field", "setChar", "(Ljava/lang/Object;I)V", Field_setChar),
+    M("java/lang/reflect/Field", "setShort", "(Ljava/lang/Object;I)V", Field_setShort),
+    M("java/lang/reflect/Field", "setInt", "(Ljava/lang/Object;I)V", Field_setInt),
+    M("java/lang/reflect/Field", "setLong", "(Ljava/lang/Object;I)V", Field_setLong),
+    M("java/lang/reflect/Field", "setFloat", "(Ljava/lang/Object;F)V", Field_setFloat),
+    M("java/lang/reflect/Field", "setDouble", "(Ljava/lang/Object;D)V", Field_setDouble),
+    M("java/lang/reflect/Field", "getName", NULL, Field_getName),
+    M("java/lang/reflect/Field", "getType", NULL, Field_getType),
+    M("java/lang/reflect/Field", "getModifiers", NULL, Field_getModifiers),
+    M("java/lang/reflect/Field", "toString", NULL, Field_toString),
+    M("java/lang/reflect/Field", "getDeclaringClass", NULL, Field_getDeclaringClass),
+    M("java/lang/reflect/Field", "equals", "(Ljava/lang/Object;)Z", Field_equals),
+    M("java/lang/reflect/Method", "equals", NULL, Method_equals),
+    M("java/lang/reflect/Array", "newInstance", "(Ljava/lang/Object;I)Ljava/lang/Object;", Array_newInstance),
+    M("java/lang/reflect/Array", "getLength", "([Ljava/lang/Object;)I", Array_getLength),
+    M("java/lang/reflect/Array", "get", "([Ljava/lang/Object;I)Ljava/lang/Object;", Array_get),
+    M("java/lang/reflect/Array", "set", "([Ljava/lang/Object;ILjava/lang/Object;)V", Array_set),
+    M("java/lang/reflect/Array", "getInt", "([Ljava/lang/Object;I)I", Array_getInt),
+    M("java/lang/reflect/Array", "setInt", "([Ljava/lang/Object;II)V", Array_setInt),
+    M("java/lang/reflect/Array", "getBoolean", "([Ljava/lang/Object;I)Z", Array_getBoolean),
+    M("java/lang/reflect/Array", "getByte", "([Ljava/lang/Object;I)B", Array_getByte),
+    M("java/lang/reflect/Array", "getLong", "([Ljava/lang/Object;I)J", Array_getLong),
+    M("java/lang/reflect/Array", "getFloat", "([Ljava/lang/Object;I)F", Array_getFloat),
+    M("java/lang/reflect/Array", "getDouble", "([Ljava/lang/Object;I)D", Array_getDouble),
+    M("java/lang/reflect/Array", "getShort", "([Ljava/lang/Object;I)S", Array_getShort),
+    M("java/lang/reflect/Array", "getChar", "([Ljava/lang/Object;I)C", Array_getChar),
+    M("java/lang/reflect/Array", "setBoolean", "([Ljava/lang/Object;IZ)V", Array_setBoolean),
+    M("java/lang/reflect/Array", "setByte", "([Ljava/lang/Object;IB)V", Array_setByte),
+    M("java/lang/reflect/Array", "setLong", "([Ljava/lang/Object;IJ)V", Array_setLong),
+    M("java/lang/reflect/Array", "setFloat", "([Ljava/lang/Object;IF)V", Array_setFloat),
+    M("java/lang/reflect/Array", "setDouble", "([Ljava/lang/Object;ID)V", Array_setDouble),
+    M("java/lang/reflect/Array", "setShort", "([Ljava/lang/Object;IS)V", Array_setShort),
+    M("java/lang/reflect/Array", "setChar", "([Ljava/lang/Object;IC)V", Array_setChar),
+    M("android/util/Log", "v", "(Ljava/lang/Object;Ljava/lang/Object;)I", Log_v),
+    M("android/util/Log", "d", "(Ljava/lang/Object;Ljava/lang/Object;)I", Log_d),
+    M("android/util/Log", "i", "(Ljava/lang/Object;Ljava/lang/Object;)I", Log_i),
+    M("android/util/Log", "w", "(Ljava/lang/Object;Ljava/lang/Object;)I", Log_w),
+    M("android/util/Log", "e", "(Ljava/lang/Object;Ljava/lang/Object;)I", Log_e),
+    M("android/util/Log", "wtf", "(Ljava/lang/Object;Ljava/lang/Object;)I", Log_wtf),
+    M("android/util/Log", "println", "(ILjava/lang/Object;Ljava/lang/Object;)I", Log_println),
+    M("android/util/Log", "isLoggable", "(II)Z", Log_isLoggable),
+    M("android/util/Base64", "encode", "([Ljava/lang/Object;I)Ljava/lang/Object;", B64_encode),
+    M("android/util/Base64", "encodeToString", "([Ljava/lang/Object;I)Ljava/lang/Object;", B64_encodeToString),
+    M("android/util/Base64", "decode", "([Ljava/lang/Object;)Ljava/lang/Object;", B64_decode),
+    M("android/text/TextUtils", "isEmpty", "(Ljava/lang/Object;)Z", TU_isEmpty),
+    M("android/text/TextUtils", "equals", "(Ljava/lang/Object;Ljava/lang/Object;)Z", TU_equals),
+    M("android/text/TextUtils", "join", "(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;", TU_join),
+    M("android/text/TextUtils", "split", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", TU_split),
+    M("android/text/TextUtils", "concat", "([Ljava/lang/Object;)Ljava/lang/Object;", TU_concat),
+    M("android/text/TextUtils", "htmlEncode", "(Ljava/lang/Object;)Ljava/lang/Object;", TU_htmlEncode),
+    M("android/text/TextUtils", "getTrimmedLength", "(Ljava/lang/Object;)I", TU_getTrimmedLength),
+    M("android/text/TextUtils", "isDigitsOnly", "(Ljava/lang/Object;)Z", TU_isDigitsOnly),
+    M("android/text/TextUtils", "length", "(Ljava/lang/Object;)I", TU_length),
+    M("android/text/TextUtils", "getReverse", "(Ljava/lang/Object;)Ljava/lang/Object;", TU_getReverse),
+    M("android/text/TextUtils", "substring", "(Ljava/lang/Object;II)Ljava/lang/Object;", TU_substring),
+    M("android/util/SparseArray", "get", "(I)Ljava/lang/Object;", SA_get),
+    M("android/util/SparseIntArray", "get", "(I)Ljava/lang/Object;", SA_get),
+    M("android/util/SparseBooleanArray", "get", "(I)Ljava/lang/Object;", SA_get),
+    M("android/util/SparseArray", "get", "(ILjava/lang/Object;)Ljava/lang/Object;", SA_get_def),
+    M("android/util/SparseIntArray", "get", "(ILjava/lang/Object;)Ljava/lang/Object;", SA_get_def),
+    M("android/util/SparseBooleanArray", "get", "(ILjava/lang/Object;)Ljava/lang/Object;", SA_get_def),
+    M("android/util/SparseArray", "put", "(ILjava/lang/Object;)V", SA_put),
+    M("android/util/SparseIntArray", "put", "(ILjava/lang/Object;)V", SA_put),
+    M("android/util/SparseBooleanArray", "put", "(ILjava/lang/Object;)V", SA_put),
+    M("android/util/SparseArray", "append", "(ILjava/lang/Object;)V", SA_append),
+    M("android/util/SparseIntArray", "append", "(ILjava/lang/Object;)V", SA_append),
+    M("android/util/SparseBooleanArray", "append", "(ILjava/lang/Object;)V", SA_append),
+    M("android/util/SparseArray", "remove", "(I)V", SA_remove),
+    M("android/util/SparseIntArray", "remove", "(I)V", SA_remove),
+    M("android/util/SparseBooleanArray", "remove", "(I)V", SA_remove),
+    M("android/util/SparseArray", "removeAt", "(I)V", SA_removeAt),
+    M("android/util/SparseIntArray", "removeAt", "(I)V", SA_removeAt),
+    M("android/util/SparseBooleanArray", "removeAt", "(I)V", SA_removeAt),
+    M("android/util/SparseArray", "clear", NULL, SA_clear),
+    M("android/util/SparseIntArray", "clear", NULL, SA_clear),
+    M("android/util/SparseBooleanArray", "clear", NULL, SA_clear),
+    M("android/util/SparseArray", "size", NULL, SA_size),
+    M("android/util/SparseIntArray", "size", NULL, SA_size),
+    M("android/util/SparseBooleanArray", "size", NULL, SA_size),
+    M("android/util/SparseArray", "keyAt", "(I)I", SA_keyAt),
+    M("android/util/SparseIntArray", "keyAt", "(I)I", SA_keyAt),
+    M("android/util/SparseBooleanArray", "keyAt", "(I)I", SA_keyAt),
+    M("android/util/SparseArray", "valueAt", "(I)Ljava/lang/Object;", SA_valueAt),
+    M("android/util/SparseIntArray", "valueAt", "(I)Ljava/lang/Object;", SA_valueAt),
+    M("android/util/SparseBooleanArray", "valueAt", "(I)Ljava/lang/Object;", SA_valueAt),
+    M("android/util/SparseArray", "indexOfKey", "(I)I", SA_indexOfKey),
+    M("android/util/SparseIntArray", "indexOfKey", "(I)I", SA_indexOfKey),
+    M("android/util/SparseBooleanArray", "indexOfKey", "(I)I", SA_indexOfKey),
+    M("android/util/SparseArray", "indexOfValue", "(Ljava/lang/Object;)I", SA_indexOfValue),
+    M("android/util/SparseIntArray", "indexOfValue", "(Ljava/lang/Object;)I", SA_indexOfValue),
+    M("android/util/SparseBooleanArray", "indexOfValue", "(Ljava/lang/Object;)I", SA_indexOfValue),
+    M("android/util/SparseArray", "setValueAt", "(Ljava/lang/Object;Ljava/lang/Object;)V", SA_setValueAt),
+    M("android/util/SparseIntArray", "setValueAt", "(Ljava/lang/Object;Ljava/lang/Object;)V", SA_setValueAt),
+    M("android/util/SparseBooleanArray", "setValueAt", "(Ljava/lang/Object;Ljava/lang/Object;)V", SA_setValueAt),
+    M("android/os/Bundle", "get", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Bundle_get),
+    M("android/os/BaseBundle", "get", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Bundle_get),
+    M("android/os/Bundle", "get", "(Ljava/lang/Object;)Ljava/lang/Object;", Bundle_get_null),
+    M("android/os/BaseBundle", "get", "(Ljava/lang/Object;)Ljava/lang/Object;", Bundle_get_null),
+    M("android/os/Bundle", "put", "(Ljava/lang/Object;[Ljava/lang/Object;)V", Bundle_put),
+    M("android/os/BaseBundle", "put", "(Ljava/lang/Object;[Ljava/lang/Object;)V", Bundle_put),
+    M("android/os/Bundle", "containsKey", "(Ljava/lang/Object;)Z", Bundle_containsKey),
+    M("android/os/BaseBundle", "containsKey", "(Ljava/lang/Object;)Z", Bundle_containsKey),
+    M("android/os/Bundle", "remove", "(Ljava/lang/Object;)V", Bundle_remove),
+    M("android/os/BaseBundle", "remove", "(Ljava/lang/Object;)V", Bundle_remove),
+    M("android/os/Bundle", "clear", NULL, Bundle_clear),
+    M("android/os/BaseBundle", "clear", NULL, Bundle_clear),
+    M("android/os/Bundle", "size", NULL, Bundle_size),
+    M("android/os/BaseBundle", "size", NULL, Bundle_size),
+    M("android/os/Bundle", "isEmpty", NULL, Bundle_isEmpty),
+    M("android/os/BaseBundle", "isEmpty", NULL, Bundle_isEmpty),
+    M("android/os/Bundle", "keySet", NULL, Bundle_keySet),
+    M("android/os/BaseBundle", "keySet", NULL, Bundle_keySet),
+    M("android/os/Bundle", "putInt", "(Ljava/lang/Object;I)V", Bundle_putInt),
+    M("android/os/BaseBundle", "putInt", "(Ljava/lang/Object;I)V", Bundle_putInt),
+    M("android/os/Bundle", "putLong", "(Ljava/lang/Object;I)V", Bundle_putLong),
+    M("android/os/BaseBundle", "putLong", "(Ljava/lang/Object;I)V", Bundle_putLong),
+    M("android/os/Bundle", "putBool", "(Ljava/lang/Object;I)V", Bundle_putBool),
+    M("android/os/BaseBundle", "putBool", "(Ljava/lang/Object;I)V", Bundle_putBool),
+    M("android/os/Bundle", "putByte", "(Ljava/lang/Object;I)V", Bundle_putByte),
+    M("android/os/BaseBundle", "putByte", "(Ljava/lang/Object;I)V", Bundle_putByte),
+    M("android/os/Bundle", "putChar", "(Ljava/lang/Object;I)V", Bundle_putChar),
+    M("android/os/BaseBundle", "putChar", "(Ljava/lang/Object;I)V", Bundle_putChar),
+    M("android/os/Bundle", "putShort", "(Ljava/lang/Object;I)V", Bundle_putShort),
+    M("android/os/BaseBundle", "putShort", "(Ljava/lang/Object;I)V", Bundle_putShort),
+    M("android/os/Bundle", "putFloat", "(Ljava/lang/Object;I)V", Bundle_putFloat),
+    M("android/os/BaseBundle", "putFloat", "(Ljava/lang/Object;I)V", Bundle_putFloat),
+    M("android/os/Bundle", "putDouble", "(Ljava/lang/Object;I)V", Bundle_putDouble),
+    M("android/os/BaseBundle", "putDouble", "(Ljava/lang/Object;I)V", Bundle_putDouble),
+    M("android/os/Bundle", "putString", "(Ljava/lang/Object;I)V", Bundle_putString),
+    M("android/os/BaseBundle", "putString", "(Ljava/lang/Object;I)V", Bundle_putString),
+    M("android/os/Bundle", "putCS", "(Ljava/lang/Object;I)V", Bundle_putCS),
+    M("android/os/BaseBundle", "putCS", "(Ljava/lang/Object;I)V", Bundle_putCS),
+    M("android/os/Bundle", "putBundle", "(Ljava/lang/Object;I)V", Bundle_putBundle),
+    M("android/os/BaseBundle", "putBundle", "(Ljava/lang/Object;I)V", Bundle_putBundle),
+    M("android/os/Bundle", "getInt", "(Ljava/lang/Object;I)I", Bundle_getInt),
+    M("android/os/BaseBundle", "getInt", "(Ljava/lang/Object;I)I", Bundle_getInt),
+    M("android/os/Bundle", "getInt0", "(Ljava/lang/Object;)I", Bundle_getInt0),
+    M("android/os/BaseBundle", "getInt0", "(Ljava/lang/Object;)I", Bundle_getInt0),
+    M("android/os/Bundle", "getLong", "(Ljava/lang/Object;J)J", Bundle_getLong),
+    M("android/os/BaseBundle", "getLong", "(Ljava/lang/Object;J)J", Bundle_getLong),
+    M("android/os/Bundle", "getLong0", "(Ljava/lang/Object;)J", Bundle_getLong0),
+    M("android/os/BaseBundle", "getLong0", "(Ljava/lang/Object;)J", Bundle_getLong0),
+    M("android/os/Bundle", "getBool", "(Ljava/lang/Object;Z)Z", Bundle_getBool),
+    M("android/os/BaseBundle", "getBool", "(Ljava/lang/Object;Z)Z", Bundle_getBool),
+    M("android/os/Bundle", "getBool0", "(Ljava/lang/Object;)Z", Bundle_getBool0),
+    M("android/os/BaseBundle", "getBool0", "(Ljava/lang/Object;)Z", Bundle_getBool0),
+    M("android/os/Bundle", "getFloat", "(Ljava/lang/Object;F)F", Bundle_getFloat),
+    M("android/os/BaseBundle", "getFloat", "(Ljava/lang/Object;F)F", Bundle_getFloat),
+    M("android/os/Bundle", "getDouble", "(Ljava/lang/Object;D)D", Bundle_getDouble),
+    M("android/os/BaseBundle", "getDouble", "(Ljava/lang/Object;D)D", Bundle_getDouble),
+    M("android/os/Bundle", "getDouble0", "(Ljava/lang/Object;)D", Bundle_getDouble0),
+    M("android/os/BaseBundle", "getDouble0", "(Ljava/lang/Object;)D", Bundle_getDouble0),
+    M("android/os/Bundle", "getByte", "(Ljava/lang/Object;B)B", Bundle_getByte),
+    M("android/os/BaseBundle", "getByte", "(Ljava/lang/Object;B)B", Bundle_getByte),
+    M("android/os/Bundle", "getChar", "(Ljava/lang/Object;C)C", Bundle_getChar),
+    M("android/os/BaseBundle", "getChar", "(Ljava/lang/Object;C)C", Bundle_getChar),
+    M("android/os/Bundle", "getShort", "(Ljava/lang/Object;S)S", Bundle_getShort),
+    M("android/os/BaseBundle", "getShort", "(Ljava/lang/Object;S)S", Bundle_getShort),
+    M("android/os/Bundle", "getString", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Bundle_getString),
+    M("android/os/BaseBundle", "getString", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Bundle_getString),
+    M("android/os/Bundle", "getString0", "(Ljava/lang/Object;)Ljava/lang/Object;", Bundle_getString0),
+    M("android/os/BaseBundle", "getString0", "(Ljava/lang/Object;)Ljava/lang/Object;", Bundle_getString0),
+    M("android/os/Bundle", "getBundle", "(Ljava/lang/Object;)Ljava/lang/Object;", Bundle_getBundle),
+    M("android/os/BaseBundle", "getBundle", "(Ljava/lang/Object;)Ljava/lang/Object;", Bundle_getBundle),
+    M("android/os/Bundle", "putAll", "(Ljava/lang/Object;)V", Bundle_putAll),
+    M("android/os/BaseBundle", "putAll", "(Ljava/lang/Object;)V", Bundle_putAll),
+    M("android/os/Bundle", "getParcelable", NULL, Bundle_getParcelable),
+    M("android/os/BaseBundle", "getParcelable", NULL, Bundle_getParcelable),
+    M("android/os/Bundle", "getSerializable", NULL, Bundle_getSerializable),
+    M("android/os/BaseBundle", "getSerializable", NULL, Bundle_getSerializable),
+    M("android/os/Bundle", "getCharSeq", NULL, Bundle_getCharSeq),
+    M("android/os/BaseBundle", "getCharSeq", NULL, Bundle_getCharSeq),
+    M("android/os/Bundle", "putParcelable", NULL, Bundle_putParcelable),
+    M("android/os/BaseBundle", "putParcelable", NULL, Bundle_putParcelable),
+    M("android/os/Bundle", "putSerializable", NULL, Bundle_putSerializable),
+    M("android/os/BaseBundle", "putSerializable", NULL, Bundle_putSerializable),
+    M("android/os/Bundle", "getStringArr", NULL, Bundle_getStringArr),
+    M("android/os/BaseBundle", "getStringArr", NULL, Bundle_getStringArr),
+    M("android/os/Bundle", "putStringArr", NULL, Bundle_putStringArr),
+    M("android/os/BaseBundle", "putStringArr", NULL, Bundle_putStringArr),
+    M("android/os/Bundle", "toString", NULL, Bundle_toString),
+    M("android/os/BaseBundle", "toString", NULL, Bundle_toString),
+    M("android/os/Bundle", "clone", NULL, Bundle_clone),
+    M("android/os/BaseBundle", "clone", NULL, Bundle_clone),
+    M("android/os/Bundle", "getIntArr", NULL, Bundle_getIntArr),
+    M("android/os/BaseBundle", "getIntArr", NULL, Bundle_getIntArr),
+    M("android/os/Bundle", "putIntArr", NULL, Bundle_putIntArr),
+    M("android/os/BaseBundle", "putIntArr", NULL, Bundle_putIntArr),
+    M("android/os/Bundle", "getByteArr", NULL, Bundle_getByteArr),
+    M("android/os/BaseBundle", "getByteArr", NULL, Bundle_getByteArr),
+    M("android/os/Bundle", "putByteArr", NULL, Bundle_putByteArr),
+    M("android/os/BaseBundle", "putByteArr", NULL, Bundle_putByteArr),
+    M("android/os/Bundle", "putStringArrList", NULL, Bundle_putStringArrList),
+    M("android/os/BaseBundle", "putStringArrList", NULL, Bundle_putStringArrList),
+    M("android/os/Bundle", "getStringArrList", NULL, Bundle_getStringArrList),
+    M("android/os/BaseBundle", "getStringArrList", NULL, Bundle_getStringArrList),
+    M("android/os/Bundle", "putIntArrList", NULL, Bundle_putIntArrList),
+    M("android/os/BaseBundle", "putIntArrList", NULL, Bundle_putIntArrList),
+    M("android/os/Bundle", "getIntArrList", NULL, Bundle_getIntArrList),
+    M("android/os/BaseBundle", "getIntArrList", NULL, Bundle_getIntArrList),
+    M("android/os/Bundle", "describeContents", NULL, Bundle_describeContents),
+    M("android/os/BaseBundle", "describeContents", NULL, Bundle_describeContents),
+    M("android/os/Bundle", "writeToParcel", NULL, Bundle_writeToParcel),
+    M("android/os/BaseBundle", "writeToParcel", NULL, Bundle_writeToParcel),
+    M("android/content/Intent", "<init>", "()V", Intent_init),
+    M("android/content/Intent", "<init>", "(I)V", Intent_init_action),
+    M("android/content/Intent", "<init>", "(II)V", Intent_init_cls),
+    M("android/content/Intent", "<init>", "(Ljava/lang/Object;)V", Intent_init_other),
+    M("android/content/Intent", "getAction", NULL, Intent_getAction),
+    M("android/content/Intent", "setAction", "(I)Ljava/lang/Object;", Intent_setAction),
+    M("android/content/Intent", "getData", NULL, Intent_getData),
+    M("android/content/Intent", "getDataString", NULL, Intent_getDataString),
+    M("android/content/Intent", "setData", "(I)Ljava/lang/Object;", Intent_setData),
+    M("android/content/Intent", "setDataAndType", "(II)Ljava/lang/Object;", Intent_setDataAndType),
+    M("android/content/Intent", "getType", NULL, Intent_getType),
+    M("android/content/Intent", "setType", "(I)Ljava/lang/Object;", Intent_setType),
+    M("android/content/Intent", "getFlags", NULL, Intent_getFlags),
+    M("android/content/Intent", "setFlags", "(I)Ljava/lang/Object;", Intent_setFlags),
+    M("android/content/Intent", "addFlags", "(I)Ljava/lang/Object;", Intent_addFlags),
+    M("android/content/Intent", "getPackage", NULL, Intent_getPackage),
+    M("android/content/Intent", "setPackage", "(I)Ljava/lang/Object;", Intent_setPackage),
+    M("android/content/Intent", "getComponent", NULL, Intent_getComponent),
+    M("android/content/Intent", "setComponent", "(Ljava/lang/Object;)Ljava/lang/Object;", Intent_setComponent),
+    M("android/content/Intent", "setClass", "(ILjava/lang/Object;)Ljava/lang/Object;", Intent_setClass),
+    M("android/content/Intent", "setClassName", "(II)Ljava/lang/Object;", Intent_setClassName),
+    M("android/content/Intent", "getExtras", NULL, Intent_getExtras),
+    M("android/content/Intent", "hasExtra", "(Ljava/lang/Object;)Z", Intent_hasExtra),
+    M("android/content/Intent", "removeExtra", NULL, Intent_removeExtra),
+    M("android/content/Intent", "replaceExtras", "(I)Ljava/lang/Object;", Intent_replaceExtras),
+    M("android/content/Intent", "putExtras", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Intent_putExtras),
+    M("android/content/Intent", "addCategory", "(Ljava/lang/Object;)Ljava/lang/Object;", Intent_addCategory),
+    M("android/content/Intent", "hasCategory", "(Ljava/lang/Object;)Z", Intent_hasCategory),
+    M("android/content/Intent", "getCategories", NULL, Intent_getCategories),
+    M("android/content/Intent", "toURI", NULL, Intent_toURI),
+    M("android/content/Intent", "toString", NULL, Intent_toString),
+    M("android/content/Intent", "createChooser", "(ILjava/lang/Object;)Ljava/lang/Object;", Intent_createChooser),
+    M("android/content/Intent", "makeMainActivity", "(I)Ljava/lang/Object;", Intent_makeMainActivity),
+    M("android/content/Intent", "resolveActivity", NULL, Intent_resolveActivity),
+    M("android/content/Intent", "getScheme", NULL, Intent_getScheme),
+    M("android/os/SystemProperties", "set", "()V", SysProp_set),
+    M("android/os/StatFs", "<init>", "(I)V", StatFs_init),
+    M("android/os/StatFs", "blockSize", NULL, StatFs_blockSize),
+    M("android/os/StatFs", "blockSizeLong", NULL, StatFs_blockSizeLong),
+    M("android/os/StatFs", "blockCount", NULL, StatFs_blockCount),
+    M("android/os/StatFs", "blockCountLong", NULL, StatFs_blockCountLong),
+    M("android/os/StatFs", "availBlocks", NULL, StatFs_availBlocks),
+    M("android/os/StatFs", "availBlocksLong", NULL, StatFs_availBlocksLong),
+    M("android/os/StatFs", "freeBlocks", NULL, StatFs_freeBlocks),
+    M("android/os/StatFs", "freeBlocksLong", NULL, StatFs_freeBlocksLong),
+    M("android/os/StatFs", "availBytes", NULL, StatFs_availBytes),
+    M("android/os/StatFs", "freeBytes", NULL, StatFs_freeBytes),
+    M("android/os/StatFs", "totalBytes", NULL, StatFs_totalBytes),
+    M("android/os/StatFs", "restat", NULL, StatFs_restat),
+    M("java/lang/Process", "myUid", NULL, Proc_myUid),
+    M("java/lang/Process", "myPpid", NULL, Proc_myPpid),
+    M("java/lang/Process", "kill", NULL, Proc_kill),
+    M("java/lang/Process", "getElapsedCpuTime", NULL, Proc_getElapsedCpuTime),
+    M("java/lang/Process", "getFreeMemory", NULL, Proc_getFreeMemory),
+    M("java/lang/Process", "getTotalMemory", NULL, Proc_getTotalMemory),
+    M("java/lang/Process", "is64Bit", NULL, Proc_is64Bit),
+    M("java/lang/Process", "supportsProcesses", NULL, Proc_supportsProcesses),
+    M("java/lang/Process", "getThreadPriority", NULL, Proc_getThreadPriority),
+    M("java/lang/Process", "getUidForName", NULL, Proc_getUidForName),
+    M("java/lang/Process", "getGidForName", NULL, Proc_getGidForName),
+    M("java/lang/Process", "isSdkSandboxUid", NULL, Proc_isSdkSandboxUid),
+    M("java/lang/Process", "isApplicationUid", "(I)Z", Proc_isApplicationUid),
+    M("java/lang/Process", "sendSignal", NULL, Proc_sendSignal),
+    M("java/lang/Process", "getStartElapsedRealtime", NULL, Proc_getStartElapsedRealtime),
+    M("java/lang/Process", "getStartRequestedElapsedRealtime", NULL, Proc_getStartRequestedElapsedRealtime),
+    M("android/os/Debug", "getGlobalAllocCount", NULL, Dbg_getGlobalAllocCount),
+    M("android/os/Debug", "getGlobalAllocSize", NULL, Dbg_getGlobalAllocSize),
+    M("android/os/Debug", "getGlobalFreedCount", NULL, Dbg_getGlobalFreedCount),
+    M("android/os/Debug", "getGlobalFreedSize", NULL, Dbg_getGlobalFreedSize),
+    M("android/os/Debug", "getNativeHeapSize", NULL, Dbg_getNativeHeapSize),
+    M("android/os/Debug", "getNativeHeapAllocatedSize", NULL, Dbg_getNativeHeapAllocatedSize),
+    M("android/os/Debug", "getNativeHeapFreeSize", NULL, Dbg_getNativeHeapFreeSize),
+    M("android/os/Debug", "getPss", NULL, Dbg_getPss),
+    M("android/os/Debug", "threadCpuTimeNanos", NULL, Dbg_threadCpuTimeNanos),
+    M("android/os/Debug", "waitForDebugger", NULL, Dbg_waitForDebugger),
+    M("android/os/Debug", "waitingForDebugger", NULL, Dbg_waitingForDebugger),
+    M("android/os/Debug", "isDebuggerConnected", NULL, Dbg_isDebuggerConnected),
+    M("android/os/Debug", "changeDebugPort", NULL, Dbg_changeDebugPort),
+    M("android/os/Debug", "startNativeTracing", NULL, Dbg_startNativeTracing),
+    M("android/os/Debug", "stopNativeTracing", NULL, Dbg_stopNativeTracing),
+    M("android/os/Debug", "enableEmulatorTrace", NULL, Dbg_enableEmulatorTrace),
+    M("android/os/Debug", "startMethodTracing", NULL, Dbg_startMethodTracing),
+    M("android/os/Debug", "stopMethodTracing", NULL, Dbg_stopMethodTracing),
+    M("android/os/Debug", "getMethodTracingMode", NULL, Dbg_getMethodTracingMode),
+    M("android/os/Debug", "dumpHprofData", NULL, Dbg_dumpHprofData),
+    M("android/os/Debug", "dumpHprofDataDdms", NULL, Dbg_dumpHprofDataDdms),
+    M("android/os/Debug", "dumpService", NULL, Dbg_dumpService),
+    M("android/os/Debug", "getRuntimeStat", NULL, Dbg_getRuntimeStat),
+    M("android/os/Debug", "getRuntimeStats", NULL, Dbg_getRuntimeStats),
+    M("android/os/Debug", "dumpJavaHeap", NULL, Dbg_dumpJavaHeap),
+    M("android/os/Debug", "dumpNativeHeap", NULL, Dbg_dumpNativeHeap),
+    M("android/os/Debug", "dumpReferenceTables", NULL, Dbg_dumpReferenceTables),
+    M("android/os/Debug", "printLoadedClasses", NULL, Dbg_printLoadedClasses),
+    M("android/os/Debug", "getLoadedClassCount", NULL, Dbg_getLoadedClassCount),
+    M("android/os/Debug", "getBinderSentTransactions", NULL, Dbg_getBinderSentTransactions),
+    M("android/os/Debug", "getBinderReceivedTransactions", NULL, Dbg_getBinderReceivedTransactions),
+    M("android/os/Debug", "getBinderLocalObjectCount", NULL, Dbg_getBinderLocalObjectCount),
+    M("android/os/Debug", "getBinderProxyObjectCount", NULL, Dbg_getBinderProxyObjectCount),
+    M("android/os/Debug", "getBinderDeathObjectCount", NULL, Dbg_getBinderDeathObjectCount),
+    M("android/os/Parcel", "obtain", NULL, Parcel_obtain),
+    M("android/os/Parcel", "destroy", NULL, Parcel_destroy),
+    M("android/os/Parcel", "recycle", NULL, Parcel_recycle),
+    M("android/os/Parcel", "dataSize", NULL, Parcel_dataSize),
+    M("android/os/Parcel", "dataAvail", NULL, Parcel_dataAvail),
+    M("android/os/Parcel", "dataPos", NULL, Parcel_dataPos),
+    M("android/os/Parcel", "dataCapacity", NULL, Parcel_dataCapacity),
+    M("android/os/Parcel", "setDataPosition", "(I)V", Parcel_setDataPosition),
+    M("android/os/Parcel", "setDataSize", "(I)V", Parcel_setDataSize),
+    M("android/os/Parcel", "setDataCapacity", "(I)V", Parcel_setDataCapacity),
+    M("android/os/Parcel", "writeInt", "(I)V", Parcel_writeInt),
+    M("android/os/Parcel", "readInt", NULL, Parcel_readInt),
+    M("android/os/Parcel", "writeLong", "(J)V", Parcel_writeLong),
+    M("android/os/Parcel", "readLong", NULL, Parcel_readLong),
+    M("android/os/Parcel", "writeFloat", "(F)V", Parcel_writeFloat),
+    M("android/os/Parcel", "readFloat", NULL, Parcel_readFloat),
+    M("android/os/Parcel", "writeDouble", "(D)V", Parcel_writeDouble),
+    M("android/os/Parcel", "readDouble", NULL, Parcel_readDouble),
+    M("android/os/Parcel", "writeByte", "(B)V", Parcel_writeByte),
+    M("android/os/Parcel", "readByte", NULL, Parcel_readByte),
+    M("android/os/Parcel", "writeString", "(Ljava/lang/Object;)V", Parcel_writeString),
+    M("android/os/Parcel", "readString", NULL, Parcel_readString),
+    M("android/os/Parcel", "writeByteArray", "([Ljava/lang/Object;)V", Parcel_writeByteArray),
+    M("android/os/Parcel", "createByteArray", NULL, Parcel_createByteArray),
+    M("android/os/Parcel", "writeValue", "(Ljava/lang/Object;)V", Parcel_writeValue),
+    M("android/os/Parcel", "readValue", NULL, Parcel_readValue),
+    M("android/os/Parcel", "writeBundle", NULL, Parcel_writeBundle),
+    M("android/os/Parcel", "readBundle", NULL, Parcel_readBundle),
+    M("android/os/Parcel", "marshall", NULL, Parcel_marshall),
+    M("android/os/Parcel", "unmarshall", "([Ljava/lang/Object;II)V", Parcel_unmarshall),
+    M("android/os/Parcel", "appendFrom", NULL, Parcel_appendFrom),
+    M("android/os/Parcel", "hasFileDescriptors", NULL, Parcel_hasFileDescriptors),
+    M("android/os/Parcel", "enforceInterface", NULL, Parcel_enforceInterface),
+    M("android/os/Parcel", "readParcelable", NULL, Parcel_readParcelable),
+    M("android/os/Parcel", "writeParcelable", NULL, Parcel_writeParcelable),
+    M("android/os/Parcel", "readSerializable", NULL, Parcel_readSerializable),
+    M("android/os/Parcel", "writeSerializable", NULL, Parcel_writeSerializable),
+    M("android/os/Parcel", "readStrongBinder", NULL, Parcel_readStrongBinder),
+    M("android/os/Parcel", "writeStrongBinder", NULL, Parcel_writeStrongBinder),
+    M("android/os/Parcel", "readException", NULL, Parcel_readException),
+    M("android/os/Parcel", "writeException", NULL, Parcel_writeException),
+    M("android/os/Parcel", "readArrayList", NULL, Parcel_readArrayList),
+    M("android/os/Parcel", "readHashMap", NULL, Parcel_readHashMap),
+    M("android/os/Parcel", "readSparseArray", NULL, Parcel_readSparseArray),
+    M("android/os/Parcel", "writeSparseArray", NULL, Parcel_writeSparseArray),
+    M("android/os/Parcel", "writeMap", NULL, Parcel_writeMap),
+    M("android/os/Parcel", "writeList", NULL, Parcel_writeList),
+    M("android/os/Parcel", "writeArray", NULL, Parcel_writeArray),
+    M("android/os/Parcel", "readArray", NULL, Parcel_readArray),
+    M("android/os/Parcel", "readList", NULL, Parcel_readList),
+    M("android/net/Uri", "parse", "(I)Ljava/lang/Object;", Uri_parse),
+    M("android/net/Uri", "toString", NULL, Uri_toString),
+    M("android/net/Uri", "getScheme", NULL, Uri_getScheme),
+    M("android/net/Uri", "getAuthority", NULL, Uri_getAuthority),
+    M("android/net/Uri", "getHost", NULL, Uri_getHost),
+    M("android/net/Uri", "getPort", NULL, Uri_getPort),
+    M("android/net/Uri", "getPath", NULL, Uri_getPath),
+    M("android/net/Uri", "getQuery", NULL, Uri_getQuery),
+    M("android/net/Uri", "getFragment", NULL, Uri_getFragment),
+    M("android/net/Uri", "getEncodedPath", NULL, Uri_getEncodedPath),
+    M("android/net/Uri", "getEncodedQuery", NULL, Uri_getEncodedQuery),
+    M("android/net/Uri", "getEncodedFragment", NULL, Uri_getEncodedFragment),
+    M("android/net/Uri", "getLastPathSegment", NULL, Uri_getLastPathSegment),
+    M("android/net/Uri", "getPathSegments", NULL, Uri_getPathSegments),
+    M("android/net/Uri", "decode", "(Ljava/lang/Object;)Ljava/lang/Object;", Uri_decode),
+    M("android/net/Uri", "getQueryParameter", "(Ljava/lang/Object;)Ljava/lang/Object;", Uri_getQueryParameter),
+    M("android/net/Uri", "getQueryParameterNames", NULL, Uri_getQueryParameterNames),
+    M("android/net/Uri", "getBooleanQueryParameter", "(IZ)Z", Uri_getBooleanQueryParameter),
+    M("android/net/Uri", "buildUpon", NULL, Uri_buildUpon),
+    M("android/net/Uri$Builder", "scheme", "(I)Ljava/lang/Object;", UB_scheme),
+    M("android/net/Uri$Builder", "authority", "(I)Ljava/lang/Object;", UB_authority),
+    M("android/net/Uri$Builder", "path", "(I)Ljava/lang/Object;", UB_path),
+    M("android/net/Uri$Builder", "appendPath", "(Ljava/lang/Object;)Ljava/lang/Object;", UB_appendPath),
+    M("android/net/Uri$Builder", "appendQueryParameter", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", UB_appendQueryParameter),
+    M("android/net/Uri$Builder", "fragment", "(I)Ljava/lang/Object;", UB_fragment),
+    M("android/net/Uri$Builder", "clearQuery", NULL, UB_clearQuery),
+    M("android/net/Uri$Builder", "build", NULL, UB_build),
+    M("android/net/Uri", "fromFile", "(Ljava/lang/Object;)Ljava/lang/Object;", Uri_fromFile),
+    M("android/net/Uri", "withAppendedPath", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Uri_withAppendedPath),
+    M("android/net/Uri", "isAbsolute", NULL, Uri_isAbsolute),
+    M("android/net/Uri", "isRelative", NULL, Uri_isRelative),
+    M("android/net/Uri", "isHierarchical", NULL, Uri_isHierarchical),
+    M("android/net/Uri", "isOpaque", NULL, Uri_isOpaque),
+    M("android/net/Uri", "hashCode", NULL, Uri_hashCode),
+    M("android/net/Uri", "equals", "(Ljava/lang/Object;)Z", Uri_equals),
+    M("android/net/Uri", "normalizeScheme", NULL, Uri_normalizeScheme),
+    M("android/net/Uri", "compareTo", "(Ljava/lang/Object;)I", Uri_compareTo),
+    M("android/net/Uri", "getEncodedAuthority", NULL, Uri_getEncodedAuthority),
+    M("android/net/Uri", "getEncodedUserInfo", NULL, Uri_getEncodedUserInfo),
+    M("android/net/Uri", "getUserInfo", NULL, Uri_getUserInfo),
+    M("android/net/Uri", "checkSafe", NULL, Uri_checkSafe),
+    M("java/net/InetAddress", "getByName", "(I)Ljava/lang/Object;", Inet_getByName),
+    M("java/net/Inet4Address", "getByName", "(I)Ljava/lang/Object;", Inet_getByName),
+    M("java/net/Inet6Address", "getByName", "(I)Ljava/lang/Object;", Inet_getByName),
+    M("java/net/InetAddress", "getLocalHost", NULL, Inet_getLocalHost),
+    M("java/net/Inet4Address", "getLocalHost", NULL, Inet_getLocalHost),
+    M("java/net/Inet6Address", "getLocalHost", NULL, Inet_getLocalHost),
+    M("java/net/InetAddress", "getLoopback", NULL, Inet_getLoopback),
+    M("java/net/Inet4Address", "getLoopback", NULL, Inet_getLoopback),
+    M("java/net/Inet6Address", "getLoopback", NULL, Inet_getLoopback),
+    M("java/net/InetAddress", "getByAddress", NULL, Inet_getByAddress),
+    M("java/net/Inet4Address", "getByAddress", NULL, Inet_getByAddress),
+    M("java/net/Inet6Address", "getByAddress", NULL, Inet_getByAddress),
+    M("java/net/InetAddress", "getAllByName", NULL, Inet_getAllByName),
+    M("java/net/Inet4Address", "getAllByName", NULL, Inet_getAllByName),
+    M("java/net/Inet6Address", "getAllByName", NULL, Inet_getAllByName),
+    M("java/net/InetAddress", "getHostAddress", NULL, Inet_getHostAddress),
+    M("java/net/Inet4Address", "getHostAddress", NULL, Inet_getHostAddress),
+    M("java/net/Inet6Address", "getHostAddress", NULL, Inet_getHostAddress),
+    M("java/net/InetAddress", "getHostName", NULL, Inet_getHostName),
+    M("java/net/Inet4Address", "getHostName", NULL, Inet_getHostName),
+    M("java/net/Inet6Address", "getHostName", NULL, Inet_getHostName),
+    M("java/net/InetAddress", "getCanonicalHostName", NULL, Inet_getCanonicalHostName),
+    M("java/net/Inet4Address", "getCanonicalHostName", NULL, Inet_getCanonicalHostName),
+    M("java/net/Inet6Address", "getCanonicalHostName", NULL, Inet_getCanonicalHostName),
+    M("java/net/InetAddress", "getAddress", NULL, Inet_getAddress),
+    M("java/net/Inet4Address", "getAddress", NULL, Inet_getAddress),
+    M("java/net/Inet6Address", "getAddress", NULL, Inet_getAddress),
+    M("java/net/InetAddress", "isLoopback", NULL, Inet_isLoopback),
+    M("java/net/Inet4Address", "isLoopback", NULL, Inet_isLoopback),
+    M("java/net/Inet6Address", "isLoopback", NULL, Inet_isLoopback),
+    M("java/net/InetAddress", "isAnyLocal", NULL, Inet_isAnyLocal),
+    M("java/net/Inet4Address", "isAnyLocal", NULL, Inet_isAnyLocal),
+    M("java/net/Inet6Address", "isAnyLocal", NULL, Inet_isAnyLocal),
+    M("java/net/InetAddress", "isMulticast", NULL, Inet_isMulticast),
+    M("java/net/Inet4Address", "isMulticast", NULL, Inet_isMulticast),
+    M("java/net/Inet6Address", "isMulticast", NULL, Inet_isMulticast),
+    M("java/net/InetAddress", "isLinkLocal", NULL, Inet_isLinkLocal),
+    M("java/net/Inet4Address", "isLinkLocal", NULL, Inet_isLinkLocal),
+    M("java/net/Inet6Address", "isLinkLocal", NULL, Inet_isLinkLocal),
+    M("java/net/InetAddress", "isSiteLocal", NULL, Inet_isSiteLocal),
+    M("java/net/Inet4Address", "isSiteLocal", NULL, Inet_isSiteLocal),
+    M("java/net/Inet6Address", "isSiteLocal", NULL, Inet_isSiteLocal),
+    M("java/net/InetAddress", "isReachable", NULL, Inet_isReachable),
+    M("java/net/Inet4Address", "isReachable", NULL, Inet_isReachable),
+    M("java/net/Inet6Address", "isReachable", NULL, Inet_isReachable),
+    M("java/net/InetAddress", "isReachableT", NULL, Inet_isReachableT),
+    M("java/net/Inet4Address", "isReachableT", NULL, Inet_isReachableT),
+    M("java/net/Inet6Address", "isReachableT", NULL, Inet_isReachableT),
+    M("java/net/InetAddress", "toString", NULL, Inet_toString),
+    M("java/net/Inet4Address", "toString", NULL, Inet_toString),
+    M("java/net/Inet6Address", "toString", NULL, Inet_toString),
+    M("java/net/InetAddress", "equals", "(Ljava/lang/Object;)Z", Inet_equals),
+    M("java/net/Inet4Address", "equals", "(Ljava/lang/Object;)Z", Inet_equals),
+    M("java/net/Inet6Address", "equals", "(Ljava/lang/Object;)Z", Inet_equals),
+    M("java/net/InetAddress", "hashCode", NULL, Inet_hashCode),
+    M("java/net/Inet4Address", "hashCode", NULL, Inet_hashCode),
+    M("java/net/Inet6Address", "hashCode", NULL, Inet_hashCode),
+    M("java/net/NetworkInterface", "getNetworkInterfaces", NULL, NI_getNetworkInterfaces),
+    M("java/net/NetworkInterface", "getName", NULL, NI_getName),
+    M("java/net/NetworkInterface", "getDisplayName", NULL, NI_getDisplayName),
+    M("java/net/NetworkInterface", "getIndex", NULL, NI_getIndex),
+    M("java/net/NetworkInterface", "isUp", NULL, NI_isUp),
+    M("java/net/NetworkInterface", "isLoopback", NULL, NI_isLoopback),
+    M("java/net/NetworkInterface", "isVirtual", NULL, NI_isVirtual),
+    M("java/net/NetworkInterface", "getInetAddresses", NULL, NI_getInetAddresses),
+    M("java/net/NetworkInterface", "getHardwareAddress", NULL, NI_getHardwareAddress),
+    M("java/net/NetworkInterface", "getMTU", NULL, NI_getMTU),
+    M("java/net/NetworkInterface", "supportsMulticast", NULL, NI_supportsMulticast),
+    M("java/net/NetworkInterface", "getInterfaceAddresses", NULL, NI_getInterfaceAddresses),
+    M("java/net/NetworkInterface", "getSubInterfaces", NULL, NI_getSubInterfaces),
+    M("java/net/NetworkInterface", "toString", NULL, NI_toString),
+    M("java/util/Enumeration", "hasMoreElements", NULL, Enum_hasMoreElements),
+    M("java/util/Enumeration", "nextElement", NULL, Enum_nextElement),
+    M("java/util/Collections", "enumeration", "(Ljava/lang/Object;)Ljava/lang/Object;", Colls_enumeration),
+    M("android/net/wifi/WifiManager", "getConnectionInfo", NULL, WifiMan_getConnectionInfo),
+    M("android/net/wifi/WifiInfo", "getSSID", NULL, WifiInfo_getSSID),
+    M("android/net/wifi/WifiInfo", "getBSSID", NULL, WifiInfo_getBSSID),
+    M("android/net/wifi/WifiInfo", "getMacAddress", NULL, WifiInfo_getMacAddress),
+    M("android/net/wifi/WifiInfo", "getRssi", NULL, WifiInfo_getRssi),
+    M("android/net/wifi/WifiInfo", "getLinkSpeed", NULL, WifiInfo_getLinkSpeed),
+    M("android/net/wifi/WifiInfo", "getNetworkId", NULL, WifiInfo_getNetworkId),
+    M("android/net/wifi/WifiInfo", "getIpAddress", NULL, WifiInfo_getIpAddress),
+    M("android/net/wifi/WifiInfo", "getHiddenSSID", NULL, WifiInfo_getHiddenSSID),
+    M("android/net/wifi/WifiInfo", "getFrequency", NULL, WifiInfo_getFrequency),
+    M("android/net/wifi/WifiInfo", "getSupplicantState", NULL, WifiInfo_getSupplicantState),
+    M("android/net/wifi/WifiInfo", "toString", NULL, WifiInfo_toString),
+    M("android/net/wifi/WifiManager", "isWifiEnabled", NULL, WifiMan_isWifiEnabled),
+    M("android/net/wifi/WifiManager", "setWifiEnabled", NULL, WifiMan_setWifiEnabled),
+    M("android/net/wifi/WifiManager", "getWifiState", NULL, WifiMan_getWifiState),
+    M("android/net/wifi/WifiManager", "getScanResults", NULL, WifiMan_getScanResults),
+    M("android/net/wifi/WifiManager", "startScan", NULL, WifiMan_startScan),
+    M("android/net/wifi/WifiManager", "is5GHz", NULL, WifiMan_is5GHz),
+    M("android/net/wifi/WifiManager", "reconnect", NULL, WifiMan_reconnect),
+    M("android/net/wifi/WifiManager", "disconnect", NULL, WifiMan_disconnect),
+    M("android/net/wifi/WifiManager", "getDhcpInfo", NULL, WifiMan_getDhcpInfo),
+    M("android/net/DhcpInfo", "toString", NULL, DhcpInfo_toString),
+    M("android/net/ConnectivityManager", "getActiveNetworkInfo", NULL, ConnMan_getActiveNetworkInfo),
+    M("android/net/ConnectivityManager", "getNetworkInfo", NULL, ConnMan_getNetworkInfo),
+    M("android/net/ConnectivityManager", "getAllNetworkInfo", NULL, ConnMan_getAllNetworkInfo),
+    M("android/net/ConnectivityManager", "getActiveNetwork", NULL, ConnMan_getActiveNetwork),
+    M("android/net/ConnectivityManager", "isActiveNetworkMetered", NULL, ConnMan_isActiveNetworkMetered),
+    M("android/net/ConnectivityManager", "getNetworkCapabilities", NULL, ConnMan_getNetworkCapabilities),
+    M("android/net/NetworkCapabilities", "hasTransport", "(I)Z", NetCap_hasTransport),
+    M("android/net/NetworkCapabilities", "hasCapability", NULL, NetCap_hasCapability),
+    M("android/net/NetworkCapabilities", "getLinkDownstream", NULL, NetCap_getLinkDownstream),
+    M("android/net/NetworkCapabilities", "getLinkUpstream", NULL, NetCap_getLinkUpstream),
+    M("android/net/NetworkInfo", "getType", NULL, NetInfo_getType),
+    M("android/net/NetworkInfo", "getTypeName", NULL, NetInfo_getTypeName),
+    M("android/net/NetworkInfo", "getSubtype", NULL, NetInfo_getSubtype),
+    M("android/net/NetworkInfo", "getSubtypeName", NULL, NetInfo_getSubtypeName),
+    M("android/net/NetworkInfo", "isConnected", NULL, NetInfo_isConnected),
+    M("android/net/NetworkInfo", "isConnectedOrConnecting", NULL, NetInfo_isConnectedOrConnecting),
+    M("android/net/NetworkInfo", "isAvailable", NULL, NetInfo_isAvailable),
+    M("android/net/NetworkInfo", "isFailover", NULL, NetInfo_isFailover),
+    M("android/net/NetworkInfo", "isRoaming", NULL, NetInfo_isRoaming),
+    M("android/net/NetworkInfo", "getState", NULL, NetInfo_getState),
+    M("android/net/NetworkInfo", "getDetailedState", NULL, NetInfo_getDetailedState),
+    M("android/net/NetworkInfo", "getReason", NULL, NetInfo_getReason),
+    M("android/net/NetworkInfo", "getExtraInfo", NULL, NetInfo_getExtraInfo),
+    M("android/net/NetworkInfo", "toString", NULL, NetInfo_toString),
+    M("android/telephony/TelephonyManager", "getDeviceId", NULL, Telephony_getDeviceId),
+    M("android/telephony/TelephonyManager", "getImei", NULL, Telephony_getImei),
+    M("android/telephony/TelephonyManager", "getMeid", NULL, Telephony_getMeid),
+    M("android/telephony/TelephonyManager", "getSubscriberId", NULL, Telephony_getSubscriberId),
+    M("android/telephony/TelephonyManager", "getLine1Number", NULL, Telephony_getLine1Number),
+    M("android/telephony/TelephonyManager", "getSimSerialNumber", NULL, Telephony_getSimSerialNumber),
+    M("android/telephony/TelephonyManager", "getSimOperator", NULL, Telephony_getSimOperator),
+    M("android/telephony/TelephonyManager", "getSimOperatorName", NULL, Telephony_getSimOperatorName),
+    M("android/telephony/TelephonyManager", "getSimCountryIso", NULL, Telephony_getSimCountryIso),
+    M("android/telephony/TelephonyManager", "getSimState", NULL, Telephony_getSimState),
+    M("android/telephony/TelephonyManager", "getNetworkOperator", NULL, Telephony_getNetworkOperator),
+    M("android/telephony/TelephonyManager", "getNetworkOperatorName", NULL, Telephony_getNetworkOperatorName),
+    M("android/telephony/TelephonyManager", "getNetworkCountryIso", NULL, Telephony_getNetworkCountryIso),
+    M("android/telephony/TelephonyManager", "getNetworkType", NULL, Telephony_getNetworkType),
+    M("android/telephony/TelephonyManager", "getPhoneType", NULL, Telephony_getPhoneType),
+    M("android/telephony/TelephonyManager", "getDataState", NULL, Telephony_getDataState),
+    M("android/telephony/TelephonyManager", "getDataNetworkType", NULL, Telephony_getDataNetworkType),
+    M("android/telephony/TelephonyManager", "getVoiceNetworkType", NULL, Telephony_getVoiceNetworkType),
+    M("android/telephony/TelephonyManager", "isNetworkRoaming", NULL, Telephony_isNetworkRoaming),
+    M("android/telephony/TelephonyManager", "hasIccCard", NULL, Telephony_hasIccCard),
+    M("android/telephony/TelephonyManager", "getCellLocation", NULL, Telephony_getCellLocation),
+    M("android/telephony/TelephonyManager", "getAllCellInfo", NULL, Telephony_getAllCellInfo),
+    M("android/telephony/TelephonyManager", "listen", NULL, Telephony_listen),
+    M("android/telephony/TelephonyManager", "getDeviceSoftwareVersion", NULL, Telephony_getDeviceSoftwareVersion),
+    M("android/telephony/TelephonyManager", "isVoiceCapable", NULL, Telephony_isVoiceCapable),
+    M("android/telephony/TelephonyManager", "isSmsCapable", NULL, Telephony_isSmsCapable),
+    M("android/telephony/TelephonyManager", "getCallState", NULL, Telephony_getCallState),
+    M("android/telephony/TelephonyManager", "getDataActivity", NULL, Telephony_getDataActivity),
+    M("android/graphics/Rect", "<init>", NULL, Rect_init),
+    M("android/graphics/Rect", "init4", "(IIII)V", Rect_init4),
+    M("android/graphics/Rect", "initR", "(Ljava/lang/Object;)V", Rect_initR),
+    M("android/graphics/Rect", "set", "(IIII)V", Rect_set),
+    M("android/graphics/Rect", "setR", NULL, Rect_setR),
+    M("android/graphics/Rect", "width", NULL, Rect_width),
+    M("android/graphics/Rect", "height", NULL, Rect_height),
+    M("android/graphics/Rect", "centerX", NULL, Rect_centerX),
+    M("android/graphics/Rect", "centerY", NULL, Rect_centerY),
+    M("android/graphics/Rect", "exactCenterX", NULL, Rect_exactCenterX),
+    M("android/graphics/Rect", "exactCenterY", NULL, Rect_exactCenterY),
+    M("android/graphics/Rect", "isEmpty", NULL, Rect_isEmpty),
+    M("android/graphics/Rect", "contains", "(II)Z", Rect_contains),
+    M("android/graphics/Rect", "containsR", "(IIII)Z", Rect_containsR),
+    M("android/graphics/Rect", "intersects", "(IIII)Z", Rect_intersects),
+    M("android/graphics/Rect", "intersectsR", "(Ljava/lang/Object;Ljava/lang/Object;)Z", Rect_intersectsR),
+    M("android/graphics/Rect", "intersect", "(IIII)Z", Rect_intersect),
+    M("android/graphics/Rect", "union", "(IIII)V", Rect_union),
+    M("android/graphics/Rect", "unionR", "(Ljava/lang/Object;)V", Rect_unionR),
+    M("android/graphics/Rect", "offset", "(II)V", Rect_offset),
+    M("android/graphics/Rect", "offsetTo", "(II)V", Rect_offsetTo),
+    M("android/graphics/Rect", "inset", "(II)V", Rect_inset),
+    M("android/graphics/Rect", "setEmpty", NULL, Rect_setEmpty),
+    M("android/graphics/Rect", "sort", NULL, Rect_sort),
+    M("android/graphics/Rect", "toString", NULL, Rect_toString),
+    M("android/graphics/Rect", "toShortString", NULL, Rect_toShortString),
+    M("android/graphics/Rect", "equals", "(Ljava/lang/Object;)Z", Rect_equals),
+    M("android/graphics/Rect", "hashCode", NULL, Rect_hashCode),
+    M("android/graphics/Rect", "flattenToString", NULL, Rect_flattenToString),
+    M("android/graphics/Rect", "unflattenFromString", NULL, Rect_unflattenFromString),
+    M("android/graphics/Rect", "describeContents", NULL, Rect_describeContents),
+    M("android/graphics/Rect", "writeToParcel", NULL, Rect_writeToParcel),
+    M("android/graphics/Rect", "readFromParcel", NULL, Rect_readFromParcel),
+    M("android/graphics/Rect", "scale", "(F)V", Rect_scale),
+    M("android/graphics/Color", "argb", "(IIII)I", Color_argb),
+    M("android/graphics/Color", "rgb", "(III)I", Color_rgb),
+    M("android/graphics/Color", "alpha", "(I)I", Color_alpha),
+    M("android/graphics/Color", "red", "(I)I", Color_red),
+    M("android/graphics/Color", "green", "(I)I", Color_green),
+    M("android/graphics/Color", "blue", "(I)I", Color_blue),
+    M("android/graphics/Color", "alphaF", "(I)F", Color_alphaF),
+    M("android/graphics/Color", "redF", "(I)F", Color_redF),
+    M("android/graphics/Color", "greenF", "(I)F", Color_greenF),
+    M("android/graphics/Color", "blueF", "(I)F", Color_blueF),
+    M("android/graphics/Color", "luminance", "(I)F", Color_luminance),
+    M("android/graphics/Color", "parseColor", "(Ljava/lang/Object;)I", Color_parseColor),
+    M("android/graphics/Color", "valueOf", "(I)Ljava/lang/Object;", Color_valueOf),
+    M("android/graphics/Color", "toArgb", NULL, Color_toArgb),
+    M("android/graphics/Color", "HSVToColor", "(I[Ljava/lang/Object;)I", Color_HSVToColor),
+    M("android/graphics/Color", "RGBToHSV", "(III[Ljava/lang/Object;)V", Color_RGBToHSV),
+    M("android/graphics/Color", "colorToHSV", "(II)V", Color_colorToHSV),
+    M("android/graphics/Paint", "<init>", NULL, Paint_init),
+    M("android/graphics/Paint", "initF", "(I)V", Paint_initF),
+    M("android/graphics/Paint", "initP", "(Ljava/lang/Object;)V", Paint_initP),
+    M("android/graphics/Paint", "setColor", "(I)V", Paint_setColor),
+    M("android/graphics/Paint", "getColor", NULL, Paint_getColor),
+    M("android/graphics/Paint", "setAlpha", "(I)V", Paint_setAlpha),
+    M("android/graphics/Paint", "getAlpha", NULL, Paint_getAlpha),
+    M("android/graphics/Paint", "setStyle", "(Ljava/lang/Object;)V", Paint_setStyle),
+    M("android/graphics/Paint", "getStyle", NULL, Paint_getStyle),
+    M("android/graphics/Paint", "setStrokeWidth", "(F)V", Paint_setStrokeWidth),
+    M("android/graphics/Paint", "getStrokeWidth", NULL, Paint_getStrokeWidth),
+    M("android/graphics/Paint", "setTextSize", "(F)V", Paint_setTextSize),
+    M("android/graphics/Paint", "getTextSize", NULL, Paint_getTextSize),
+    M("android/graphics/Paint", "setAntiAlias", "(Z)V", Paint_setAntiAlias),
+    M("android/graphics/Paint", "isAntiAlias", NULL, Paint_isAntiAlias),
+    M("android/graphics/Paint", "setDither", "(Z)V", Paint_setDither),
+    M("android/graphics/Paint", "isDither", NULL, Paint_isDither),
+    M("android/graphics/Paint", "setFilterBitmap", "(Z)V", Paint_setFilterBitmap),
+    M("android/graphics/Paint", "isFilterBitmap", NULL, Paint_isFilterBitmap),
+    M("android/graphics/Paint", "setFlags", "(I)V", Paint_setFlags),
+    M("android/graphics/Paint", "getFlags", NULL, Paint_getFlags),
+    M("android/graphics/Paint", "setARGB", "(IIII)V", Paint_setARGB),
+    M("android/graphics/Paint", "setTypeface", "(I)Ljava/lang/Object;", Paint_setTypeface),
+    M("android/graphics/Paint", "getTypeface", NULL, Paint_getTypeface),
+    M("android/graphics/Paint", "measureText", "(Ljava/lang/Object;)F", Paint_measureText),
+    M("android/graphics/Paint", "measureTextRange", NULL, Paint_measureTextRange),
+    M("android/graphics/Paint", "getTextBounds", "(Ljava/lang/Object;IILjava/lang/Object;)V", Paint_getTextBounds),
+    M("android/graphics/Paint", "setUnderlineText", "(Z)V", Paint_setUnderlineText),
+    M("android/graphics/Paint", "isUnderlineText", NULL, Paint_isUnderlineText),
+    M("android/graphics/Paint", "setStrikeThruText", "(Z)V", Paint_setStrikeThruText),
+    M("android/graphics/Paint", "isStrikeThruText", NULL, Paint_isStrikeThruText),
+    M("android/graphics/Paint", "setFakeBoldText", "(Z)V", Paint_setFakeBoldText),
+    M("android/graphics/Paint", "isFakeBoldText", NULL, Paint_isFakeBoldText),
+    M("android/graphics/Paint", "setTextSkewX", "(F)V", Paint_setTextSkewX),
+    M("android/graphics/Paint", "getTextSkewX", NULL, Paint_getTextSkewX),
+    M("android/graphics/Paint", "setTextScaleX", "(F)V", Paint_setTextScaleX),
+    M("android/graphics/Paint", "getTextScaleX", NULL, Paint_getTextScaleX),
+    M("android/graphics/Paint", "setShadowLayer", "(F)V", Paint_setShadowLayer),
+    M("android/graphics/Paint", "clearShadowLayer", NULL, Paint_clearShadowLayer),
+    M("android/graphics/Paint", "setTextAlign", "(Ljava/lang/Object;)V", Paint_setTextAlign),
+    M("android/graphics/Paint", "getTextAlign", NULL, Paint_getTextAlign),
+    M("android/graphics/Paint", "setXfermode", "(I)Ljava/lang/Object;", Paint_setXfermode),
+    M("android/graphics/Paint", "getXfermode", NULL, Paint_getXfermode),
+    M("android/graphics/Paint", "setShader", "(I)Ljava/lang/Object;", Paint_setShader),
+    M("android/graphics/Paint", "getShader", NULL, Paint_getShader),
+    M("android/graphics/Paint", "setColorFilter", "(I)Ljava/lang/Object;", Paint_setColorFilter),
+    M("android/graphics/Paint", "getColorFilter", NULL, Paint_getColorFilter),
+    M("android/graphics/Paint", "setPathEffect", "(I)Ljava/lang/Object;", Paint_setPathEffect),
+    M("android/graphics/Paint", "getPathEffect", NULL, Paint_getPathEffect),
+    M("android/graphics/Paint", "setMaskFilter", "(I)Ljava/lang/Object;", Paint_setMaskFilter),
+    M("android/graphics/Paint", "setStrokeCap", "(Ljava/lang/Object;)V", Paint_setStrokeCap),
+    M("android/graphics/Paint", "getStrokeCap", NULL, Paint_getStrokeCap),
+    M("android/graphics/Paint", "setStrokeJoin", "(Ljava/lang/Object;)V", Paint_setStrokeJoin),
+    M("android/graphics/Paint", "getStrokeJoin", NULL, Paint_getStrokeJoin),
+    M("android/graphics/Paint", "setStrokeMiter", "(F)V", Paint_setStrokeMiter),
+    M("android/graphics/Paint", "getStrokeMiter", NULL, Paint_getStrokeMiter),
+    M("android/graphics/Paint", "reset", NULL, Paint_reset),
+    M("android/graphics/Paint", "set", NULL, Paint_set),
+    M("android/graphics/Paint", "descent", NULL, Paint_descent),
+    M("android/graphics/Paint", "ascent", NULL, Paint_ascent),
+    M("android/graphics/Paint", "getFontMetrics", "(Ljava/lang/Object;)F", Paint_getFontMetrics),
+    M("android/graphics/Paint", "breakText", "(Ljava/lang/Object;IF[Ljava/lang/Object;)I", Paint_breakText),
+    M("android/graphics/Paint", "getTextWidths", "(Ljava/lang/Object;[Ljava/lang/Object;)I", Paint_getTextWidths),
+    M("android/graphics/Typeface", "create", "([Ljava/lang/Object;I)Ljava/lang/Object;", Typeface_create),
+    M("android/graphics/Typeface", "createFromAsset", "(ILjava/lang/Object;)Ljava/lang/Object;", Typeface_createFromAsset),
+    M("android/graphics/Typeface", "createFromFile", NULL, Typeface_createFromFile),
+    M("android/graphics/Typeface", "defaultFromStyle", "(I)Ljava/lang/Object;", Typeface_defaultFromStyle),
+    M("android/graphics/Typeface", "getStyle", NULL, Typeface_getStyle),
+    M("android/graphics/Typeface", "isBold", NULL, Typeface_isBold),
+    M("android/graphics/Typeface", "isItalic", NULL, Typeface_isItalic),
+    M("android/graphics/Typeface", "getDEFAULT", NULL, Typeface_getDEFAULT),
+    M("android/graphics/Typeface", "getDEFAULTBOLD", NULL, Typeface_getDEFAULTBOLD),
+    M("android/graphics/Matrix", "<init>", NULL, Matrix_init),
+    M("android/graphics/Matrix", "initM", "(Ljava/lang/Object;)V", Matrix_initM),
+    M("android/graphics/Matrix", "reset", NULL, Matrix_reset),
+    M("android/graphics/Matrix", "set", "(Ljava/lang/Object;)V", Matrix_set),
+    M("android/graphics/Matrix", "isIdentity", NULL, Matrix_isIdentity),
+    M("android/graphics/Matrix", "setConcat", "(Ljava/lang/Object;Ljava/lang/Object;)Z", Matrix_setConcat),
+    M("android/graphics/Matrix", "preConcat", "(Ljava/lang/Object;)Z", Matrix_preConcat),
+    M("android/graphics/Matrix", "postConcat", "(Ljava/lang/Object;)Z", Matrix_postConcat),
+    M("android/graphics/Matrix", "setTranslate", "(FF)V", Matrix_setTranslate),
+    M("android/graphics/Matrix", "preTranslate", "(FF)V", Matrix_preTranslate),
+    M("android/graphics/Matrix", "postTranslate", "(FF)V", Matrix_postTranslate),
+    M("android/graphics/Matrix", "setScale", "(FF)V", Matrix_setScale),
+    M("android/graphics/Matrix", "setScaleP", "(FFFF)V", Matrix_setScaleP),
+    M("android/graphics/Matrix", "preScale", "(FF)Z", Matrix_preScale),
+    M("android/graphics/Matrix", "postScale", "(FF)Z", Matrix_postScale),
+    M("android/graphics/Matrix", "preScaleP", "(FFFF)Z", Matrix_preScaleP),
+    M("android/graphics/Matrix", "postScaleP", "(FFFF)Z", Matrix_postScaleP),
+    M("android/graphics/Matrix", "setRotate", "(F)V", Matrix_setRotate),
+    M("android/graphics/Matrix", "setRotateP", "(FFF)V", Matrix_setRotateP),
+    M("android/graphics/Matrix", "preRotate", "(F)Z", Matrix_preRotate),
+    M("android/graphics/Matrix", "postRotate", "(F)Z", Matrix_postRotate),
+    M("android/graphics/Matrix", "preRotateP", "(FFF)Z", Matrix_preRotateP),
+    M("android/graphics/Matrix", "postRotateP", "(FFF)Z", Matrix_postRotateP),
+    M("android/graphics/Matrix", "setSinCos", "(FF)V", Matrix_setSinCos),
+    M("android/graphics/Matrix", "setSkew", "(FF)V", Matrix_setSkew),
+    M("android/graphics/Matrix", "invert", "(Ljava/lang/Object;)Z", Matrix_invert),
+    M("android/graphics/Matrix", "mapPoints", "([Ljava/lang/Object;)V", Matrix_mapPoints),
+    M("android/graphics/Matrix", "mapVectors", "([Ljava/lang/Object;)V", Matrix_mapVectors),
+    M("android/graphics/Matrix", "mapRect", "(Ljava/lang/Object;)Z", Matrix_mapRect),
+    M("android/graphics/Matrix", "getValues", "([Ljava/lang/Object;)V", Matrix_getValues),
+    M("android/graphics/Matrix", "setValues", "([Ljava/lang/Object;)V", Matrix_setValues),
+    M("android/graphics/Matrix", "toString", NULL, Matrix_toString),
+    M("android/graphics/Matrix", "equals", "(Ljava/lang/Object;)Z", Matrix_equals),
+    M("android/graphics/Matrix", "hashCode", NULL, Matrix_hashCode),
+    M("android/graphics/Matrix", "toShortString", NULL, Matrix_toShortString),
+    M("android/graphics/Point", "<init>", "()V", Point_init),
+    M("android/graphics/Point", "<init>", "(II)V", Point_init2),
+    M("android/graphics/Point", "set", "(II)V", Point_set),
+    M("android/graphics/Point", "negate", NULL, Point_negate),
+    M("android/graphics/Point", "offset", "(II)V", Point_offset),
+    M("android/graphics/Point", "equals", "(Ljava/lang/Object;)Z", Point_equals),
+    M("android/graphics/Point", "hashCode", NULL, Point_hashCode),
+    M("android/graphics/Point", "toString", NULL, Point_toString),
+    M("android/graphics/PointF", "set", "(FF)V", PointF_set),
+    M("android/graphics/PointF", "length", NULL, PointF_length),
+    M("android/graphics/PointF", "length2", "(FF)F", PointF_length2),
+    M("android/graphics/PointF", "offset", "(FF)V", PointF_offset),
+    M("android/graphics/PointF", "negate", NULL, PointF_negate),
+    M("android/graphics/PointF", "equals", "(Ljava/lang/Object;)Z", PointF_equals),
+    M("android/graphics/PointF", "toString", NULL, PointF_toString),
+    M("android/graphics/RectF", "<init>", NULL, RectF_init),
+    M("android/graphics/RectF", "init4", "(FFFF)V", RectF_init4),
+    M("android/graphics/RectF", "set", "(FFFF)V", RectF_set),
+    M("android/graphics/RectF", "setR", "(Ljava/lang/Object;)V", RectF_setR),
+    M("android/graphics/RectF", "setRect", "(Ljava/lang/Object;)V", RectF_setRect),
+    M("android/graphics/RectF", "width", NULL, RectF_width),
+    M("android/graphics/RectF", "height", NULL, RectF_height),
+    M("android/graphics/RectF", "centerX", NULL, RectF_centerX),
+    M("android/graphics/RectF", "centerY", NULL, RectF_centerY),
+    M("android/graphics/RectF", "isEmpty", NULL, RectF_isEmpty),
+    M("android/graphics/RectF", "contains", "(FF)Z", RectF_contains),
+    M("android/graphics/RectF", "containsR", "(FFFF)Z", RectF_containsR),
+    M("android/graphics/RectF", "intersects", "(Ljava/lang/Object;Ljava/lang/Object;)Z", RectF_intersects),
+    M("android/graphics/RectF", "offset", "(FF)V", RectF_offset),
+    M("android/graphics/RectF", "offsetTo", "(FF)V", RectF_offsetTo),
+    M("android/graphics/RectF", "inset", "(FF)V", RectF_inset),
+    M("android/graphics/RectF", "union", "(FFFF)V", RectF_union),
+    M("android/graphics/RectF", "unionR", "(Ljava/lang/Object;)V", RectF_unionR),
+    M("android/graphics/RectF", "setEmpty", NULL, RectF_setEmpty),
+    M("android/graphics/RectF", "sort", NULL, RectF_sort),
+    M("android/graphics/RectF", "round", "(Ljava/lang/Object;)V", RectF_round),
+    M("android/graphics/RectF", "roundOut", NULL, RectF_roundOut),
+    M("android/graphics/RectF", "toString", NULL, RectF_toString),
+    M("android/graphics/RectF", "equals", "(Ljava/lang/Object;)Z", RectF_equals),
+    M("android/graphics/RectF", "hashCode", NULL, RectF_hashCode),
+    M("org/json/JSONObject", "<init>", "()V", JO_init),
+    M("org/json/JSONObject", "<init>", "(Ljava/lang/Object;)V", JO_init_str),
+    M("org/json/JSONObject", "put", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", JO_put),
+    M("org/json/JSONObject", "put", "(Ljava/lang/Object;Z)Ljava/lang/Object;", JO_put_bool),
+    M("org/json/JSONObject", "put", "(Ljava/lang/Object;I)Ljava/lang/Object;", JO_put_int),
+    M("org/json/JSONObject", "put", "(Ljava/lang/Object;J)Ljava/lang/Object;", JO_put_long),
+    M("org/json/JSONObject", "put", "(Ljava/lang/Object;D)Ljava/lang/Object;", JO_put_double),
+    M("org/json/JSONObject", "putOpt", NULL, JO_putOpt),
+    M("org/json/JSONObject", "putOnce", NULL, JO_putOnce),
+    M("org/json/JSONObject", "get", "(Ljava/lang/Object;)Ljava/lang/Object;", JO_get),
+    M("org/json/JSONObject", "opt", "(Ljava/lang/Object;)Ljava/lang/Object;", JO_opt),
+    M("org/json/JSONObject", "has", "(Ljava/lang/Object;)Z", JO_has),
+    M("org/json/JSONObject", "isNull", "(Ljava/lang/Object;)Z", JO_isNull),
+    M("org/json/JSONObject", "remove", "(Ljava/lang/Object;)Ljava/lang/Object;", JO_remove),
+    M("org/json/JSONObject", "length", NULL, JO_length),
+    M("org/json/JSONObject", "keys", NULL, JO_keys),
+    M("org/json/JSONObject", "keySet", NULL, JO_keySet),
+    M("org/json/JSONObject", "names", NULL, JO_names),
+    M("org/json/JSONObject", "getString", "(Ljava/lang/Object;)Ljava/lang/Object;", JO_getString),
+    M("org/json/JSONObject", "optString", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", JO_optString),
+    M("org/json/JSONObject", "optString0", "(Ljava/lang/Object;)Ljava/lang/Object;", JO_optString0),
+    M("org/json/JSONObject", "getInt", "(Ljava/lang/Object;)I", JO_getInt),
+    M("org/json/JSONObject", "optInt", "(Ljava/lang/Object;I)I", JO_optInt),
+    M("org/json/JSONObject", "optInt0", "(Ljava/lang/Object;)I", JO_optInt0),
+    M("org/json/JSONObject", "getLong", "(Ljava/lang/Object;)J", JO_getLong),
+    M("org/json/JSONObject", "optLong", "(Ljava/lang/Object;I)J", JO_optLong),
+    M("org/json/JSONObject", "optLong0", "(Ljava/lang/Object;)J", JO_optLong0),
+    M("org/json/JSONObject", "getDouble", "(Ljava/lang/Object;)D", JO_getDouble),
+    M("org/json/JSONObject", "optDouble", "(Ljava/lang/Object;I)D", JO_optDouble),
+    M("org/json/JSONObject", "optDouble0", "(Ljava/lang/Object;)D", JO_optDouble0),
+    M("org/json/JSONObject", "getBoolean", "(Ljava/lang/Object;)Z", JO_getBoolean),
+    M("org/json/JSONObject", "optBoolean", "(Ljava/lang/Object;I)Z", JO_optBoolean),
+    M("org/json/JSONObject", "optBoolean0", "(Ljava/lang/Object;)Z", JO_optBoolean0),
+    M("org/json/JSONObject", "getJSONObject", "(Ljava/lang/Object;)Ljava/lang/Object;", JO_getJSONObject),
+    M("org/json/JSONObject", "optJSONObject", "(Ljava/lang/Object;)Ljava/lang/Object;", JO_optJSONObject),
+    M("org/json/JSONObject", "getJSONArray", "(Ljava/lang/Object;)Ljava/lang/Object;", JO_getJSONArray),
+    M("org/json/JSONObject", "optJSONArray", "(Ljava/lang/Object;)Ljava/lang/Object;", JO_optJSONArray),
+    M("org/json/JSONObject", "toString", NULL, JO_toString),
+    M("org/json/JSONObject", "toStringInd", NULL, JO_toStringInd),
+    M("org/json/JSONArray", "<init>", "()V", JA_init),
+    M("org/json/JSONArray", "<init>", "(Ljava/lang/Object;)V", JA_init_str),
+    M("org/json/JSONArray", "length", NULL, JA_length),
+    M("org/json/JSONArray", "get", "(I)Ljava/lang/Object;", JA_get),
+    M("org/json/JSONArray", "opt", "(I)Ljava/lang/Object;", JA_opt),
+    M("org/json/JSONArray", "put", "(Ljava/lang/Object;)Ljava/lang/Object;", JA_put),
+    M("org/json/JSONArray", "put", "(Z)Ljava/lang/Object;", JA_put_bool),
+    M("org/json/JSONArray", "put", "(I)Ljava/lang/Object;", JA_put_int),
+    M("org/json/JSONArray", "put", "(J)Ljava/lang/Object;", JA_put_long),
+    M("org/json/JSONArray", "put", "(D)Ljava/lang/Object;", JA_put_double),
+    M("org/json/JSONArray", "put", "(ILjava/lang/Object;)Ljava/lang/Object;", JA_put_at),
+    M("org/json/JSONArray", "remove", "(I)Ljava/lang/Object;", JA_remove),
+    M("org/json/JSONArray", "getString", "(I)Ljava/lang/Object;", JA_getString),
+    M("org/json/JSONArray", "optString", "(ILjava/lang/Object;)Ljava/lang/Object;", JA_optString),
+    M("org/json/JSONArray", "optString0", "(I)Ljava/lang/Object;", JA_optString0),
+    M("org/json/JSONArray", "getInt", "(I)I", JA_getInt),
+    M("org/json/JSONArray", "optInt", "(II)I", JA_optInt),
+    M("org/json/JSONArray", "optInt0", "(I)I", JA_optInt0),
+    M("org/json/JSONArray", "getLong", "(I)J", JA_getLong),
+    M("org/json/JSONArray", "optLong", "(IJ)J", JA_optLong),
+    M("org/json/JSONArray", "optLong0", "(I)J", JA_optLong0),
+    M("org/json/JSONArray", "getDouble", "(I)D", JA_getDouble),
+    M("org/json/JSONArray", "optDouble", "(ID)D", JA_optDouble),
+    M("org/json/JSONArray", "optDouble0", "(I)D", JA_optDouble0),
+    M("org/json/JSONArray", "getBoolean", "(I)Z", JA_getBoolean),
+    M("org/json/JSONArray", "optBoolean", "(I)Z", JA_optBoolean),
+    M("org/json/JSONArray", "getJSONObject", "(I)Ljava/lang/Object;", JA_getJSONObject),
+    M("org/json/JSONArray", "optJSONObject", "(I)Ljava/lang/Object;", JA_optJSONObject),
+    M("org/json/JSONArray", "getJSONArray", "(I)Ljava/lang/Object;", JA_getJSONArray),
+    M("org/json/JSONArray", "optJSONArray", "(I)Ljava/lang/Object;", JA_optJSONArray),
+    M("org/json/JSONArray", "isNull", "(I)Z", JA_isNull),
+    M("org/json/JSONArray", "toString", NULL, JA_toString),
+    M("org/json/JSONArray", "toStringInd", NULL, JA_toStringInd),
+    M("org/json/JSONArray", "join", "(Ljava/lang/Object;)Ljava/lang/Object;", JA_join),
+    M("org/json/JSONArray", "toJSONObject", "(Ljava/lang/Object;)Ljava/lang/Object;", JA_toJSONObject),
+    M("org/json/JSONObject", "toJSONArray", "(Ljava/lang/Object;)Ljava/lang/Object;", JO_toJSONArray),
+    M("org/json/JSONObject$Null", "equals", "(Ljava/lang/Object;)Z", JN_equals),
+    M("org/json/JSONObject$Null", "toString", NULL, JN_toString),
+    M("org/json/JSONObject$Null", "hashCode", NULL, JN_hashCode),
+    M("org/json/JSONTokener", "<init>", "(I)V", JTok_init),
+    M("org/json/JSONTokener", "nextValue", NULL, JTok_nextValue),
+    M("org/json/JSONTokener", "more", NULL, JTok_more),
+    M("org/json/JSONTokener", "nextClean", NULL, JTok_nextClean),
+    M("org/json/JSONTokener", "skipPast", NULL, JTok_skipPast),
+    M("org/json/JSONTokener", "back", NULL, JTok_back),
+    M("org/json/JSONTokener", "next", NULL, JTok_next),
+    M("java/security/MessageDigest", "getInstance", "(Ljava/lang/Object;)Ljava/lang/Object;", MD_getInstance),
+    M("java/security/MessageDigest", "update", "([Ljava/lang/Object;)V", MD_update),
+    M("java/security/MessageDigest", "update1", "(I)V", MD_update1),
+    M("java/security/MessageDigest", "updateRange", "([Ljava/lang/Object;II)V", MD_updateRange),
+    M("java/security/MessageDigest", "digest", NULL, MD_digest),
+    M("java/security/MessageDigest", "digestIn", "([Ljava/lang/Object;)I", MD_digestIn),
+    M("java/security/MessageDigest", "digestOf", NULL, MD_digestOf),
+    M("java/security/MessageDigest", "reset", NULL, MD_reset),
+    M("java/security/MessageDigest", "getAlgorithm", NULL, MD_getAlgorithm),
+    M("java/security/MessageDigest", "getDigestLength", NULL, MD_getDigestLength),
+    M("java/security/MessageDigest", "isEqual", "([Ljava/lang/Object;Ljava/lang/Object;)Z", MD_isEqual),
+    M("java/security/MessageDigest", "clone", NULL, MD_clone),
+    M("javax/crypto/Mac", "getInstance", "(Ljava/lang/Object;)Ljava/lang/Object;", Mac_getInstance),
+    M("javax/crypto/Mac", "<init>", "(Ljava/lang/Object;)V", Mac_init),
+    M("javax/crypto/Mac", "update", "([Ljava/lang/Object;)V", Mac_update),
+    M("javax/crypto/Mac", "update", "(B)V", Mac_update1),
+    M("javax/crypto/Mac", "update", "([Ljava/lang/Object;II)V", Mac_updateRange),
+    M("javax/crypto/Mac", "doFinal", NULL, Mac_doFinal),
+    M("javax/crypto/Mac", "reset", NULL, Mac_reset),
+    M("javax/crypto/Mac", "getAlgorithm", NULL, Mac_getAlgorithm),
+    M("javax/crypto/Mac", "getMacLength", NULL, Mac_getMacLength),
+    M("javax/crypto/Mac", "clone", NULL, Mac_clone),
+    M("javax/crypto/spec/SecretKeySpec", "<init>", "(ILjava/lang/Object;)V", SKS_init),
+    M("javax/crypto/spec/SecretKeySpec", "<init>", "([Ljava/lang/Object;IILjava/lang/Object;)V", SKS_init2),
+    M("java/security/Key", "getEncoded", NULL, Key_getEncoded),
+    M("javax/crypto/SecretKey", "getEncoded", NULL, Key_getEncoded),
+    M("javax/crypto/spec/SecretKeySpec", "getEncoded", NULL, Key_getEncoded),
+    M("java/security/Key", "getAlgorithm", NULL, Key_getAlgorithm),
+    M("javax/crypto/SecretKey", "getAlgorithm", NULL, Key_getAlgorithm),
+    M("javax/crypto/spec/SecretKeySpec", "getAlgorithm", NULL, Key_getAlgorithm),
+    M("java/security/Key", "getFormat", NULL, Key_getFormat),
+    M("javax/crypto/SecretKey", "getFormat", NULL, Key_getFormat),
+    M("javax/crypto/spec/SecretKeySpec", "getFormat", NULL, Key_getFormat),
+    M("javax/crypto/KeyGenerator", "getInstance", "(Ljava/lang/Object;)Ljava/lang/Object;", KG_getInstance),
+    M("javax/crypto/KeyGenerator", "init", "(I)V", KG_init),
+    M("javax/crypto/KeyGenerator", "generateKey", NULL, KG_generateKey),
+    M("java/security/SecureRandom", "setSeedB", NULL, SR_setSeedB),
+    M("java/security/SecureRandom", "setSeedJ", NULL, SR_setSeedJ),
+    M("java/security/SecureRandom", "nextInt", NULL, SR_nextInt),
+    M("java/security/SecureRandom", "nextLong", NULL, SR_nextLong),
+    M("java/security/SecureRandom", "getSeed", "(I)Ljava/lang/Object;", SR_getSeed),
+    M("java/security/SecureRandom", "generateSeed", "()V", SR_generateSeed),
+    M("java/security/SecureRandom", "getInstanceStrong", NULL, SR_getInstanceStrong),
+    M("javax/crypto/Cipher", "getInstance", "(Ljava/lang/Object;)Ljava/lang/Object;", Cipher_getInstance),
+    M("javax/crypto/Cipher", "<init>", "(ILjava/lang/Object;Ljava/lang/Object;)V", Cipher_init),
+    M("javax/crypto/Cipher", "update", "(Ljava/lang/Object;)Ljava/lang/Object;", Cipher_update),
+    M("javax/crypto/Cipher", "update", "()V", Cipher_updateRange),
+    M("javax/crypto/Cipher", "doFinal", "(Ljava/lang/Object;)Ljava/lang/Object;", Cipher_doFinal),
+    M("javax/crypto/Cipher", "doFinal", "()Ljava/lang/Object;", Cipher_doFinal0),
+    M("javax/crypto/Cipher", "getBlockSize", NULL, Cipher_getBlockSize),
+    M("javax/crypto/Cipher", "getOutputSize", "(I)Ljava/lang/Object;", Cipher_getOutputSize),
+    M("javax/crypto/Cipher", "getIV", NULL, Cipher_getIV),
+    M("javax/crypto/Cipher", "getAlgorithm", NULL, Cipher_getAlgorithm),
+    M("javax/crypto/Cipher", "getMaxAllowedKeyLength", NULL, Cipher_getMaxAllowedKeyLength),
+    M("javax/crypto/Cipher", "getMaxAllowedParameterSpec", NULL, Cipher_getMaxAllowedParameterSpec),
+    M("javax/crypto/Cipher", "getParameters", NULL, Cipher_getParameters),
+    M("javax/crypto/Cipher", "getExemptionMechanism", NULL, Cipher_getExemptionMechanism),
+    M("javax/crypto/Cipher", "wrap", NULL, Cipher_wrap),
+    M("javax/crypto/Cipher", "unwrap", NULL, Cipher_unwrap),
+    M("javax/crypto/spec/IvParameterSpec", "<init>", "(I)V", IvPS_init),
+    M("javax/crypto/spec/IvParameterSpec", "<init>", "([Ljava/lang/Object;II)V", IvPS_init2),
+    M("javax/crypto/spec/IvParameterSpec", "getIV", NULL, IvPS_getIV),
+    M("android/view/View", "<init>", NULL, View_init),
+    M("android/view/View", "getWidth", NULL, View_getWidth),
+    M("android/view/View", "getHeight", NULL, View_getHeight),
+    M("android/view/View", "getMeasuredWidth", NULL, View_getMeasuredWidth),
+    M("android/view/View", "getMeasuredHeight", NULL, View_getMeasuredHeight),
+    M("android/view/View", "getLeft", NULL, View_getLeft),
+    M("android/view/View", "getTop", NULL, View_getTop),
+    M("android/view/View", "getRight", NULL, View_getRight),
+    M("android/view/View", "getBottom", NULL, View_getBottom),
+    M("android/view/View", "getX", NULL, View_getX),
+    M("android/view/View", "getY", NULL, View_getY),
+    M("android/view/View", "setX", "(F)V", View_setX),
+    M("android/view/View", "setY", "(F)V", View_setY),
+    M("android/view/View", "getTranslationX", NULL, View_getTranslationX),
+    M("android/view/View", "getTranslationY", NULL, View_getTranslationY),
+    M("android/view/View", "setTranslationX", "(F)V", View_setTranslationX),
+    M("android/view/View", "setTranslationY", "(F)V", View_setTranslationY),
+    M("android/view/View", "getAlpha", NULL, View_getAlpha),
+    M("android/view/View", "setAlpha", "(F)V", View_setAlpha),
+    M("android/view/View", "getRotation", NULL, View_getRotation),
+    M("android/view/View", "setRotation", "(F)V", View_setRotation),
+    M("android/view/View", "getScaleX", NULL, View_getScaleX),
+    M("android/view/View", "getScaleY", NULL, View_getScaleY),
+    M("android/view/View", "setScaleX", "(F)V", View_setScaleX),
+    M("android/view/View", "setScaleY", "(F)V", View_setScaleY),
+    M("android/view/View", "getPivotX", NULL, View_getPivotX),
+    M("android/view/View", "getPivotY", NULL, View_getPivotY),
+    M("android/view/View", "setPivotX", "(F)V", View_setPivotX),
+    M("android/view/View", "setPivotY", "(F)V", View_setPivotY),
+    M("android/view/View", "getVisibility", NULL, View_getVisibility),
+    M("android/view/View", "setVisibility", "(I)V", View_setVisibility),
+    M("android/view/View", "isShown", NULL, View_isShown),
+    M("android/view/View", "getId", NULL, View_getId),
+    M("android/view/View", "setId", "(I)V", View_setId),
+    M("android/view/View", "getTag", "()V", View_getTag),
+    M("android/view/View", "setTag", "(I)V", View_setTag),
+    M("android/view/View", "getTag", "(I)Ljava/lang/Object;", View_getTagK),
+    M("android/view/View", "setTag", "(ILjava/lang/Object;)V", View_setTagK),
+    M("android/view/View", "setEnabled", "(Z)V", View_setEnabled),
+    M("android/view/View", "isEnabled", NULL, View_isEnabled),
+    M("android/view/View", "setClickable", "(Z)V", View_setClickable),
+    M("android/view/View", "isClickable", NULL, View_isClickable),
+    M("android/view/View", "setFocusable", "(Z)V", View_setFocusable),
+    M("android/view/View", "isFocusable", NULL, View_isFocusable),
+    M("android/view/View", "setSelected", "(Z)V", View_setSelected),
+    M("android/view/View", "isSelected", NULL, View_isSelected),
+    M("android/view/View", "setPressed", "(Z)V", View_setPressed),
+    M("android/view/View", "isPressed", NULL, View_isPressed),
+    M("android/view/View", "setActivated", "(Z)V", View_setActivated),
+    M("android/view/View", "isActivated", NULL, View_isActivated),
+    M("android/view/View", "requestLayout", NULL, View_requestLayout),
+    M("android/view/View", "invalidate", NULL, View_invalidate),
+    M("android/view/View", "postInvalidate", NULL, View_postInvalidate),
+    M("android/view/View", "post", "(Ljava/lang/Object;)Z", View_post),
+    M("android/view/View", "postDelayed", "(Ljava/lang/Object;)Z", View_postDelayed),
+    M("android/view/View", "removeCallbacks", NULL, View_removeCallbacks),
+    M("android/view/View", "bringToFront", NULL, View_bringToFront),
+    M("android/view/View", "requestFocus", NULL, View_requestFocus),
+    M("android/view/View", "hasFocus", NULL, View_hasFocus),
+    M("android/view/View", "hasWindowFocus", NULL, View_hasWindowFocus),
+    M("android/view/View", "clearFocus", NULL, View_clearFocus),
+    M("android/view/View", "isFocused", NULL, View_isFocused),
+    M("android/view/View", "findFocus", NULL, View_findFocus),
+    M("android/view/View", "findViewById", "(I)V", View_findViewById),
+    M("android/view/View", "getContext", NULL, View_getContext),
+    M("android/view/View", "getParent", NULL, View_getParent),
+    M("android/view/View", "setLayoutParams", "(I)V", View_setLayoutParams),
+    M("android/view/View", "getLayoutParams", NULL, View_getLayoutParams),
+    M("android/view/View", "measure", "(II)V", View_measure),
+    M("android/view/View", "layout", "(IIII)V", View_layout),
+    M("android/view/View", "getLocationOnScreen", "([Ljava/lang/Object;)V", View_getLocationOnScreen),
+    M("android/view/View", "getLocationInWindow", NULL, View_getLocationInWindow),
+    M("android/view/View", "getHitRect", "(Ljava/lang/Object;)V", View_getHitRect),
+    M("android/view/View", "getGlobalVisibleRect", "(Ljava/lang/Object;)Z", View_getGlobalVisibleRect),
+    M("android/view/View", "getLocalVisibleRect", NULL, View_getLocalVisibleRect),
+    M("android/view/View", "getDrawingRect", "(Ljava/lang/Object;)V", View_getDrawingRect),
+    M("android/view/View", "getWindowVisibleDisplayFrame", NULL, View_getWindowVisibleDisplayFrame),
+    M("android/view/View", "setBackgroundColor", "(I)V", View_setBackgroundColor),
+    M("android/view/View", "getSolidColor", NULL, View_getSolidColor),
+    M("android/view/View", "setBackground", "(I)V", View_setBackground),
+    M("android/view/View", "getBackground", NULL, View_getBackground),
+    M("android/view/View", "setBackgroundResource", "(I)V", View_setBackgroundResource),
+    M("android/view/View", "setPadding", "(IIII)V", View_setPadding),
+    M("android/view/View", "getPaddingLeft", NULL, View_getPaddingLeft),
+    M("android/view/View", "getPaddingTop", NULL, View_getPaddingTop),
+    M("android/view/View", "getPaddingRight", NULL, View_getPaddingRight),
+    M("android/view/View", "getPaddingBottom", NULL, View_getPaddingBottom),
+    M("android/view/View", "setMinimumWidth", "(I)V", View_setMinimumWidth),
+    M("android/view/View", "getMinimumWidth", NULL, View_getMinimumWidth),
+    M("android/view/View", "setMinimumHeight", "(I)V", View_setMinimumHeight),
+    M("android/view/View", "getMinimumHeight", NULL, View_getMinimumHeight),
+    M("android/view/View", "setOnClickListener", "(I)V", View_setOnClickListener),
+    M("android/view/View", "setOnLongClickListener", "(I)Z", View_setOnLongClickListener),
+    M("android/view/View", "setOnTouchListener", "(I)V", View_setOnTouchListener),
+    M("android/view/View", "setOnFocusChangeListener", "(I)V", View_setOnFocusChangeListener),
+    M("android/view/View", "setOnKeyListener", "(I)V", View_setOnKeyListener),
+    M("android/view/View", "setOnLayoutChangeListener", NULL, View_setOnLayoutChangeListener),
+    M("android/view/View", "addOnLayoutChangeListener", NULL, View_addOnLayoutChangeListener),
+    M("android/view/View", "setOnSystemUiVisibilityChangeListener", NULL, View_setOnSystemUiVisibilityChangeListener),
+    M("android/view/View", "performClick", NULL, View_performClick),
+    M("android/view/View", "performLongClick", NULL, View_performLongClick),
+    M("android/view/View", "callOnClick", NULL, View_callOnClick),
+    M("android/view/View", "setSoundEffectsEnabled", "(Z)V", View_soundEffectsEnabled),
+    M("android/view/View", "playSoundEffect", NULL, View_playSoundEffect),
+    M("android/view/View", "getViewTreeObserver", NULL, View_getViewTreeObserver),
+    M("android/view/ViewTreeObserver", "isAlive", NULL, VTO_isAlive),
+    M("android/view/ViewTreeObserver", "addOnGlobalLayoutListener", "(I)V", VTO_addGlobalLayoutListener),
+    M("android/view/ViewTreeObserver", "removeOnGlobalLayoutListener", NULL, VTO_removeGlobalLayoutListener),
+    M("android/view/ViewTreeObserver", "addOnDrawListener", NULL, VTO_addOnDrawListener),
+    M("android/view/ViewTreeObserver", "addOnPreDrawListener", "(I)V", VTO_addOnPreDrawListener),
+    M("android/view/ViewTreeObserver", "addOnScrollChangedListener", NULL, VTO_addOnScrollChangedListener),
+    M("android/view/ViewTreeObserver", "addOnGlobalFocusChangeListener", NULL, VTO_addOnGlobalFocusChangeListener),
+    M("android/view/ViewTreeObserver", "dispatchOnGlobalLayout", NULL, VTO_dispatchOnGlobalLayout),
+    M("android/view/View", "getDisplay", NULL, View_getDisplay),
+    M("android/view/View", "getRootView", NULL, View_getRootView),
+    M("android/view/View", "getWindowToken", NULL, View_getWindowToken),
+    M("android/view/View", "getApplicationWindowToken", NULL, View_getApplicationWindowToken),
+    M("android/view/View", "getHandler", NULL, View_getHandler),
+    M("android/view/View", "getAnimation", NULL, View_getAnimation),
+    M("android/view/View", "setAnimation", "(I)V", View_setAnimation),
+    M("android/view/View", "startAnimation", "(Ljava/lang/Object;)V", View_startAnimation),
+    M("android/view/View", "clearAnimation", NULL, View_clearAnimation),
+    M("android/view/View", "animate", NULL, View_animate),
+    M("android/view/ViewPropertyAnimator", "alpha", NULL, VPA_alpha),
+    M("android/view/ViewPropertyAnimator", "translationX", NULL, VPA_translationX),
+    M("android/view/ViewPropertyAnimator", "translationY", NULL, VPA_translationY),
+    M("android/view/ViewPropertyAnimator", "scaleX", NULL, VPA_scaleX),
+    M("android/view/ViewPropertyAnimator", "scaleY", NULL, VPA_scaleY),
+    M("android/view/ViewPropertyAnimator", "rotation", NULL, VPA_rotation),
+    M("android/view/ViewPropertyAnimator", "x", NULL, VPA_x),
+    M("android/view/ViewPropertyAnimator", "y", NULL, VPA_y),
+    M("android/view/ViewPropertyAnimator", "setDuration", NULL, VPA_setDuration),
+    M("android/view/ViewPropertyAnimator", "getDuration", NULL, VPA_getDuration),
+    M("android/view/ViewPropertyAnimator", "setStartDelay", NULL, VPA_setStartDelay),
+    M("android/view/ViewPropertyAnimator", "setInterpolator", NULL, VPA_setInterpolator),
+    M("android/view/ViewPropertyAnimator", "setListener", NULL, VPA_setListener),
+    M("android/view/ViewPropertyAnimator", "setUpdateListener", NULL, VPA_setUpdateListener),
+    M("android/view/ViewPropertyAnimator", "start", NULL, VPA_start),
+    M("android/view/ViewPropertyAnimator", "cancel", NULL, VPA_cancel),
+    M("android/view/ViewPropertyAnimator", "withLayer", NULL, VPA_withLayer),
+    M("android/view/ViewPropertyAnimator", "withEndAction", "(Ljava/lang/Object;)Ljava/lang/Object;", VPA_withEndAction),
+    M("android/view/ViewPropertyAnimator", "withStartAction", "(Ljava/lang/Object;)Ljava/lang/Object;", VPA_withStartAction),
+    M("android/view/View", "setKeepScreenOn", NULL, View_setKeepScreenOn),
+    M("android/view/View", "setLayerType", "(I)V", View_setLayerType),
+    M("android/view/View", "getLayerType", NULL, View_getLayerType),
+    M("android/view/View", "setWillNotDraw", NULL, View_setWillNotDraw),
+    M("android/view/View", "setWillNotCacheDrawing", NULL, View_setWillNotCacheDrawing),
+    M("android/view/View", "setDrawingCacheEnabled", NULL, View_setDrawingCacheEnabled),
+    M("android/view/View", "isDrawingCacheEnabled", NULL, View_isDrawingCacheEnabled),
+    M("android/view/View", "getDrawingCache", NULL, View_getDrawingCache),
+    M("android/view/View", "destroyDrawingCache", NULL, View_destroyDrawingCache),
+    M("android/view/View", "buildDrawingCache", NULL, View_buildDrawingCache),
+    M("android/view/View", "getScrollX", NULL, View_getScrollX),
+    M("android/view/View", "getScrollY", NULL, View_getScrollY),
+    M("android/view/View", "setScrollX", "(I)V", View_setScrollX),
+    M("android/view/View", "setScrollY", "(I)V", View_setScrollY),
+    M("android/view/View", "scrollTo", "(II)V", View_scrollTo),
+    M("android/view/View", "scrollBy", "(II)V", View_scrollBy),
+    M("android/view/View", "canScrollVertically", NULL, View_canScrollVertically),
+    M("android/view/View", "canScrollHorizontally", NULL, View_canScrollHorizontally),
+    M("android/view/View", "computeScroll", NULL, View_computeScroll),
+    M("android/view/View", "awakenScrollBars", NULL, View_awakenScrollBars),
+    M("android/view/View", "getVerticalScrollbarWidth", NULL, View_getVerticalScrollbarWidth),
+    M("android/view/View", "setScrollbarFadingEnabled", NULL, View_setScrollbarFadingEnabled),
+    M("android/view/View", "setVerticalScrollBarEnabled", NULL, View_setVerticalScrollBarEnabled),
+    M("android/view/View", "setHorizontalScrollBarEnabled", NULL, View_setHorizontalScrollBarEnabled),
+    M("android/view/View", "setOverScrollMode", "(I)V", View_setOverScrollMode),
+    M("android/view/View", "getOverScrollMode", NULL, View_getOverScrollMode),
+    M("android/view/View", "setSystemUiVisibility", "(I)V", View_setSystemUiVisibility),
+    M("android/view/View", "getSystemUiVisibility", NULL, View_getSystemUiVisibility),
+    M("android/view/View", "getWindowSystemUiVisibility", NULL, View_getWindowSystemUiVisibility),
+    M("android/view/View", "getWindowId", NULL, View_getWindowId),
+    M("android/view/View", "isAttachedToWindow", NULL, View_isAttachedToWindow),
+    M("android/view/View", "isInTouchMode", NULL, View_isInTouchMode),
+    M("android/view/View", "isHardwareAccelerated", NULL, View_isHardwareAccelerated),
+    M("android/view/View", "isLaidOut", NULL, View_isLaidOut),
+    M("android/view/View", "isLayoutRequested", NULL, View_isLayoutRequested),
+    M("android/view/View", "getBaseline", NULL, View_getBaseline),
+    M("android/view/View", "getResources", NULL, View_getResources),
+    M("android/view/View", "getElevation", NULL, View_getElevation),
+    M("android/view/View", "setElevation", "(F)V", View_setElevation),
+    M("android/view/View", "getZ", NULL, View_getZ),
+    M("android/view/View", "setZ", "(F)V", View_setZ),
+    M("android/view/View", "getClipToPadding", NULL, View_getClipToPadding),
+    M("android/view/View", "setClipToPadding", "(Z)V", View_setClipToPadding),
+    M("android/view/View", "setContentDescription", "(I)V", View_setContentDescription),
+    M("android/view/View", "getContentDescription", NULL, View_getContentDescription),
+    M("android/view/View", "setAccessibilityDelegate", NULL, View_setAccessibilityDelegate),
+    M("android/view/View", "setImportantForAccessibility", NULL, View_setImportantForAccessibility),
+    M("android/view/View", "announceForAccessibility", NULL, View_announceForAccessibility),
+    M("android/view/View", "sendAccessibilityEvent", NULL, View_sendAccessibilityEvent),
+    M("android/view/View", "setNextFocusDownId", NULL, View_setNextFocusDownId),
+    M("android/view/View", "setNextFocusUpId", NULL, View_setNextFocusUpId),
+    M("android/view/View", "setNextFocusLeftId", NULL, View_setNextFocusLeftId),
+    M("android/view/View", "setNextFocusRightId", NULL, View_setNextFocusRightId),
+    M("android/view/View", "setNextFocusForwardId", NULL, View_setNextFocusForwardId),
+    M("android/view/View", "getDefaultSize", "(II)Ljava/lang/Object;", View_getDefaultSize),
+    M("android/view/View", "resolveSize", "(II)I", View_resolveSize),
+    M("android/view/View", "resolveSizeAndState", NULL, View_resolveSizeAndState),
+    M("android/view/View", "generateViewId", NULL, View_generateViewId),
+    M("android/view/View", "combineMeasuredStates", "(II)I", View_combineMeasuredStates),
+    M("android/view/ViewGroup", "addView", "(Ljava/lang/Object;)V", VG_addView),
+    M("android/widget/FrameLayout", "addView", "(Ljava/lang/Object;)V", VG_addView),
+    M("android/widget/LinearLayout", "addView", "(Ljava/lang/Object;)V", VG_addView),
+    M("android/widget/RelativeLayout", "addView", "(Ljava/lang/Object;)V", VG_addView),
+    M("android/widget/AbsoluteLayout", "addView", "(Ljava/lang/Object;)V", VG_addView),
+    M("android/widget/ScrollView", "addView", "(Ljava/lang/Object;)V", VG_addView),
+    M("android/widget/HorizontalScrollView", "addView", "(Ljava/lang/Object;)V", VG_addView),
+    M("android/view/ViewGroup", "addView", "(Ljava/lang/Object;Ljava/lang/Object;)V", VG_addViewLP),
+    M("android/widget/FrameLayout", "addView", "(Ljava/lang/Object;Ljava/lang/Object;)V", VG_addViewLP),
+    M("android/widget/LinearLayout", "addView", "(Ljava/lang/Object;Ljava/lang/Object;)V", VG_addViewLP),
+    M("android/widget/RelativeLayout", "addView", "(Ljava/lang/Object;Ljava/lang/Object;)V", VG_addViewLP),
+    M("android/widget/AbsoluteLayout", "addView", "(Ljava/lang/Object;Ljava/lang/Object;)V", VG_addViewLP),
+    M("android/widget/ScrollView", "addView", "(Ljava/lang/Object;Ljava/lang/Object;)V", VG_addViewLP),
+    M("android/widget/HorizontalScrollView", "addView", "(Ljava/lang/Object;Ljava/lang/Object;)V", VG_addViewLP),
+    M("android/view/ViewGroup", "removeView", "(Ljava/lang/Object;)V", VG_removeView),
+    M("android/widget/FrameLayout", "removeView", "(Ljava/lang/Object;)V", VG_removeView),
+    M("android/widget/LinearLayout", "removeView", "(Ljava/lang/Object;)V", VG_removeView),
+    M("android/widget/RelativeLayout", "removeView", "(Ljava/lang/Object;)V", VG_removeView),
+    M("android/widget/AbsoluteLayout", "removeView", "(Ljava/lang/Object;)V", VG_removeView),
+    M("android/widget/ScrollView", "removeView", "(Ljava/lang/Object;)V", VG_removeView),
+    M("android/widget/HorizontalScrollView", "removeView", "(Ljava/lang/Object;)V", VG_removeView),
+    M("android/view/ViewGroup", "removeViewAt", "(I)V", VG_removeViewAt),
+    M("android/widget/FrameLayout", "removeViewAt", "(I)V", VG_removeViewAt),
+    M("android/widget/LinearLayout", "removeViewAt", "(I)V", VG_removeViewAt),
+    M("android/widget/RelativeLayout", "removeViewAt", "(I)V", VG_removeViewAt),
+    M("android/widget/AbsoluteLayout", "removeViewAt", "(I)V", VG_removeViewAt),
+    M("android/widget/ScrollView", "removeViewAt", "(I)V", VG_removeViewAt),
+    M("android/widget/HorizontalScrollView", "removeViewAt", "(I)V", VG_removeViewAt),
+    M("android/view/ViewGroup", "removeAllViews", NULL, VG_removeAllViews),
+    M("android/widget/FrameLayout", "removeAllViews", NULL, VG_removeAllViews),
+    M("android/widget/LinearLayout", "removeAllViews", NULL, VG_removeAllViews),
+    M("android/widget/RelativeLayout", "removeAllViews", NULL, VG_removeAllViews),
+    M("android/widget/AbsoluteLayout", "removeAllViews", NULL, VG_removeAllViews),
+    M("android/widget/ScrollView", "removeAllViews", NULL, VG_removeAllViews),
+    M("android/widget/HorizontalScrollView", "removeAllViews", NULL, VG_removeAllViews),
+    M("android/view/ViewGroup", "getChildCount", NULL, VG_getChildCount),
+    M("android/widget/FrameLayout", "getChildCount", NULL, VG_getChildCount),
+    M("android/widget/LinearLayout", "getChildCount", NULL, VG_getChildCount),
+    M("android/widget/RelativeLayout", "getChildCount", NULL, VG_getChildCount),
+    M("android/widget/AbsoluteLayout", "getChildCount", NULL, VG_getChildCount),
+    M("android/widget/ScrollView", "getChildCount", NULL, VG_getChildCount),
+    M("android/widget/HorizontalScrollView", "getChildCount", NULL, VG_getChildCount),
+    M("android/view/ViewGroup", "getChildAt", "(I)Ljava/lang/Object;", VG_getChildAt),
+    M("android/widget/FrameLayout", "getChildAt", "(I)Ljava/lang/Object;", VG_getChildAt),
+    M("android/widget/LinearLayout", "getChildAt", "(I)Ljava/lang/Object;", VG_getChildAt),
+    M("android/widget/RelativeLayout", "getChildAt", "(I)Ljava/lang/Object;", VG_getChildAt),
+    M("android/widget/AbsoluteLayout", "getChildAt", "(I)Ljava/lang/Object;", VG_getChildAt),
+    M("android/widget/ScrollView", "getChildAt", "(I)Ljava/lang/Object;", VG_getChildAt),
+    M("android/widget/HorizontalScrollView", "getChildAt", "(I)Ljava/lang/Object;", VG_getChildAt),
+    M("android/view/ViewGroup", "indexOfChild", "(Ljava/lang/Object;)I", VG_indexOfChild),
+    M("android/widget/FrameLayout", "indexOfChild", "(Ljava/lang/Object;)I", VG_indexOfChild),
+    M("android/widget/LinearLayout", "indexOfChild", "(Ljava/lang/Object;)I", VG_indexOfChild),
+    M("android/widget/RelativeLayout", "indexOfChild", "(Ljava/lang/Object;)I", VG_indexOfChild),
+    M("android/widget/AbsoluteLayout", "indexOfChild", "(Ljava/lang/Object;)I", VG_indexOfChild),
+    M("android/widget/ScrollView", "indexOfChild", "(Ljava/lang/Object;)I", VG_indexOfChild),
+    M("android/widget/HorizontalScrollView", "indexOfChild", "(Ljava/lang/Object;)I", VG_indexOfChild),
+    M("android/view/ViewGroup", "bringChildToFront", NULL, VG_bringChildToFront),
+    M("android/widget/FrameLayout", "bringChildToFront", NULL, VG_bringChildToFront),
+    M("android/widget/LinearLayout", "bringChildToFront", NULL, VG_bringChildToFront),
+    M("android/widget/RelativeLayout", "bringChildToFront", NULL, VG_bringChildToFront),
+    M("android/widget/AbsoluteLayout", "bringChildToFront", NULL, VG_bringChildToFront),
+    M("android/widget/ScrollView", "bringChildToFront", NULL, VG_bringChildToFront),
+    M("android/widget/HorizontalScrollView", "bringChildToFront", NULL, VG_bringChildToFront),
+    M("android/view/ViewGroup", "setDescendantFocusability", NULL, VG_setDescendantFocusability),
+    M("android/widget/FrameLayout", "setDescendantFocusability", NULL, VG_setDescendantFocusability),
+    M("android/widget/LinearLayout", "setDescendantFocusability", NULL, VG_setDescendantFocusability),
+    M("android/widget/RelativeLayout", "setDescendantFocusability", NULL, VG_setDescendantFocusability),
+    M("android/widget/AbsoluteLayout", "setDescendantFocusability", NULL, VG_setDescendantFocusability),
+    M("android/widget/ScrollView", "setDescendantFocusability", NULL, VG_setDescendantFocusability),
+    M("android/widget/HorizontalScrollView", "setDescendantFocusability", NULL, VG_setDescendantFocusability),
+    M("android/view/ViewGroup", "setClipChildren", NULL, VG_setClipChildren),
+    M("android/widget/FrameLayout", "setClipChildren", NULL, VG_setClipChildren),
+    M("android/widget/LinearLayout", "setClipChildren", NULL, VG_setClipChildren),
+    M("android/widget/RelativeLayout", "setClipChildren", NULL, VG_setClipChildren),
+    M("android/widget/AbsoluteLayout", "setClipChildren", NULL, VG_setClipChildren),
+    M("android/widget/ScrollView", "setClipChildren", NULL, VG_setClipChildren),
+    M("android/widget/HorizontalScrollView", "setClipChildren", NULL, VG_setClipChildren),
+    M("android/view/ViewGroup", "requestDisallowInterceptTouchEvent", NULL, VG_requestDisallowInterceptTouchEvent),
+    M("android/widget/FrameLayout", "requestDisallowInterceptTouchEvent", NULL, VG_requestDisallowInterceptTouchEvent),
+    M("android/widget/LinearLayout", "requestDisallowInterceptTouchEvent", NULL, VG_requestDisallowInterceptTouchEvent),
+    M("android/widget/RelativeLayout", "requestDisallowInterceptTouchEvent", NULL, VG_requestDisallowInterceptTouchEvent),
+    M("android/widget/AbsoluteLayout", "requestDisallowInterceptTouchEvent", NULL, VG_requestDisallowInterceptTouchEvent),
+    M("android/widget/ScrollView", "requestDisallowInterceptTouchEvent", NULL, VG_requestDisallowInterceptTouchEvent),
+    M("android/widget/HorizontalScrollView", "requestDisallowInterceptTouchEvent", NULL, VG_requestDisallowInterceptTouchEvent),
+    M("android/view/ViewGroup", "onInterceptTouchEvent", NULL, VG_onInterceptTouchEvent),
+    M("android/widget/FrameLayout", "onInterceptTouchEvent", NULL, VG_onInterceptTouchEvent),
+    M("android/widget/LinearLayout", "onInterceptTouchEvent", NULL, VG_onInterceptTouchEvent),
+    M("android/widget/RelativeLayout", "onInterceptTouchEvent", NULL, VG_onInterceptTouchEvent),
+    M("android/widget/AbsoluteLayout", "onInterceptTouchEvent", NULL, VG_onInterceptTouchEvent),
+    M("android/widget/ScrollView", "onInterceptTouchEvent", NULL, VG_onInterceptTouchEvent),
+    M("android/widget/HorizontalScrollView", "onInterceptTouchEvent", NULL, VG_onInterceptTouchEvent),
+    M("android/view/ViewGroup", "clearDisappearingChildren", NULL, VG_clearDisappearingChildren),
+    M("android/widget/FrameLayout", "clearDisappearingChildren", NULL, VG_clearDisappearingChildren),
+    M("android/widget/LinearLayout", "clearDisappearingChildren", NULL, VG_clearDisappearingChildren),
+    M("android/widget/RelativeLayout", "clearDisappearingChildren", NULL, VG_clearDisappearingChildren),
+    M("android/widget/AbsoluteLayout", "clearDisappearingChildren", NULL, VG_clearDisappearingChildren),
+    M("android/widget/ScrollView", "clearDisappearingChildren", NULL, VG_clearDisappearingChildren),
+    M("android/widget/HorizontalScrollView", "clearDisappearingChildren", NULL, VG_clearDisappearingChildren),
+    M("android/view/ViewGroup", "getFocusedChild", NULL, VG_getFocusedChild),
+    M("android/widget/FrameLayout", "getFocusedChild", NULL, VG_getFocusedChild),
+    M("android/widget/LinearLayout", "getFocusedChild", NULL, VG_getFocusedChild),
+    M("android/widget/RelativeLayout", "getFocusedChild", NULL, VG_getFocusedChild),
+    M("android/widget/AbsoluteLayout", "getFocusedChild", NULL, VG_getFocusedChild),
+    M("android/widget/ScrollView", "getFocusedChild", NULL, VG_getFocusedChild),
+    M("android/widget/HorizontalScrollView", "getFocusedChild", NULL, VG_getFocusedChild),
+    M("android/view/ViewGroup", "setOnHierarchyChangeListener", NULL, VG_setOnHierarchyChangeListener),
+    M("android/widget/FrameLayout", "setOnHierarchyChangeListener", NULL, VG_setOnHierarchyChangeListener),
+    M("android/widget/LinearLayout", "setOnHierarchyChangeListener", NULL, VG_setOnHierarchyChangeListener),
+    M("android/widget/RelativeLayout", "setOnHierarchyChangeListener", NULL, VG_setOnHierarchyChangeListener),
+    M("android/widget/AbsoluteLayout", "setOnHierarchyChangeListener", NULL, VG_setOnHierarchyChangeListener),
+    M("android/widget/ScrollView", "setOnHierarchyChangeListener", NULL, VG_setOnHierarchyChangeListener),
+    M("android/widget/HorizontalScrollView", "setOnHierarchyChangeListener", NULL, VG_setOnHierarchyChangeListener),
+    M("android/view/ViewGroup", "setOnChildrenDrawnListener", NULL, VG_setOnChildrenDrawnListener),
+    M("android/widget/FrameLayout", "setOnChildrenDrawnListener", NULL, VG_setOnChildrenDrawnListener),
+    M("android/widget/LinearLayout", "setOnChildrenDrawnListener", NULL, VG_setOnChildrenDrawnListener),
+    M("android/widget/RelativeLayout", "setOnChildrenDrawnListener", NULL, VG_setOnChildrenDrawnListener),
+    M("android/widget/AbsoluteLayout", "setOnChildrenDrawnListener", NULL, VG_setOnChildrenDrawnListener),
+    M("android/widget/ScrollView", "setOnChildrenDrawnListener", NULL, VG_setOnChildrenDrawnListener),
+    M("android/widget/HorizontalScrollView", "setOnChildrenDrawnListener", NULL, VG_setOnChildrenDrawnListener),
+    M("android/view/ViewGroup$LayoutParams", "<init>", "(II)V", LP_init),
+    M("android/view/ViewGroup$LayoutParams", "<init>", "(Ljava/lang/Object;)V", LP_initCopy),
+    M("android/view/ViewGroup$MarginLayoutParams", "<init>", "(II)V", MLP_init),
+    M("android/view/ViewGroup$MarginLayoutParams", "setMargins", "(IIII)V", MLP_setMargins),
+    M("android/view/ViewGroup$MarginLayoutParams", "setMarginStart", "(I)V", MLP_setMarginStart),
+    M("android/view/ViewGroup$MarginLayoutParams", "setMarginEnd", "(I)V", MLP_setMarginEnd),
+    M("android/view/ViewGroup$MarginLayoutParams", "getMarginStart", NULL, MLP_getMarginStart),
+    M("android/view/ViewGroup$MarginLayoutParams", "getMarginEnd", NULL, MLP_getMarginEnd),
+    M("android/view/MotionEvent", "obtain", "()Ljava/lang/Object;", ME_obtain),
+    M("android/view/MotionEvent", "obtain", "(IJIFF)Ljava/lang/Object;", ME_obtainArgs),
+    M("android/view/MotionEvent", "obtain", "(IJIIIFF)Ljava/lang/Object;", ME_obtain2),
+    M("android/view/MotionEvent", "obtain", "(Ljava/lang/Object;)Ljava/lang/Object;", ME_obtain3),
+    M("android/view/MotionEvent", "getAction", NULL, ME_getAction),
+    M("android/view/MotionEvent", "getActionMasked", NULL, ME_getActionMasked),
+    M("android/view/MotionEvent", "getActionIndex", NULL, ME_getActionIndex),
+    M("android/view/MotionEvent", "getX", "()F", ME_getX),
+    M("android/view/MotionEvent", "getY", "()F", ME_getY),
+    M("android/view/MotionEvent", "getX", "(I)Ljava/lang/Object;", ME_getXi),
+    M("android/view/MotionEvent", "getY", "(I)Ljava/lang/Object;", ME_getYi),
+    M("android/view/MotionEvent", "getRawX", NULL, ME_getRawX),
+    M("android/view/MotionEvent", "getRawY", NULL, ME_getRawY),
+    M("android/view/MotionEvent", "getPressure", NULL, ME_getPressure),
+    M("android/view/MotionEvent", "getSize", NULL, ME_getSize),
+    M("android/view/MotionEvent", "getPointerCount", NULL, ME_getPointerCount),
+    M("android/view/MotionEvent", "getPointerId", "(I)Ljava/lang/Object;", ME_getPointerId),
+    M("android/view/MotionEvent", "findPointerIndex", NULL, ME_findPointerIndex),
+    M("android/view/MotionEvent", "getEventTime", NULL, ME_getEventTime),
+    M("android/view/MotionEvent", "getDownTime", NULL, ME_getDownTime),
+    M("android/view/MotionEvent", "getDeviceId", NULL, ME_getDeviceId),
+    M("android/view/MotionEvent", "getSource", NULL, ME_getSource),
+    M("android/view/MotionEvent", "getToolType", NULL, ME_getToolType),
+    M("android/view/MotionEvent", "getAxisValue", NULL, ME_getAxisValue),
+    M("android/view/MotionEvent", "getButtonState", NULL, ME_getButtonState),
+    M("android/view/MotionEvent", "getMetaState", NULL, ME_getMetaState),
+    M("android/view/MotionEvent", "setAction", "(I)V", ME_setAction),
+    M("android/view/MotionEvent", "setLocation", "(FF)V", ME_setLocation),
+    M("android/view/MotionEvent", "offsetLocation", "(FF)V", ME_offsetLocation),
+    M("android/view/MotionEvent", "recycle", NULL, ME_recycle),
+    M("android/view/MotionEvent", "actionToString", NULL, ME_actionToString),
+    M("android/view/KeyEvent", "<init>", "(II)V", KE_init),
+    M("android/view/KeyEvent", "getAction", NULL, KE_getAction),
+    M("android/view/KeyEvent", "getKeyCode", NULL, KE_getKeyCode),
+    M("android/view/KeyEvent", "getScanCode", NULL, KE_getScanCode),
+    M("android/view/KeyEvent", "getUnicodeChar", NULL, KE_getUnicodeChar),
+    M("android/view/KeyEvent", "getRepeatCount", NULL, KE_getRepeatCount),
+    M("android/view/KeyEvent", "isDown", NULL, KE_isDown),
+    M("android/view/KeyEvent", "isCancelled", NULL, KE_isCancelled),
+    M("android/view/KeyEvent", "isCtrlPressed", NULL, KE_isCtrlPressed),
+    M("android/view/KeyEvent", "isShiftPressed", NULL, KE_isShiftPressed),
+    M("android/view/KeyEvent", "isAltPressed", NULL, KE_isAltPressed),
+    M("android/view/KeyEvent", "getMetaState", NULL, KE_getMetaState),
+    M("android/view/KeyEvent", "isPrintingKey", NULL, KE_isPrintingKey),
+    M("android/view/KeyEvent", "isGamepadButton", NULL, KE_isGamepadButton),
+    M("android/view/KeyEvent", "getEventTime", NULL, KE_getEventTime),
+    M("android/view/KeyEvent", "getDownTime", NULL, KE_getDownTime),
+    M("android/view/KeyEvent", "getDeviceId", NULL, KE_getDeviceId),
+    M("android/view/KeyEvent", "getSource", NULL, KE_getSource),
+    M("android/view/KeyEvent", "getDisplayLabel", NULL, KE_getDisplayLabel),
+    M("android/view/KeyEvent", "getCharacters", NULL, KE_getCharacters),
+    M("android/view/KeyEvent", "getNumber", NULL, KE_getNumber),
+    M("android/view/KeyEvent", "dispatch", NULL, KE_dispatch),
+    M("android/view/KeyEvent", "keyCodeToString", "(I)Ljava/lang/Object;", KE_keyCodeToString),
+    M("android/view/KeyEvent", "keyCodeFromString", NULL, KE_keyCodeFromString),
+    M("android/view/KeyEvent", "isModifierKey", "(I)Z", KE_isModifierKey),
+    M("android/view/KeyEvent", "changeAction", "(Ljava/lang/Object;I)Ljava/lang/Object;", KE_changeAction),
+    M("android/view/KeyEvent", "changeTimeRepeat", "(Ljava/lang/Object;)Ljava/lang/Object;", KE_changeTimeRepeat),
+    M("android/view/InputDevice", "getDevice", "(I)Ljava/lang/Object;", ID_getDevice),
+    M("android/view/InputDevice", "getDeviceIds", NULL, ID_getDeviceIds),
+    M("android/view/InputDevice", "getName", NULL, ID_getName),
+    M("android/view/InputDevice", "getId", NULL, ID_getId),
+    M("android/view/InputDevice", "getSources", NULL, ID_getSources),
+    M("android/view/InputDevice", "getVendorId", NULL, ID_getVendorId),
+    M("android/view/InputDevice", "getProductId", NULL, ID_getProductId),
+    M("android/view/InputDevice", "getDescriptor", NULL, ID_getDescriptor),
+    M("android/view/InputDevice", "isVirtual", NULL, ID_isVirtual),
+    M("android/view/InputDevice", "getControllerNumber", NULL, ID_getControllerNumber),
+    M("android/view/InputDevice", "hasKeys", "([Ljava/lang/Object;)Ljava/lang/Object;", ID_hasKeys),
+    M("android/view/InputDevice", "getMotionRange", NULL, ID_getMotionRange),
+    M("android/view/InputDevice", "getVibrator", NULL, ID_getVibrator),
+    M("android/view/InputDevice", "supportsSource", NULL, ID_supportsSource),
+    M("android/view/InputDevice", "toString", NULL, ID_toString),
+    M("android/view/Surface", "isValid", NULL, Surf_isValid),
+    M("android/view/Surface", "release", NULL, Surf_release),
+    M("android/view/Surface", "describeContents", NULL, Surf_describeContents),
+    M("android/view/Surface", "writeToParcel", NULL, Surf_writeToParcel),
+    M("android/view/Surface", "readFromParcel", NULL, Surf_readFromParcel),
+    M("android/view/Surface", "toString", NULL, Surf_toString),
+    M("android/view/WindowManager$LayoutParams", "<init>", "()V", WLP_init),
+    M("android/view/WindowManager$LayoutParams", "<init>", "(II)V", WLP_initWH),
+    M("android/view/WindowManager$LayoutParams", "copyFrom", "(Ljava/lang/Object;)Ljava/lang/Object;", WLP_copyFrom),
+    M("android/widget/Toast", "makeText", "(ILjava/lang/Object;I)Ljava/lang/Object;", Toast_makeText),
+    M("android/widget/Toast", "setText", "(Ljava/lang/Object;)V", Toast_setText),
+    M("android/widget/Toast", "setDuration", "(I)V", Toast_setDuration),
+    M("android/widget/Toast", "getDuration", NULL, Toast_getDuration),
+    M("android/widget/Toast", "setGravity", "(III)V", Toast_setGravity),
+    M("android/widget/Toast", "setView", "(I)V", Toast_setView),
+    M("android/widget/Toast", "getView", NULL, Toast_getView),
+    M("android/widget/Toast", "show", NULL, Toast_show),
+    M("android/widget/Toast", "cancel", NULL, Toast_cancel),
+    M("android/widget/Toast", "setMargin", NULL, Toast_setMargin),
+    M("android/app/Notification$Builder", "<init>", NULL, NB_init),
+    M("android/app/Notification$Builder", "setContentTitle", "(I)Ljava/lang/Object;", NB_setContentTitle),
+    M("android/app/Notification$Builder", "setContentText", "(I)Ljava/lang/Object;", NB_setContentText),
+    M("android/app/Notification$Builder", "setSmallIcon", NULL, NB_setSmallIcon),
+    M("android/app/Notification$Builder", "setContentIntent", NULL, NB_setContentIntent),
+    M("android/app/Notification$Builder", "setAutoCancel", NULL, NB_setAutoCancel),
+    M("android/app/Notification$Builder", "setOngoing", NULL, NB_setOngoing),
+    M("android/app/Notification$Builder", "setPriority", NULL, NB_setPriority),
+    M("android/app/Notification$Builder", "setChannelId", NULL, NB_setChannelId),
+    M("android/app/Notification$Builder", "setDefaults", NULL, NB_setDefaults),
+    M("android/app/Notification$Builder", "setTicker", NULL, NB_setTicker),
+    M("android/app/Notification$Builder", "setWhen", NULL, NB_setWhen),
+    M("android/app/Notification$Builder", "setProgress", NULL, NB_setProgress),
+    M("android/app/Notification$Builder", "setStyle", NULL, NB_setStyle),
+    M("android/app/Notification$Builder", "addAction", NULL, NB_addAction),
+    M("android/app/Notification$Builder", "setSound", NULL, NB_setSound),
+    M("android/app/Notification$Builder", "setVibrate", NULL, NB_setVibrate),
+    M("android/app/Notification$Builder", "setLights", NULL, NB_setLights),
+    M("android/app/Notification$Builder", "setLargeIcon", NULL, NB_setLargeIcon),
+    M("android/app/Notification$Builder", "setSubText", NULL, NB_setSubText),
+    M("android/app/Notification$Builder", "setNumber", NULL, NB_setNumber),
+    M("android/app/Notification$Builder", "setOnlyAlertOnce", NULL, NB_setOnlyAlertOnce),
+    M("android/app/Notification$Builder", "setShowWhen", NULL, NB_setShowWhen),
+    M("android/app/Notification$Builder", "setVisibility", NULL, NB_setVisibility),
+    M("android/app/Notification$Builder", "setColor", NULL, NB_setColor),
+    M("android/app/Notification$Builder", "setCategory", NULL, NB_setCategory),
+    M("android/app/Notification$Builder", "build", NULL, NB_build),
+    M("android/app/Notification$Builder", "getNotification", NULL, NB_getNotification),
+    M("android/app/NotificationManager", "notify", NULL, NM_notify),
+    M("android/app/NotificationManager", "notifyTag", NULL, NM_notifyTag),
+    M("android/app/NotificationManager", "cancel", NULL, NM_cancel),
+    M("android/app/NotificationManager", "cancelTag", NULL, NM_cancelTag),
+    M("android/app/NotificationManager", "cancelAll", NULL, NM_cancelAll),
+    M("android/app/NotificationManager", "areNotificationsEnabled", NULL, NM_areNotificationsEnabled),
+    M("android/app/NotificationManager", "getNotificationChannel", NULL, NM_getNotificationChannel),
+    M("android/app/NotificationManager", "createNotificationChannel", NULL, NM_createNotificationChannel),
+    M("android/app/NotificationManager", "createNotificationChannels", NULL, NM_createNotificationChannels),
+    M("android/app/NotificationManager", "deleteNotificationChannel", NULL, NM_deleteNotificationChannel),
+    M("android/app/NotificationChannel", "<init>", "(Ljava/lang/Object;Ljava/lang/Object;I)V", NC_init),
+    M("android/app/PendingIntent", "getActivity", "(Ljava/lang/Object;ILjava/lang/Object;I)Ljava/lang/Object;", PI_getActivity),
+    M("android/app/PendingIntent", "getService", "(Ljava/lang/Object;ILjava/lang/Object;I)Ljava/lang/Object;", PI_getService),
+    M("android/app/PendingIntent", "getBroadcast", "(Ljava/lang/Object;ILjava/lang/Object;I)Ljava/lang/Object;", PI_getBroadcast),
+    M("android/app/PendingIntent", "send", NULL, PI_send),
+    M("android/app/PendingIntent", "cancel", NULL, PI_cancel),
+    M("android/app/PendingIntent", "getIntentSender", NULL, PI_getIntentSender),
+    M("android/app/PendingIntent", "getTargetPackage", NULL, PI_getTargetPackage),
+    M("android/app/PendingIntent", "isActivity", NULL, PI_isActivity),
+    M("android/app/AlertDialog$Builder", "<init>", NULL, ADB_init),
+    M("android/app/AlertDialog$Builder", "setTitle", "(I)Ljava/lang/Object;", ADB_setTitle),
+    M("android/app/AlertDialog$Builder", "setTitle", "()Ljava/lang/Object;", ADB_setTitleRes),
+    M("android/app/AlertDialog$Builder", "setMessage", "(I)Ljava/lang/Object;", ADB_setMessage),
+    M("android/app/AlertDialog$Builder", "setMessage", "()Ljava/lang/Object;", ADB_setMessageRes),
+    M("android/app/AlertDialog$Builder", "setIcon", NULL, ADB_setIcon),
+    M("android/app/AlertDialog$Builder", "setView", "(I)Ljava/lang/Object;", ADB_setView),
+    M("android/app/AlertDialog$Builder", "setCancelable", "(Z)Ljava/lang/Object;", ADB_setCancelable),
+    M("android/app/AlertDialog$Builder", "setPositiveButton", "(II)Ljava/lang/Object;", ADB_setPositiveButton),
+    M("android/app/AlertDialog$Builder", "setNegativeButton", "(II)Ljava/lang/Object;", ADB_setNegativeButton),
+    M("android/app/AlertDialog$Builder", "setNeutralButton", "(II)Ljava/lang/Object;", ADB_setNeutralButton),
+    M("android/app/AlertDialog$Builder", "setItems", "(II)Ljava/lang/Object;", ADB_setItems),
+    M("android/app/AlertDialog$Builder", "setOnCancelListener", "(I)Ljava/lang/Object;", ADB_setOnCancelListener),
+    M("android/app/AlertDialog$Builder", "setOnDismissListener", "(I)Ljava/lang/Object;", ADB_setOnDismissListener),
+    M("android/app/AlertDialog$Builder", "setOnKeyListener", NULL, ADB_setOnKeyListener),
+    M("android/app/AlertDialog$Builder", "create", NULL, ADB_create),
+    M("android/app/AlertDialog$Builder", "show", NULL, ADB_show),
+    M("android/app/AlertDialog", "show", NULL, AD_show),
+    M("android/app/Dialog", "show", NULL, AD_show),
+    M("android/app/ProgressDialog", "show", NULL, AD_show),
+    M("android/app/AlertDialog", "dismiss", NULL, AD_dismiss),
+    M("android/app/Dialog", "dismiss", NULL, AD_dismiss),
+    M("android/app/ProgressDialog", "dismiss", NULL, AD_dismiss),
+    M("android/app/AlertDialog", "cancel", NULL, AD_cancel),
+    M("android/app/Dialog", "cancel", NULL, AD_cancel),
+    M("android/app/ProgressDialog", "cancel", NULL, AD_cancel),
+    M("android/app/AlertDialog", "isShowing", NULL, AD_isShowing),
+    M("android/app/Dialog", "isShowing", NULL, AD_isShowing),
+    M("android/app/ProgressDialog", "isShowing", NULL, AD_isShowing),
+    M("android/app/AlertDialog", "setTitle", "(I)V", AD_setTitle),
+    M("android/app/Dialog", "setTitle", "(I)V", AD_setTitle),
+    M("android/app/ProgressDialog", "setTitle", "(I)V", AD_setTitle),
+    M("android/app/AlertDialog", "setMessage", "(I)V", AD_setMessage),
+    M("android/app/Dialog", "setMessage", "(I)V", AD_setMessage),
+    M("android/app/ProgressDialog", "setMessage", "(I)V", AD_setMessage),
+    M("android/app/AlertDialog", "getButton", NULL, AD_getButton),
+    M("android/app/Dialog", "getButton", NULL, AD_getButton),
+    M("android/app/ProgressDialog", "getButton", NULL, AD_getButton),
+    M("android/app/AlertDialog", "setCancelable", "(Z)V", AD_setCancelable),
+    M("android/app/Dialog", "setCancelable", "(Z)V", AD_setCancelable),
+    M("android/app/ProgressDialog", "setCancelable", "(Z)V", AD_setCancelable),
+    M("android/app/AlertDialog", "setCanceledOnTouchOutside", NULL, AD_setCanceledOnTouchOutside),
+    M("android/app/Dialog", "setCanceledOnTouchOutside", NULL, AD_setCanceledOnTouchOutside),
+    M("android/app/ProgressDialog", "setCanceledOnTouchOutside", NULL, AD_setCanceledOnTouchOutside),
+    M("android/app/AlertDialog", "setOnShowListener", NULL, AD_setOnShowListener),
+    M("android/app/Dialog", "setOnShowListener", NULL, AD_setOnShowListener),
+    M("android/app/ProgressDialog", "setOnShowListener", NULL, AD_setOnShowListener),
+    M("android/app/AlertDialog", "getWindow", NULL, AD_getWindow),
+    M("android/app/Dialog", "getWindow", NULL, AD_getWindow),
+    M("android/app/ProgressDialog", "getWindow", NULL, AD_getWindow),
+    M("android/app/AlertDialog", "getContext", NULL, AD_getContext),
+    M("android/app/Dialog", "getContext", NULL, AD_getContext),
+    M("android/app/ProgressDialog", "getContext", NULL, AD_getContext),
+    M("android/app/AlertDialog", "findViewById", NULL, AD_findViewById),
+    M("android/app/Dialog", "findViewById", NULL, AD_findViewById),
+    M("android/app/ProgressDialog", "findViewById", NULL, AD_findViewById),
+    M("android/app/AlertDialog", "setOnCancelListener", "(I)V", AD_setOnCancelListener),
+    M("android/app/Dialog", "setOnCancelListener", "(I)V", AD_setOnCancelListener),
+    M("android/app/ProgressDialog", "setOnCancelListener", "(I)V", AD_setOnCancelListener),
+    M("android/app/AlertDialog", "setOnDismissListener", "(I)V", AD_setOnDismissListener),
+    M("android/app/Dialog", "setOnDismissListener", "(I)V", AD_setOnDismissListener),
+    M("android/app/ProgressDialog", "setOnDismissListener", "(I)V", AD_setOnDismissListener),
+    M("android/app/AlertDialog", "getListView", NULL, AD_getListView),
+    M("android/app/Dialog", "getListView", NULL, AD_getListView),
+    M("android/app/ProgressDialog", "getListView", NULL, AD_getListView),
+    M("android/opengl/Matrix", "multiplyMM", "(Ljava/lang/Object;ILjava/lang/Object;ILjava/lang/Object;I)V", GM_multiplyMM),
+    M("android/opengl/Matrix", "multiplyMV", "([Ljava/lang/Object;ILjava/lang/Object;I[Ljava/lang/Object;I)V", GM_multiplyMV),
+    M("android/opengl/Matrix", "setIdentityM", "(Ljava/lang/Object;I)V", GM_setIdentityM),
+    M("android/opengl/Matrix", "orthoM", "(Ljava/lang/Object;IFFFFFF)V", GM_orthoM),
+    M("android/opengl/Matrix", "frustumM", "(Ljava/lang/Object;IFFFFFF)V", GM_frustumM),
+    M("android/opengl/Matrix", "perspectiveM", "(Ljava/lang/Object;IFFFF)V", GM_perspectiveM),
+    M("android/opengl/Matrix", "translateM", "(Ljava/lang/Object;IFFF)V", GM_translateM),
+    M("android/opengl/Matrix", "scaleM", "(Ljava/lang/Object;IFFF)V", GM_scaleM),
+    M("android/opengl/Matrix", "rotateM", "(Ljava/lang/Object;IFFFF)V", GM_rotateM),
+    M("android/opengl/Matrix", "setRotateM", "(Ljava/lang/Object;I)V", GM_setRotateM),
+    M("android/opengl/Matrix", "setLookAtM", "(Ljava/lang/Object;IFFFFFFFFF)V", GM_setLookAtM),
+    M("android/opengl/Matrix", "transposeM", "(Ljava/lang/Object;ILjava/lang/Object;I)V", GM_transposeM),
+    M("android/opengl/Matrix", "invertM", "(Ljava/lang/Object;ILjava/lang/Object;I)Z", GM_invertM),
+    M("android/opengl/Matrix", "length", "(FFF)F", GM_length),
+    M("android/opengl/Matrix", "setM", "(Ljava/lang/Object;ILjava/lang/Object;I)V", GM_setM),
+    M("android/opengl/Matrix", "translateM", "()V", GM_translateM2),
+    M("android/opengl/Matrix", "multiplyMM", "(Ljava/lang/Object;ILjava/lang/Object;IFFF)V", GM_multiplyMM_dest),
+    M("android/opengl/Matrix", "scaleM", "(Ljava/lang/Object;ILjava/lang/Object;IFFF)V", GM_scaleM_dest),
+    M("android/opengl/Matrix", "rotateM", "(Ljava/lang/Object;ILjava/lang/Object;IIIII)V", GM_rotateM_dest),
+    M("android/app/ActivityManager", "getMemoryInfo", "(Ljava/lang/Object;)V", AM_getMemoryInfo),
+    M("android/app/ActivityManager", "getMemoryClass", NULL, AM_getMemoryClass),
+    M("android/app/ActivityManager", "getLargeMemoryClass", NULL, AM_getLargeMemoryClass),
+    M("android/app/ActivityManager", "getRunningAppProcesses", NULL, AM_getRunningAppProcesses),
+    M("android/app/ActivityManager", "getRunningTasks", NULL, AM_getRunningTasks),
+    M("android/app/ActivityManager", "getRunningServices", NULL, AM_getRunningServices),
+    M("android/app/ActivityManager", "getProcessesInErrorState", NULL, AM_getProcessesInErrorState),
+    M("android/app/ActivityManager", "getProcessMemoryInfo", NULL, AM_getProcessMemoryInfo),
+    M("android/app/ActivityManager", "getMyMemoryState", "(Ljava/lang/Object;)V", AM_getMyMemoryState),
+    M("android/app/ActivityManager", "isUserAMonkey", NULL, AM_isUserAMonkey),
+    M("android/app/ActivityManager", "isLowRamDevice", NULL, AM_isLowRamDevice),
+    M("android/app/ActivityManager", "isRunningInTestHarness", NULL, AM_isRunningInTestHarness),
+    M("android/app/ActivityManager", "killBackgroundProcesses", NULL, AM_killBackgroundProcesses),
+    M("android/app/ActivityManager", "clearApplicationUserData", NULL, AM_clearApplicationUserData),
+    M("android/app/ActivityManager", "getDeviceConfigurationInfo", NULL, AM_getDeviceConfigurationInfo),
+    M("android/app/ActivityManager", "getLauncherLargeIconDensity", NULL, AM_getLauncherLargeIconDensity),
+    M("android/app/ActivityManager", "getLauncherLargeIconSize", NULL, AM_getLauncherLargeIconSize),
+    M("android/app/ActivityManager", "isHighEndGfx", NULL, AM_isHighEndGfx),
+    M("android/app/ActivityManager", "addAppTask", NULL, AM_addAppTask),
+    M("android/app/ActivityManager", "getAppTasks", NULL, AM_getAppTasks),
+    M("android/app/ActivityManager", "isBackgroundRestricted", NULL, AM_isBackgroundRestricted),
+    M("android/app/ActivityManager", "getHistoricalProcessExitReasons", NULL, AM_getHistoricalProcessExitReasons),
+    M("android/app/ActivityManager", "setWatchHeapLimit", NULL, AM_setWatchHeapLimit),
+    M("android/app/ActivityManager", "getLockTaskModeState", NULL, AM_getLockTaskModeState),
+    M("android/app/ActivityManager", "isDeviceIdleMode", NULL, AM_getDeviceIdleState),
+    M("android/os/AsyncTask", "execute", "(I)Ljava/lang/Object;", AT_execute),
+    M("android/os/AsyncTask", "executeOnExecutor", "(II)Ljava/lang/Object;", AT_executeOnExecutor),
+    M("android/os/AsyncTask", "execute", "(Ljava/lang/Object;)V", AT_executeRunnable),
+    M("android/os/AsyncTask", "get", NULL, AT_get),
+    M("android/os/AsyncTask", "getTimeout", NULL, AT_getTimeout),
+    M("android/os/AsyncTask", "cancel", NULL, AT_cancel),
+    M("android/os/AsyncTask", "isCancelled", NULL, AT_isCancelled),
+    M("android/os/AsyncTask", "getStatus", NULL, AT_getStatus),
+    M("android/os/AsyncTask", "publishProgress", "(I)V", AT_publishProgress),
+    M("android/os/AsyncTask", "SERIAL_EXECUTOR", NULL, AT_serialExecutor),
+    M("android/os/AsyncTask", "THREAD_POOL_EXECUTOR", NULL, AT_threadPoolExecutor),
+    M("android/os/Vibrator", "vibrate", "(J)V", Vib_vibrate),
+    M("android/os/Vibrator", "vibrate", "()V", Vib_vibrateAmps),
+    M("android/os/Vibrator", "cancel", NULL, Vib_cancel),
+    M("android/os/Vibrator", "hasVibrator", NULL, Vib_hasVibrator),
+    M("android/os/Vibrator", "hasAmplitudeControl", NULL, Vib_hasAmplitudeControl),
+    M("android/os/Vibrator", "areEffectsSupported", NULL, Vib_areEffectsSupported),
+    M("android/os/Vibrator", "performHaptic", "(I)V", Vib_performHaptic),
+    M("android/content/ClipboardManager", "setText", "(Ljava/lang/Object;)V", Clip_setText),
+    M("android/text/ClipboardManager", "setText", "(Ljava/lang/Object;)V", Clip_setText),
+    M("android/content/ClipboardManager", "getText", NULL, Clip_getText),
+    M("android/text/ClipboardManager", "getText", NULL, Clip_getText),
+    M("android/content/ClipboardManager", "hasText", NULL, Clip_hasText),
+    M("android/text/ClipboardManager", "hasText", NULL, Clip_hasText),
+    M("android/content/ClipboardManager", "setPrimaryClip", "(Ljava/lang/Object;)V", Clip_setPrimaryClip),
+    M("android/text/ClipboardManager", "setPrimaryClip", "(Ljava/lang/Object;)V", Clip_setPrimaryClip),
+    M("android/content/ClipboardManager", "getPrimaryClip", NULL, Clip_getPrimaryClip),
+    M("android/text/ClipboardManager", "getPrimaryClip", NULL, Clip_getPrimaryClip),
+    M("android/content/ClipboardManager", "hasPrimaryClip", NULL, Clip_hasPrimaryClip),
+    M("android/text/ClipboardManager", "hasPrimaryClip", NULL, Clip_hasPrimaryClip),
+    M("android/content/ClipData", "getItemCount", NULL, ClipData_getItemCount),
+    M("android/content/ClipData", "getItemAt", NULL, ClipData_getItemAt),
+    M("android/content/ClipData$Item", "getText", NULL, ClipItem_getText),
+    M("android/content/ClipData", "newPlainText", "(II)Ljava/lang/Object;", ClipData_newPlainText),
+    M("android/app/Activity", "startActivity", "(Ljava/lang/Object;)V", Act_startActivity),
+    M("android/os/PowerManager$WakeLock", "acquire", NULL, WakeLock_acquire),
+    M("android/os/PowerManager$WakeLock", "release", NULL, WakeLock_release),
+    M("android/os/PowerManager$WakeLock", "isHeld", NULL, WakeLock_isHeld),
+    M("android/os/PowerManager", "newWakeLock", "(I)Ljava/lang/Object;", PM_newWakeLock),
+    M("android/os/PowerManager", "isInteractive", NULL, PM_isInteractive),
+    M("android/os/PowerManager", "isScreenOn", NULL, PM_isScreenOn),
+    M("android/os/PowerManager", "isPowerSaveMode", NULL, PM_isPowerSaveMode),
+    M("android/os/PowerManager", "isIgnoringBatteryOptimizations", NULL, PM_isIgnoringBatteryOptimizations),
+    M("android/media/MediaPlayer", "<init>", NULL, MP_init),
+    M("android/media/MediaPlayer", "create", "()Ljava/lang/Object;", MP_create),
+    M("android/media/MediaPlayer", "create", "(ILjava/lang/Object;)Ljava/lang/Object;", MP_createUri),
+    M("android/media/MediaPlayer", "setDataSource", "(Ljava/lang/Object;)V", MP_setDataSourcePath),
+    M("android/media/MediaPlayer", "setDataSource", "(Ljava/lang/Object;JJ)V", MP_setDataSourceFD),
+    M("android/media/MediaPlayer", "prepare", NULL, MP_prepare),
+    M("android/media/MediaPlayer", "prepareAsync", NULL, MP_prepareAsync),
+    M("android/media/MediaPlayer", "start", NULL, MP_start),
+    M("android/media/MediaPlayer", "pause", NULL, MP_pause),
+    M("android/media/MediaPlayer", "stop", NULL, MP_stop),
+    M("android/media/MediaPlayer", "release", NULL, MP_release),
+    M("android/media/MediaPlayer", "reset", NULL, MP_reset),
+    M("android/media/MediaPlayer", "seekTo", "(I)V", MP_seekTo),
+    M("android/media/MediaPlayer", "getCurrentPosition", NULL, MP_getCurrentPosition),
+    M("android/media/MediaPlayer", "getDuration", NULL, MP_getDuration),
+    M("android/media/MediaPlayer", "isPlaying", NULL, MP_isPlaying),
+    M("android/media/MediaPlayer", "setLooping", "(Z)V", MP_setLooping),
+    M("android/media/MediaPlayer", "isLooping", NULL, MP_isLooping),
+    M("android/media/MediaPlayer", "setVolume", "(FF)V", MP_setVolume),
+    M("android/media/MediaPlayer", "setScreenOnWhilePlaying", "(Z)V", MP_setScreenOnWhilePlaying),
+    M("android/media/MediaPlayer", "setWakeMode", NULL, MP_setWakeMode),
+    M("android/media/MediaPlayer", "setOnCompletionListener", "(I)V", MP_setOnCompletionListener),
+    M("android/media/MediaPlayer", "setOnPreparedListener", "(I)V", MP_setOnPreparedListener),
+    M("android/media/MediaPlayer", "setOnErrorListener", NULL, MP_setOnErrorListener),
+    M("android/media/MediaPlayer", "setOnSeekCompleteListener", NULL, MP_setOnSeekCompleteListener),
+    M("android/media/MediaPlayer", "setOnInfoListener", NULL, MP_setOnInfoListener),
+    M("android/media/MediaPlayer", "setOnBufferingUpdateListener", NULL, MP_setOnBufferingUpdateListener),
+    M("android/media/MediaPlayer", "setAudioStreamType", NULL, MP_setAudioStreamType),
+    M("android/media/MediaPlayer", "setAudioAttributes", NULL, MP_setAudioAttributes),
+    M("android/media/MediaPlayer", "getAudioSessionId", NULL, MP_getAudioSessionId),
+    M("android/media/MediaPlayer", "setAudioSessionId", NULL, MP_setAudioSessionId),
+    M("android/media/MediaPlayer", "attachAuxEffect", NULL, MP_attachAuxEffect),
+    M("android/media/MediaPlayer", "setAuxEffectSendLevel", NULL, MP_setAuxEffectSendLevel),
+    M("android/media/MediaPlayer", "setPlaybackParams", NULL, MP_setPlaybackParams),
+    M("android/media/MediaPlayer", "getTrackInfo", NULL, MP_getTrackInfo),
+    M("android/media/MediaPlayer", "getVideoWidth", NULL, MP_getVideoWidth),
+    M("android/media/MediaPlayer", "getVideoHeight", NULL, MP_getVideoHeight),
+    M("android/media/MediaPlayer", "setDisplay", NULL, MP_setDisplay),
+    M("android/media/MediaPlayer", "setSurface", NULL, MP_setSurface),
+    M("android/media/SoundPool", "<init>", NULL, SP2_init),
+    M("android/media/SoundPool$Builder", "build", NULL, SP2Builder_build),
+    M("android/media/SoundPool$Builder", "setMaxStreams", NULL, SP2Builder_setMaxStreams),
+    M("android/media/SoundPool$Builder", "setAudioAttributes", NULL, SP2Builder_setAudioAttributes),
+    M("android/media/SoundPool", "load", "(Ljava/lang/Object;)I", SP2_loadPath),
+    M("android/media/SoundPool", "load", "(Ljava/lang/Object;JJ)I", SP2_loadFD),
+    M("android/media/SoundPool", "load", "()I", SP2_loadCtx),
+    M("android/media/SoundPool", "play", "(IFFIIF)I", SP2_play),
+    M("android/media/SoundPool", "stop", "(I)V", SP2_stop),
+    M("android/media/SoundPool", "pause", "(I)V", SP2_pause),
+    M("android/media/SoundPool", "resume", "(I)V", SP2_resume),
+    M("android/media/SoundPool", "setVolume", "(IFF)V", SP2_setVolume),
+    M("android/media/SoundPool", "setLoop", "(II)V", SP2_setLoop),
+    M("android/media/SoundPool", "setRate", "(IF)V", SP2_setRate),
+    M("android/media/SoundPool", "unload", "(I)Z", SP2_unload),
+    M("android/media/SoundPool", "release", NULL, SP2_release),
+    M("android/media/SoundPool", "autoPause", NULL, SP2_autoPause),
+    M("android/media/SoundPool", "autoResume", NULL, SP2_autoResume),
+    M("android/media/SoundPool", "setOnLoadCompleteListener", NULL, SP2_setOnLoadCompleteListener),
+    M("android/webkit/WebView", "<init>", NULL, WV_init),
+    M("android/webkit/WebView", "getSettings", NULL, WV_getSettings),
+    M("android/webkit/WebSettings", "setJavaScriptEnabled", "(Z)V", WVS_setJavaScriptEnabled),
+    M("android/webkit/WebSettings", "getJavaScriptEnabled", NULL, WVS_getJavaScriptEnabled),
+    M("android/webkit/WebSettings", "setDomStorageEnabled", "(Z)V", WVS_setDomStorageEnabled),
+    M("android/webkit/WebSettings", "getDomStorageEnabled", NULL, WVS_getDomStorageEnabled),
+    M("android/webkit/WebSettings", "setUserAgentString", "(I)V", WVS_setUserAgentString),
+    M("android/webkit/WebSettings", "getUserAgentString", NULL, WVS_getUserAgentString),
+    M("android/webkit/WebSettings", "getDefaultUserAgent", NULL, WVS_getDefaultUserAgent),
+    M("android/webkit/WebSettings", "setMediaPlaybackRequiresUserGesture", NULL, WVS_setMediaPlaybackRequiresUserGesture),
+    M("android/webkit/WebSettings", "setLoadWithOverviewMode", "(Z)V", WVS_setLoadWithOverviewMode),
+    M("android/webkit/WebSettings", "setUseWideViewPort", "(Z)V", WVS_setUseWideViewPort),
+    M("android/webkit/WebSettings", "setSupportZoom", "(Z)V", WVS_setSupportZoom),
+    M("android/webkit/WebSettings", "setBuiltInZoomControls", NULL, WVS_setBuiltInZoomControls),
+    M("android/webkit/WebSettings", "setDisplayZoomControls", NULL, WVS_setDisplayZoomControls),
+    M("android/webkit/WebSettings", "setAllowFileAccess", NULL, WVS_setAllowFileAccess),
+    M("android/webkit/WebSettings", "setAllowContentAccess", NULL, WVS_setAllowContentAccess),
+    M("android/webkit/WebSettings", "setAllowFileAccessFromFileURLs", NULL, WVS_setAllowFileAccessFromFileURLs),
+    M("android/webkit/WebSettings", "setAllowUniversalAccessFromFileURLs", NULL, WVS_setAllowUniversalAccessFromFileURLs),
+    M("android/webkit/WebSettings", "setCacheMode", "(I)V", WVS_setCacheMode),
+    M("android/webkit/WebSettings", "getCacheMode", NULL, WVS_getCacheMode),
+    M("android/webkit/WebSettings", "setAppCacheEnabled", NULL, WVS_setAppCacheEnabled),
+    M("android/webkit/WebSettings", "setAppCachePath", NULL, WVS_setAppCachePath),
+    M("android/webkit/WebSettings", "setDatabaseEnabled", NULL, WVS_setDatabaseEnabled),
+    M("android/webkit/WebSettings", "setGeolocationEnabled", NULL, WVS_setGeolocationEnabled),
+    M("android/webkit/WebSettings", "setTextSize", NULL, WVS_setTextSize),
+    M("android/webkit/WebSettings", "setTextZoom", "(I)V", WVS_setTextZoom),
+    M("android/webkit/WebSettings", "getTextZoom", NULL, WVS_getTextZoom),
+    M("android/webkit/WebSettings", "setDefaultFontSize", NULL, WVS_setDefaultFontSize),
+    M("android/webkit/WebSettings", "setMinimumFontSize", NULL, WVS_setMinimumFontSize),
+    M("android/webkit/WebSettings", "setMinimumLogicalFontSize", NULL, WVS_setMinimumLogicalFontSize),
+    M("android/webkit/WebSettings", "setDefaultTextEncodingName", NULL, WVS_setDefaultTextEncodingName),
+    M("android/webkit/WebSettings", "setLayoutAlgorithm", NULL, WVS_setLayoutAlgorithm),
+    M("android/webkit/WebSettings", "setSupportMultipleWindows", "(Z)V", WVS_setSupportMultipleWindows),
+    M("android/webkit/WebSettings", "supportMultipleWindows", NULL, WVS_supportMultipleWindows),
+    M("android/webkit/WebSettings", "setJavaScriptCanOpenWindowsAutomatically", "(Z)V", WVS_setJavaScriptCanOpenWindowsAutomatically),
+    M("android/webkit/WebSettings", "setPluginState", NULL, WVS_setPluginState),
+    M("android/webkit/WebSettings", "setMixedContentMode", NULL, WVS_setMixedContentMode),
+    M("android/webkit/WebSettings", "setSafeBrowsingEnabled", NULL, WVS_setSafeBrowsingEnabled),
+    M("android/webkit/WebSettings", "setOffscreenPreRaster", NULL, WVS_setOffscreenPreRaster),
+    M("android/webkit/WebSettings", "setDisabledActionModeMenuItems", NULL, WVS_setDisabledActionModeMenuItems),
+    M("android/webkit/WebView", "loadUrl", "(Ljava/lang/Object;)V", WV_loadUrl),
+    M("android/webkit/WebView", "loadUrl", "()V", WV_loadUrlHdr),
+    M("android/webkit/WebView", "loadData", "(Ljava/lang/Object;)V", WV_loadData),
+    M("android/webkit/WebView", "loadDataWithBaseURL", "(Ljava/lang/Object;Ljava/lang/Object;)V", WV_loadDataWithBaseURL),
+    M("android/webkit/WebView", "getUrl", NULL, WV_getUrl),
+    M("android/webkit/WebView", "getOriginalUrl", NULL, WV_getOriginalUrl),
+    M("android/webkit/WebView", "getTitle", NULL, WV_getTitle),
+    M("android/webkit/WebView", "canGoBack", NULL, WV_canGoBack),
+    M("android/webkit/WebView", "goBack", NULL, WV_goBack),
+    M("android/webkit/WebView", "goForward", NULL, WV_goForward),
+    M("android/webkit/WebView", "canGoForward", NULL, WV_canGoForward),
+    M("android/webkit/WebView", "reload", NULL, WV_reload),
+    M("android/webkit/WebView", "stopLoading", NULL, WV_stopLoading),
+    M("android/webkit/WebView", "destroy", NULL, WV_destroy),
+    M("android/webkit/WebView", "evaluateJavascript", "(Ljava/lang/Object;Ljava/lang/Object;)V", WV_evaluateJavascript),
+    M("android/webkit/WebView", "addJavascriptInterface", "(I)V", WV_addJavascriptInterface),
+    M("android/webkit/WebView", "removeJavascriptInterface", NULL, WV_removeJavascriptInterface),
+    M("android/webkit/WebView", "setWebViewClient", "(I)V", WV_setWebViewClient),
+    M("android/webkit/WebView", "setWebChromeClient", "(I)V", WV_setWebChromeClient),
+    M("android/webkit/WebView", "getProgress", NULL, WV_getProgress),
+    M("android/webkit/WebView", "setDownloadListener", NULL, WV_setDownloadListener),
+    M("android/webkit/WebView", "clearCache", NULL, WV_clearCache),
+    M("android/webkit/WebView", "clearHistory", NULL, WV_clearHistory),
+    M("android/webkit/WebView", "clearFormData", NULL, WV_clearFormData),
+    M("android/webkit/WebView", "onPause", NULL, WV_onPause),
+    M("android/webkit/WebView", "onResume", NULL, WV_onResume),
+    M("android/webkit/WebView", "pauseTimers", NULL, WV_pauseTimers),
+    M("android/webkit/WebView", "resumeTimers", NULL, WV_resumeTimers),
+    M("android/webkit/WebView", "requestFocusNodeHref", NULL, WV_requestFocusNodeHref),
+    M("android/webkit/WebView", "getHitTestResult", NULL, WV_getHitTestResult),
+    M("android/webkit/WebView", "postUrl", NULL, WV_postUrl),
+    M("android/webkit/WebView", "findAllAsync", NULL, WV_findAllAsync),
+    M("android/webkit/WebView", "setFindListener", NULL, WV_setFindListener),
+    M("android/webkit/WebView", "setLayerType", NULL, WV_setLayerType),
+    M("android/webkit/WebView", "setOverScrollMode", NULL, WV_setOverScrollMode),
+    M("android/webkit/WebView", "setScrollBarStyle", NULL, WV_setScrollBarStyle),
+    M("android/webkit/WebView", "flingScroll", NULL, WV_flingScroll),
+    M("android/webkit/WebView", "getCertificate", NULL, WV_getCertificate),
+    M("android/webkit/WebView", "clearSslPreferences", NULL, WV_clearSslPreferences),
+    M("android/webkit/CookieManager", "getInstance", NULL, CookieMan_getInstance),
+    M("android/webkit/CookieManager", "setAcceptCookie", "(Z)V", CookieMan_setAcceptCookie),
+    M("android/webkit/CookieManager", "acceptCookie", NULL, CookieMan_acceptCookie),
+    M("android/webkit/CookieManager", "setCookie", "(Ljava/lang/Object;Ljava/lang/Object;)V", CookieMan_setCookie),
+    M("android/webkit/CookieManager", "getCookie", "(Ljava/lang/Object;)Ljava/lang/Object;", CookieMan_getCookie),
+    M("android/webkit/CookieManager", "removeAllCookies", "(Ljava/lang/Object;)V", CookieMan_removeAllCookies),
+    M("android/webkit/CookieManager", "removeSessionCookies", "(Ljava/lang/Object;)V", CookieMan_removeSessionCookies),
+    M("android/webkit/CookieManager", "flush", NULL, CookieMan_flush),
+    M("android/webkit/CookieManager", "hasCookies", NULL, CookieMan_hasCookies),
+    M("android/webkit/CookieManager", "setAcceptThirdPartyCookies", NULL, CookieMan_setAcceptThirdPartyCookies),
+    M("android/webkit/CookieManager", "acceptThirdPartyCookies", NULL, CookieMan_acceptThirdPartyCookies),
+    { NULL, NULL, NULL, NULL }
+};
+
+static const struct { const char *name, *super; } k_more_classes[] = {
+    { "java/lang/String", "java/lang/Object" },
+    { "java/lang/StringBuilder", "java/lang/Object" },
+    { "java/lang/StringBuffer", "java/lang/Object" },
+    { "java/lang/Throwable", "java/lang/Object" },
+    { "java/lang/Exception", "java/lang/Throwable" },
+    { "java/lang/RuntimeException", "java/lang/Exception" },
+    { "java/lang/Error", "java/lang/Throwable" },
+    { "java/lang/IllegalArgumentException", "java/lang/RuntimeException" },
+    { "java/lang/IllegalStateException", "java/lang/RuntimeException" },
+    { "java/lang/NullPointerException", "java/lang/RuntimeException" },
+    { "java/lang/IndexOutOfBoundsException", "java/lang/RuntimeException" },
+    { "java/lang/ArrayIndexOutOfBoundsException", "java/lang/IndexOutOfBoundsException" },
+    { "java/lang/StringIndexOutOfBoundsException", "java/lang/IndexOutOfBoundsException" },
+    { "java/lang/UnsupportedOperationException", "java/lang/RuntimeException" },
+    { "java/lang/NumberFormatException", "java/lang/IllegalArgumentException" },
+    { "java/lang/ClassCastException", "java/lang/RuntimeException" },
+    { "java/lang/ClassNotFoundException", "java/lang/Exception" },
+    { "java/lang/NoSuchMethodException", "java/lang/Exception" },
+    { "java/lang/NoSuchFieldException", "java/lang/Exception" },
+    { "java/io/IOException", "java/lang/Exception" },
+    { "java/io/FileNotFoundException", "java/io/IOException" },
+    { "java/io/EOFException", "java/io/IOException" },
+    { "java/net/SocketException", "java/io/IOException" },
+    { "java/net/UnknownHostException", "java/io/IOException" },
+    { "java/net/ConnectException", "java/net/SocketException" },
+    { "java/io/InterruptedIOException", "java/io/IOException" },
+    { "java/net/SocketTimeoutException", "java/io/InterruptedIOException" },
+    { "java/security/GeneralSecurityException", "java/lang/Exception" },
+    { "java/security/NoSuchAlgorithmException", "java/security/GeneralSecurityException" },
+    { "java/security/InvalidKeyException", "java/security/GeneralSecurityException" },
+    { "java/security/SignatureException", "java/security/GeneralSecurityException" },
+    { "java/security/KeyStoreException", "java/security/GeneralSecurityException" },
+    { "java/security/cert/CertificateException", "java/security/GeneralSecurityException" },
+    { "javax/crypto/NoSuchPaddingException", "java/security/GeneralSecurityException" },
+    { "javax/crypto/BadPaddingException", "java/security/GeneralSecurityException" },
+    { "javax/crypto/IllegalBlockSizeException", "java/security/GeneralSecurityException" },
+    { "java/text/ParseException", "java/lang/Exception" },
+    { "java/util/NoSuchElementException", "java/lang/RuntimeException" },
+    { "java/util/concurrent/ExecutionException", "java/lang/Exception" },
+    { "java/util/concurrent/TimeoutException", "java/lang/Exception" },
+    { "java/lang/InterruptedException", "java/lang/Exception" },
+    { "java/lang/InstantiationException", "java/lang/Exception" },
+    { "java/lang/IllegalAccessException", "java/lang/Exception" },
+    { "java/lang/reflect/InvocationTargetException", "java/lang/Exception" },
+    { "java/lang/VirtualMachineError", "java/lang/Error" },
+    { "java/lang/OutOfMemoryError", "java/lang/VirtualMachineError" },
+    { "java/lang/StackOverflowError", "java/lang/VirtualMachineError" },
+    { "java/lang/AssertionError", "java/lang/Error" },
+    { "java/lang/SecurityException", "java/lang/RuntimeException" },
+    { "java/lang/ArithmeticException", "java/lang/RuntimeException" },
+    { "java/lang/ArrayStoreException", "java/lang/RuntimeException" },
+    { "java/lang/NegativeArraySizeException", "java/lang/RuntimeException" },
+    { "java/io/UnsupportedEncodingException", "java/io/IOException" },
+    { "java/io/UTFDataFormatException", "java/io/IOException" },
+    { "java/io/StreamCorruptedException", "java/io/IOException" },
+    { "java/io/ObjectStreamException", "java/io/IOException" },
+    { "java/io/NotSerializableException", "java/io/IOException" },
+    { "java/io/InvalidClassException", "java/io/ObjectStreamException" },
+    { "java/util/MissingResourceException", "java/lang/RuntimeException" },
+    { "java/util/ConcurrentModificationException", "java/lang/RuntimeException" },
+    { "java/util/EmptyStackException", "java/util/NoSuchElementException" },
+    { "java/util/UnknownFormatConversionException", "java/lang/RuntimeException" },
+    { "java/nio/BufferOverflowException", "java/lang/RuntimeException" },
+    { "java/nio/BufferUnderflowException", "java/lang/RuntimeException" },
+    { "java/nio/InvalidMarkException", "java/lang/IllegalStateException" },
+    { "java/nio/ReadOnlyBufferException", "java/lang/UnsupportedOperationException" },
+    { "java/sql/SQLException", "java/lang/Exception" },
+    { "java/util/zip/ZipException", "java/io/IOException" },
+    { "java/util/concurrent/CancellationException", "java/lang/IllegalStateException" },
+    { "java/util/concurrent/RejectedExecutionException", "java/lang/RuntimeException" },
+    { "java/lang/reflect/UndeclaredThrowableException", "java/lang/RuntimeException" },
+    { "java/lang/CloneNotSupportedException", "java/lang/Exception" },
+    { "java/util/regex/PatternSyntaxException", "java/lang/IllegalArgumentException" },
+    { "javax/net/ssl/SSLException", "java/io/IOException" },
+    { "java/security/KeyManagementException", "java/security/GeneralSecurityException" },
+    { "java/security/cert/CertificateEncodingException", "java/security/cert/CertificateException" },
+    { "java/security/cert/CertificateParsingException", "java/security/cert/CertificateException" },
+    { "java/security/UnrecoverableKeyException", "java/security/GeneralSecurityException" },
+    { "java/security/InvalidAlgorithmParameterException", "java/security/GeneralSecurityException" },
+    { "java/security/NoSuchProviderException", "java/security/GeneralSecurityException" },
+    { "java/security/spec/InvalidKeySpecException", "java/security/GeneralSecurityException" },
+    { "java/security/DigestException", "java/security/GeneralSecurityException" },
+    { "java/security/ProviderException", "java/lang/RuntimeException" },
+    { "java/util/TooManyListenersException", "java/lang/Exception" },
+    { "org/json/JSONException", "java/lang/RuntimeException" },
+    { "android/os/RemoteException", "java/lang/Exception" },
+    { "android/content/OperationApplicationException", "java/lang/Exception" },
+    { "android/os/TransactionTooLargeException", "java/lang/RuntimeException" },
+    { "android/os/DeadObjectException", "java/lang/RuntimeException" },
+    { "android/app/PendingIntent$CanceledException", "java/lang/Exception" },
+    { "android/util/AndroidRuntimeException", "java/lang/RuntimeException" },
+    { "android/view/InflateException", "java/lang/RuntimeException" },
+    { "android/database/SQLException", "java/lang/RuntimeException" },
+    { "android/database/sqlite/SQLiteException", "java/lang/RuntimeException" },
+    { "android/media/MediaCodec$CryptoException", "java/lang/Exception" },
+    { "android/os/BadParcelableException", "java/lang/RuntimeException" },
+    { "java/lang/LinkageError", "java/lang/Error" },
+    { "java/lang/VerifyError", "java/lang/LinkageError" },
+    { "java/lang/UnsatisfiedLinkError", "java/lang/LinkageError" },
+    { "java/lang/ExceptionInInitializerError", "java/lang/LinkageError" },
+    { "java/lang/NoClassDefFoundError", "java/lang/LinkageError" },
+    { "java/lang/IncompatibleClassChangeError", "java/lang/LinkageError" },
+    { "java/lang/AbstractMethodError", "java/lang/IncompatibleClassChangeError" },
+    { "java/lang/NoSuchMethodError", "java/lang/IncompatibleClassChangeError" },
+    { "java/lang/NoSuchFieldError", "java/lang/IncompatibleClassChangeError" },
+    { "java/lang/IllegalAccessError", "java/lang/IncompatibleClassChangeError" },
+    { "java/lang/InstantiationError", "java/lang/IncompatibleClassChangeError" },
+    { "java/lang/InternalError", "java/lang/VirtualMachineError" },
+    { "java/lang/ThreadDeath", "java/lang/Error" },
+    { "java/lang/StackTraceElement", "java/lang/Object" },
+    { "java/lang/Enum", "java/lang/Object" },
+    { "java/lang/Runtime", "java/lang/Object" },
+    { "java/lang/Process", "java/lang/Object" },
+    { "java/lang/ProcessBuilder", "java/lang/Object" },
+    { "java/lang/Thread", "java/lang/Object" },
+    { "java/lang/ThreadGroup", "java/lang/Object" },
+    { "java/lang/Object", "java/lang/Object" },
+    { "java/lang/System", "java/lang/Object" },
+    { "android/os/SystemProperties", "java/lang/Object" },
+    { "java/lang/Number", "java/lang/Object" },
+    { "java/lang/Integer", "java/lang/Object" },
+    { "java/lang/Long", "java/lang/Object" },
+    { "java/lang/Short", "java/lang/Object" },
+    { "java/lang/Byte", "java/lang/Object" },
+    { "java/lang/Float", "java/lang/Object" },
+    { "java/lang/Double", "java/lang/Object" },
+    { "java/lang/Boolean", "java/lang/Object" },
+    { "java/lang/Character", "java/lang/Object" },
+    { "java/lang/Math", "java/lang/Object" },
+    { "java/lang/StrictMath", "java/lang/Object" },
+    { "java/util/ArrayList", "java/lang/Object" },
+    { "java/util/LinkedList", "java/lang/Object" },
+    { "java/util/Vector", "java/lang/Object" },
+    { "java/util/Stack", "java/util/Vector" },
+    { "java/util/concurrent/CopyOnWriteArrayList", "java/lang/Object" },
+    { "java/util/ArrayDeque", "java/lang/Object" },
+    { "java/util/concurrent/ConcurrentLinkedDeque", "java/lang/Object" },
+    { "java/util/HashMap", "java/lang/Object" },
+    { "java/util/LinkedHashMap", "java/util/HashMap" },
+    { "java/util/TreeMap", "java/lang/Object" },
+    { "java/util/Hashtable", "java/lang/Object" },
+    { "java/util/concurrent/ConcurrentHashMap", "java/lang/Object" },
+    { "java/util/WeakHashMap", "java/lang/Object" },
+    { "java/util/Map$Entry", "java/lang/Object" },
+    { "java/util/HashSet", "java/lang/Object" },
+    { "java/util/LinkedHashSet", "java/util/HashSet" },
+    { "java/util/TreeSet", "java/lang/Object" },
+    { "java/util/concurrent/CopyOnWriteArraySet", "java/lang/Object" },
+    { "java/util/Iterator", "java/lang/Object" },
+    { "java/util/ListIterator", "java/lang/Object" },
+    { "java/util/Spliterator", "java/lang/Object" },
+    { "java/util/Optional", "java/lang/Object" },
+    { "java/util/Collections", "java/lang/Object" },
+    { "java/util/Arrays", "java/lang/Object" },
+    { "java/util/Random", "java/lang/Object" },
+    { "java/security/SecureRandom", "java/lang/Object" },
+    { "java/util/UUID", "java/lang/Object" },
+    { "java/util/Properties", "java/lang/Object" },
+    { "java/util/Date", "java/lang/Object" },
+    { "java/util/Calendar", "java/lang/Object" },
+    { "java/util/GregorianCalendar", "java/util/Calendar" },
+    { "java/util/TimeZone", "java/lang/Object" },
+    { "java/util/SimpleTimeZone", "java/util/TimeZone" },
+    { "java/text/DateFormat", "java/lang/Object" },
+    { "java/text/SimpleDateFormat", "java/text/DateFormat" },
+    { "java/text/NumberFormat", "java/lang/Object" },
+    { "java/text/DecimalFormat", "java/text/NumberFormat" },
+    { "java/util/regex/Pattern", "java/lang/Object" },
+    { "java/util/regex/Matcher", "java/lang/Object" },
+    { "java/util/concurrent/CountDownLatch", "java/lang/Object" },
+    { "java/util/concurrent/Semaphore", "java/lang/Object" },
+    { "java/util/concurrent/LinkedBlockingQueue", "java/lang/Object" },
+    { "java/util/concurrent/ArrayBlockingQueue", "java/lang/Object" },
+    { "java/util/concurrent/LinkedBlockingDeque", "java/lang/Object" },
+    { "java/util/concurrent/Executor", "java/lang/Object" },
+    { "java/util/concurrent/ExecutorService", "java/util/concurrent/Executor" },
+    { "java/util/concurrent/AbstractExecutorService", "java/util/concurrent/ExecutorService" },
+    { "java/util/concurrent/ThreadPoolExecutor", "java/util/concurrent/AbstractExecutorService" },
+    { "java/util/concurrent/ScheduledThreadPoolExecutor", "java/util/concurrent/ThreadPoolExecutor" },
+    { "java/util/concurrent/Executors", "java/lang/Object" },
+    { "java/util/concurrent/FutureTask", "java/lang/Object" },
+    { "java/util/concurrent/CompletableFuture", "java/lang/Object" },
+    { "java/util/Timer", "java/lang/Object" },
+    { "java/util/TimerTask", "java/lang/Object" },
+    { "java/util/concurrent/atomic/AtomicInteger", "java/lang/Number" },
+    { "java/util/concurrent/atomic/AtomicLong", "java/lang/Number" },
+    { "java/util/concurrent/atomic/AtomicBoolean", "java/lang/Object" },
+    { "java/util/concurrent/atomic/AtomicReference", "java/lang/Object" },
+    { "java/util/concurrent/atomic/AtomicIntegerArray", "java/lang/Object" },
+    { "java/util/concurrent/locks/ReentrantLock", "java/lang/Object" },
+    { "java/util/concurrent/locks/Condition", "java/lang/Object" },
+    { "java/io/InputStream", "java/lang/Object" },
+    { "java/io/FileInputStream", "java/io/InputStream" },
+    { "java/io/FileDescriptor", "java/lang/Object" },
+    { "java/io/ByteArrayInputStream", "java/io/InputStream" },
+    { "java/io/OutputStream", "java/lang/Object" },
+    { "java/io/ByteArrayOutputStream", "java/io/OutputStream" },
+    { "java/io/Reader", "java/lang/Object" },
+    { "java/io/InputStreamReader", "java/io/Reader" },
+    { "java/io/FileReader", "java/io/InputStreamReader" },
+    { "java/io/BufferedReader", "java/io/Reader" },
+    { "java/io/LineNumberReader", "java/io/BufferedReader" },
+    { "java/io/Writer", "java/lang/Object" },
+    { "java/io/PrintWriter", "java/io/Writer" },
+    { "java/io/RandomAccessFile", "java/lang/Object" },
+    { "java/io/File", "java/lang/Object" },
+    { "java/nio/file/Path", "java/lang/Object" },
+    { "java/nio/file/Paths", "java/lang/Object" },
+    { "java/nio/file/Files", "java/lang/Object" },
+    { "java/nio/file/attribute/FileTime", "java/lang/Object" },
+    { "java/nio/ByteBuffer", "java/lang/Object" },
+    { "java/nio/HeapByteBuffer", "java/nio/ByteBuffer" },
+    { "java/nio/DirectByteBuffer", "java/nio/ByteBuffer" },
+    { "java/nio/MappedByteBuffer", "java/nio/ByteBuffer" },
+    { "java/nio/ByteOrder", "java/lang/Object" },
+    { "java/nio/FloatBuffer", "java/lang/Object" },
+    { "java/nio/IntBuffer", "java/lang/Object" },
+    { "java/nio/LongBuffer", "java/lang/Object" },
+    { "java/nio/DoubleBuffer", "java/lang/Object" },
+    { "java/nio/CharBuffer", "java/lang/Object" },
+    { "java/lang/reflect/Method", "java/lang/Object" },
+    { "java/lang/reflect/Constructor", "java/lang/Object" },
+    { "java/lang/reflect/Member", "java/lang/Object" },
+    { "java/lang/reflect/AccessibleObject", "java/lang/Object" },
+    { "java/lang/reflect/Field", "java/lang/Object" },
+    { "java/lang/reflect/Array", "java/lang/Object" },
+    { "android/util/Log", "java/lang/Object" },
+    { "android/util/Base64", "java/lang/Object" },
+    { "android/text/TextUtils", "java/lang/Object" },
+    { "android/util/SparseArray", "java/lang/Object" },
+    { "android/util/SparseIntArray", "java/lang/Object" },
+    { "android/util/SparseBooleanArray", "java/lang/Object" },
+    { "android/os/Bundle", "java/lang/Object" },
+    { "android/os/BaseBundle", "java/lang/Object" },
+    { "android/content/Intent", "java/lang/Object" },
+    { "android/os/StatFs", "java/lang/Object" },
+    { "android/os/Debug", "java/lang/Object" },
+    { "android/os/Parcel", "java/lang/Object" },
+    { "android/net/Uri", "java/lang/Object" },
+    { "android/net/Uri$Builder", "java/lang/Object" },
+    { "java/net/InetAddress", "java/lang/Object" },
+    { "java/net/Inet4Address", "java/net/InetAddress" },
+    { "java/net/Inet6Address", "java/net/InetAddress" },
+    { "java/net/NetworkInterface", "java/lang/Object" },
+    { "java/util/Enumeration", "java/lang/Object" },
+    { "android/net/wifi/WifiManager", "java/lang/Object" },
+    { "android/net/wifi/WifiInfo", "java/lang/Object" },
+    { "android/net/DhcpInfo", "java/lang/Object" },
+    { "android/net/ConnectivityManager", "java/lang/Object" },
+    { "android/net/NetworkCapabilities", "java/lang/Object" },
+    { "android/net/NetworkInfo", "java/lang/Object" },
+    { "android/telephony/TelephonyManager", "java/lang/Object" },
+    { "android/graphics/Rect", "java/lang/Object" },
+    { "android/graphics/Color", "java/lang/Object" },
+    { "android/graphics/Paint", "java/lang/Object" },
+    { "android/graphics/Typeface", "java/lang/Object" },
+    { "android/graphics/Matrix", "java/lang/Object" },
+    { "android/graphics/Point", "java/lang/Object" },
+    { "android/graphics/PointF", "java/lang/Object" },
+    { "android/graphics/RectF", "java/lang/Object" },
+    { "org/json/JSONObject", "java/lang/Object" },
+    { "org/json/JSONArray", "java/lang/Object" },
+    { "org/json/JSONObject$Null", "java/lang/Object" },
+    { "org/json/JSONTokener", "java/lang/Object" },
+    { "java/security/MessageDigest", "java/lang/Object" },
+    { "javax/crypto/Mac", "java/lang/Object" },
+    { "javax/crypto/spec/SecretKeySpec", "java/lang/Object" },
+    { "java/security/Key", "java/lang/Object" },
+    { "javax/crypto/SecretKey", "java/lang/Object" },
+    { "javax/crypto/KeyGenerator", "java/lang/Object" },
+    { "javax/crypto/Cipher", "java/lang/Object" },
+    { "javax/crypto/spec/IvParameterSpec", "java/lang/Object" },
+    { "android/view/View", "java/lang/Object" },
+    { "android/view/ViewTreeObserver", "java/lang/Object" },
+    { "android/view/ViewPropertyAnimator", "java/lang/Object" },
+    { "android/view/ViewGroup", "java/lang/Object" },
+    { "android/widget/FrameLayout", "android/view/ViewGroup" },
+    { "android/widget/LinearLayout", "android/view/ViewGroup" },
+    { "android/widget/RelativeLayout", "android/view/ViewGroup" },
+    { "android/widget/AbsoluteLayout", "android/view/ViewGroup" },
+    { "android/widget/ScrollView", "android/widget/FrameLayout" },
+    { "android/widget/HorizontalScrollView", "android/widget/FrameLayout" },
+    { "android/view/ViewGroup$LayoutParams", "java/lang/Object" },
+    { "android/view/ViewGroup$MarginLayoutParams", "android/view/ViewGroup$LayoutParams" },
+    { "android/view/MotionEvent", "java/lang/Object" },
+    { "android/view/KeyEvent", "java/lang/Object" },
+    { "android/view/InputDevice", "java/lang/Object" },
+    { "android/view/Surface", "java/lang/Object" },
+    { "android/view/WindowManager$LayoutParams", "java/lang/Object" },
+    { "android/widget/Toast", "java/lang/Object" },
+    { "android/app/Notification$Builder", "java/lang/Object" },
+    { "android/app/NotificationManager", "java/lang/Object" },
+    { "android/app/NotificationChannel", "java/lang/Object" },
+    { "android/app/PendingIntent", "java/lang/Object" },
+    { "android/app/AlertDialog$Builder", "java/lang/Object" },
+    { "android/app/Dialog", "java/lang/Object" },
+    { "android/app/AlertDialog", "android/app/Dialog" },
+    { "android/app/ProgressDialog", "android/app/AlertDialog" },
+    { "android/opengl/Matrix", "java/lang/Object" },
+    { "android/app/ActivityManager", "java/lang/Object" },
+    { "android/os/AsyncTask", "java/lang/Object" },
+    { "android/os/Vibrator", "java/lang/Object" },
+    { "android/content/ClipboardManager", "java/lang/Object" },
+    { "android/text/ClipboardManager", "java/lang/Object" },
+    { "android/content/ClipData", "java/lang/Object" },
+    { "android/content/ClipData$Item", "java/lang/Object" },
+    { "android/view/ContextThemeWrapper", "java/lang/Object" },
+    { "android/app/Activity", "android/view/ContextThemeWrapper" },
+    { "android/os/PowerManager$WakeLock", "java/lang/Object" },
+    { "android/os/PowerManager", "java/lang/Object" },
+    { "android/media/MediaPlayer", "java/lang/Object" },
+    { "android/media/SoundPool", "java/lang/Object" },
+    { "android/media/SoundPool$Builder", "java/lang/Object" },
+    { "android/webkit/WebView", "android/widget/AbsoluteLayout" },
+    { "android/webkit/WebSettings", "java/lang/Object" },
+    { "android/webkit/CookieManager", "java/lang/Object" },
+};
+
+void tl_more_install(void)
+{
+    for (size_t i = 0; i < sizeof(k_more_classes) / sizeof(k_more_classes[0]); i++)
+        tl_jni_declare(k_more_classes[i].name, k_more_classes[i].super);
+    tl_jni_register_hle(k_more_hle);
+}

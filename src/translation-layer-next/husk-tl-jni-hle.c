@@ -885,7 +885,15 @@ static void Set_iterator(tl_jcall *c) { c->ret = vl(make("java/util/Iterator"));
 static void Coll_size(tl_jcall *c) { c->ret = vi(0); }
 static void Coll_isEmpty(tl_jcall *c) { c->ret = vz(1); }
 static void SP_getAll(tl_jcall *c) { c->ret = vl(make("java/util/HashMap")); }
-static void Intent_getExtras(tl_jcall *c) { c->ret = vl(NULL); }
+static void Intent_getExtras(tl_jcall *c)
+{
+    jobj *b = tl_jni_get_field(c->self, "mExtras", "Landroid/os/Bundle;").l;
+    if (!b) {
+        b = make("android/os/Bundle");
+        tl_jni_set_field(c->self, "mExtras", "Landroid/os/Bundle;", vl(b));
+    }
+    c->ret = vl(b);
+}
 static void Context_getObbDir(tl_jcall *c) { char p[700]; snprintf(p, sizeof(p), "%s/obb", H.ext_files); mkdirs(p); c->ret = vl(new_file(p)); }
 static void Context_getObbDirs(tl_jcall *c)
 {
@@ -1281,6 +1289,7 @@ static const tl_jhle k_hle[] = {
     { NULL, NULL, NULL, NULL }
 };
 
+extern void tl_more_configure(const char *pkg, const char *apk, const char *data, int w, int h);
 void tl_hle_configure(const char *pkg, const char *apk, const char *data, int w, int h)
 {
     snprintf(H.pkg, sizeof(H.pkg), "%s", pkg);
@@ -1296,6 +1305,7 @@ void tl_hle_configure(const char *pkg, const char *apk, const char *data, int w,
     read_manifest_version(apk);
     read_manifest_meta(apk);
     mkdirs(H.files); mkdirs(H.cache); mkdirs(H.ext_files); mkdirs(H.ext_cache);
+    tl_more_configure(pkg, apk, data, w, h);
 }
 
 jobj *tl_hle_activity(void) { return H.activity; }
@@ -1306,6 +1316,7 @@ jobj *tl_hle_assets(void) { return H.assets; }
 jobj *tl_hle_config(void) { return H.config; }
 
 extern void tl_loop_install(void);
+extern void tl_more_install(void);
 extern void tl_input_install(void);
 extern void tl_tls_install(void);
 extern void tl_gms_install(void);
@@ -1313,6 +1324,7 @@ void tl_jni_hle_install(void)
 {
     for (size_t i = 0; i < sizeof(k_classes) / sizeof(k_classes[0]); i++) tl_jni_declare(k_classes[i].name, k_classes[i].super);
     tl_jni_register_hle(k_hle);
+    tl_more_install();
     install_build();
     tl_loop_install();
     tl_input_install();
