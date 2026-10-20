@@ -99,7 +99,9 @@ enum HVFSupport {
 final class QemuRunner: ObservableObject {
     static let shared = QemuRunner()
     private var thread: Thread?
-    private(set) var isRunning = false
+    /// Published: a guest that stops on its own has to reach the views watching it -- the boot screen and the
+    /// library's Running state both hang on this, and an unpublished flip leaves both showing a guest that is gone.
+    @Published private(set) var isRunning = false
 
     /// Last line the guest printed about its own setup. The first-boot service in
     /// the guest writes HUSK-SETUP markers to the serial console, which is already
@@ -1726,7 +1728,16 @@ final class QemuRunner: ObservableObject {
         HuskLog.logFootprint("after-main-loop")
         qemu_cleanup()
         HuskLog.log("qemu", "qemu_cleanup() done")
-        isRunning = false
+        let booted = QemuRunner.didRestore || QemuRunner.shared.bootProgress >= 92
+        DispatchQueue.main.async {
+            self.isRunning = false
+            // A guest that left before ever finishing boot is a crash report's worth of news, not silence.
+            if !booted {
+                AndroidHost.shared.say("Android stopped during startup",
+                                       "The emulator ended before the guest finished booting. The log (Settings › Technical details) has the last lines.",
+                                       good: false)
+            }
+        }
     }
 
     /// Sample memory every few seconds for the whole session.

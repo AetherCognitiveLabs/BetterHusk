@@ -195,6 +195,15 @@ struct ContentView: View {
         // The built-in helper attaches while Husk stays in the foreground, so
         // there is no relaunch to trigger the region claim below; this is it.
         .onChange(of: jit.attachGeneration) { _ in evaluate() }
+        // The guest stopped on its own: give the screen back and let Start work again. Without this the
+        // boot overlay and the "already started" flag both survived the guest they belonged to.
+        .onChange(of: runner.isRunning) { running in
+            guard !running, started else { return }
+            started = false
+            booting = false
+            showGuestScreen = false
+            router.androidStarted = false
+        }
         // Asking rather than downloading. Two gigabytes over someone's cellular
         // connection is not a decision to make on their behalf.
         .alert(guest.update.title, isPresented: Binding(
