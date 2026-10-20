@@ -10914,6 +10914,116 @@ static void AWMan_getInstalledProviders(tl_jcall *c) { c->ret = vl(make("java/ut
 static void AWMan_requestPinAppWidget(tl_jcall *c) { c->ret = vz(false); }
 static void AWMan_isRequestPinAppWidgetSupported(tl_jcall *c) { c->ret = vz(false); }
 
+/* ============================================================== PackageManager extras
+ * Inventory queries answer with what is true here: one package â€” ours.
+ */
+
+static void PM2_getInstalledPackages(tl_jcall *c)
+{
+    jobj *l = make("java/util/ArrayList");
+    jobj *p = tl_jni_get_field(c->self, "_selfpkg", "Landroid/content/pm/PackageInfo;").l;
+    if (!p) {
+        jvalue v = tl_jni_call(c->self, "getPackageInfo", "(Ljava/lang/String;I)Landroid/content/pm/PackageInfo;",
+                               (jvalue[]){vl(STR("")), vi(0)});
+        p = v.l;
+        if (p) tl_jni_set_field(c->self, "_selfpkg", "Landroid/content/pm/PackageInfo;", vl(p));
+    }
+    if (p) { jvalue v = vl(p); tl_jni_call(l, "add", "(Ljava/lang/Object;)Z", &v); }
+    c->ret = vl(l);
+}
+static void PM2_getInstalledApplications(tl_jcall *c)
+{
+    jobj *l = make("java/util/ArrayList");
+    jvalue v = tl_jni_call(c->self, "getApplicationInfo", "(Ljava/lang/String;I)Landroid/content/pm/ApplicationInfo;",
+                           (jvalue[]){vl(STR("")), vi(0)});
+    if (v.l) tl_jni_call(l, "add", "(Ljava/lang/Object;)Z", &v);
+    c->ret = vl(l);
+}
+static void PM2_queryIntentActivities(tl_jcall *c)
+{
+    c->ret = vl(make("java/util/ArrayList"));
+}
+static void PM2_resolveActivity(tl_jcall *c) { c->ret = vl(NULL); }
+static void PM2_queryIntentServices(tl_jcall *c) { c->ret = vl(make("java/util/ArrayList")); }
+static void PM2_resolveService(tl_jcall *c) { c->ret = vl(NULL); }
+static void PM2_queryBroadcastReceivers(tl_jcall *c) { c->ret = vl(make("java/util/ArrayList")); }
+static void PM2_resolveContentProvider(tl_jcall *c) { c->ret = vl(NULL); }
+static void PM2_queryIntentContentProviders(tl_jcall *c) { c->ret = vl(make("java/util/ArrayList")); }
+static void PM2_queryIntentActivityOptions(tl_jcall *c) { c->ret = vl(make("java/util/ArrayList")); }
+static void PM2_checkPermission(tl_jcall *c) { c->ret = vi(0); }
+static void PM2_checkSignatures(tl_jcall *c) { c->ret = vi(0); }
+static void PM2_getPackageUid(tl_jcall *c) { c->ret = vi(10000); }
+static void PM2_getNameForUid(tl_jcall *c)
+{
+    jobj *v = tl_jni_get_field(c->self, "_pkg", "Ljava/lang/String;").l;
+    c->ret = vl(v ? v : STR(""));
+}
+static void PM2_getPackagesForUid(tl_jcall *c)
+{
+    jobj *a = tl_jni_new_obj_array(C("java/lang/String"), 1);
+    a->oarr.v[0] = STR("");
+    c->ret = vl(a);
+}
+static void PM2_getLaunchIntentForPackage(tl_jcall *c)
+{
+    jobj *i = make("android/content/Intent");
+    tl_jni_set_field(i, "action", "Ljava/lang/String;", vl(STR("android.intent.action.MAIN")));
+    c->ret = vl(i);
+}
+static void PM2_getLeanbackLaunchIntentForPackage(tl_jcall *c) { PM2_getLaunchIntentForPackage(c); }
+static void PM2_getApplicationLabel(tl_jcall *c) { c->ret = vl(STR("App")); }
+static void PM2_getApplicationIcon(tl_jcall *c) { c->ret = vl(NULL); }
+static void PM2_getDrawable(tl_jcall *c) { c->ret = vl(NULL); }
+static void PM2_getActivityInfo(tl_jcall *c)
+{
+    jobj *ai = make("android/content/pm/ActivityInfo");
+    c->ret = vl(ai);
+}
+static void PM2_getServiceInfo(tl_jcall *c) { c->ret = vl(make("android/content/pm/ServiceInfo")); }
+static void PM2_getReceiverInfo(tl_jcall *c) { c->ret = vl(make("android/content/pm/ActivityInfo")); }
+static void PM2_getProviderInfo(tl_jcall *c) { c->ret = vl(make("android/content/pm/ProviderInfo")); }
+static void PM2_isSafeMode(tl_jcall *c) { c->ret = vz(false); }
+static void PM2_hasSigningCertificate(tl_jcall *c) { c->ret = vz(true); }
+static void PM2_getPackageArchiveInfo(tl_jcall *c) { c->ret = vl(NULL); }
+static void PM2_getInstallerSourceInfo(tl_jcall *c) { c->ret = vl(NULL); }
+static void PM2_getInstallSourceInfo(tl_jcall *c) { c->ret = vl(NULL); }
+static void PM2_getInstallerPackageName(tl_jcall *c) { c->ret = vl(NULL); }
+static void PM2_getInitiatingPackageName(tl_jcall *c) { c->ret = vl(NULL); }
+static void PM2_canRequestPackageInstalls(tl_jcall *c) { c->ret = vz(false); }
+static void PM2_getPermissionInfo(tl_jcall *c) { c->ret = vl(make("android/content/pm/PermissionInfo")); }
+static void PM2_queryPermissionsByGroup(tl_jcall *c) { c->ret = vl(make("java/util/ArrayList")); }
+static void PM2_getPermissionGroupInfo(tl_jcall *c) { c->ret = vl(make("android/content/pm/PermissionGroupInfo")); }
+static void PM2_getAllPermissionGroups(tl_jcall *c) { c->ret = vl(make("java/util/ArrayList")); }
+static void PM2_getSystemSharedLibraryNames(tl_jcall *c)
+{
+    c->ret = vl(tl_jni_new_obj_array(C("java/lang/String"), 0));
+}
+static void PM2_getSharedLibraries(tl_jcall *c) { c->ret = vl(make("java/util/ArrayList")); }
+static void PM2_getChangedPackages(tl_jcall *c) { c->ret = vl(NULL); }
+static void PM2_getDefaultBrowser(tl_jcall *c) { c->ret = vl(NULL); }
+static void PM2_setDefaultBrowser(tl_jcall *c) { c->ret = vz(false); }
+static void PM2_isInstantApp(tl_jcall *c) { c->ret = vz(false); }
+static void PM2_isPackageSuspended(tl_jcall *c) { c->ret = vz(false); }
+static void PM2_getPackageInstaller(tl_jcall *c) { c->ret = vl(make("android/content/pm/PackageInstaller")); }
+static void PM2_getResourcesForActivity(tl_jcall *c) { c->ret = vl(NULL); }
+static void PM2_getResourcesForApplication(tl_jcall *c) { c->ret = vl(NULL); }
+static void PM2_getText(tl_jcall *c) { c->ret = vl(STR("")); }
+static void PM2_getXml(tl_jcall *c) { c->ret = vl(NULL); }
+static void PM2_addPermission(tl_jcall *c) { c->ret = vz(false); }
+static void PM2_removePermission(tl_jcall *c) { (void)c; }
+static void PM2_isPermissionRevokedByPolicy(tl_jcall *c) { c->ret = vz(false); }
+static void PM2_extendVerificationTimeout(tl_jcall *c) { (void)c; }
+static void PM2_verifyPendingInstall(tl_jcall *c) { (void)c; }
+static void PM2_setInstallerPackageName(tl_jcall *c) { (void)c; }
+static void PM2_setApplicationEnabledSetting(tl_jcall *c) { (void)c; }
+static void PM2_getApplicationEnabledSetting(tl_jcall *c) { c->ret = vi(1); }
+static void PM2_setComponentEnabledSetting(tl_jcall *c) { (void)c; }
+static void PM2_getComponentEnabledSetting(tl_jcall *c) { c->ret = vi(1); }
+static void PM2_clearPackagePreferredActivities(tl_jcall *c) { (void)c; }
+static void PM2_getPreferredActivities(tl_jcall *c) { c->ret = vi(0); }
+static void PM2_addPreferredActivity(tl_jcall *c) { (void)c; }
+static void PM2_resolveContentProviderName(tl_jcall *c) { c->ret = vl(NULL); }
+
 /* ============================================================== registration
  * Entries whose signature is NULL act as wildcards (hle_find matches any
  * overload); entries with real signatures are needed where the impl reads
@@ -16276,6 +16386,67 @@ static const tl_jhle k_more_hle[] = {
     M("android/appwidget/AppWidgetManager", "getInstalledProviders", NULL, AWMan_getInstalledProviders),
     M("android/appwidget/AppWidgetManager", "requestPinAppWidget", NULL, AWMan_requestPinAppWidget),
     M("android/appwidget/AppWidgetManager", "isRequestPinAppWidgetSupported", NULL, AWMan_isRequestPinAppWidgetSupported),
+    M("android/content/pm/PackageManager", "getInstalledPackages", NULL, PM2_getInstalledPackages),
+    M("android/content/pm/PackageManager", "getInstalledApplications", NULL, PM2_getInstalledApplications),
+    M("android/content/pm/PackageManager", "queryIntentActivities", NULL, PM2_queryIntentActivities),
+    M("android/content/pm/PackageManager", "resolveActivity", NULL, PM2_resolveActivity),
+    M("android/content/pm/PackageManager", "queryIntentServices", NULL, PM2_queryIntentServices),
+    M("android/content/pm/PackageManager", "resolveService", NULL, PM2_resolveService),
+    M("android/content/pm/PackageManager", "queryBroadcastReceivers", NULL, PM2_queryBroadcastReceivers),
+    M("android/content/pm/PackageManager", "resolveContentProvider", NULL, PM2_resolveContentProvider),
+    M("android/content/pm/PackageManager", "resolveContentProviderName", NULL, PM2_resolveContentProviderName),
+    M("android/content/pm/PackageManager", "queryIntentContentProviders", NULL, PM2_queryIntentContentProviders),
+    M("android/content/pm/PackageManager", "queryIntentActivityOptions", NULL, PM2_queryIntentActivityOptions),
+    M("android/content/pm/PackageManager", "checkPermission", NULL, PM2_checkPermission),
+    M("android/content/pm/PackageManager", "checkSignatures", NULL, PM2_checkSignatures),
+    M("android/content/pm/PackageManager", "getPackageUid", NULL, PM2_getPackageUid),
+    M("android/content/pm/PackageManager", "getNameForUid", NULL, PM2_getNameForUid),
+    M("android/content/pm/PackageManager", "getPackagesForUid", NULL, PM2_getPackagesForUid),
+    M("android/content/pm/PackageManager", "getLaunchIntentForPackage", NULL, PM2_getLaunchIntentForPackage),
+    M("android/content/pm/PackageManager", "getLeanbackLaunchIntentForPackage", NULL, PM2_getLeanbackLaunchIntentForPackage),
+    M("android/content/pm/PackageManager", "getApplicationLabel", NULL, PM2_getApplicationLabel),
+    M("android/content/pm/PackageManager", "getApplicationIcon", NULL, PM2_getApplicationIcon),
+    M("android/content/pm/PackageManager", "getDrawable", NULL, PM2_getDrawable),
+    M("android/content/pm/PackageManager", "getActivityInfo", NULL, PM2_getActivityInfo),
+    M("android/content/pm/PackageManager", "getServiceInfo", NULL, PM2_getServiceInfo),
+    M("android/content/pm/PackageManager", "getReceiverInfo", NULL, PM2_getReceiverInfo),
+    M("android/content/pm/PackageManager", "getProviderInfo", NULL, PM2_getProviderInfo),
+    M("android/content/pm/PackageManager", "isSafeMode", NULL, PM2_isSafeMode),
+    M("android/content/pm/PackageManager", "hasSigningCertificate", NULL, PM2_hasSigningCertificate),
+    M("android/content/pm/PackageManager", "getPackageArchiveInfo", NULL, PM2_getPackageArchiveInfo),
+    M("android/content/pm/PackageManager", "getInstallerSourceInfo", NULL, PM2_getInstallerSourceInfo),
+    M("android/content/pm/PackageManager", "getInstallSourceInfo", NULL, PM2_getInstallSourceInfo),
+    M("android/content/pm/PackageManager", "getInitiatingPackageName", NULL, PM2_getInitiatingPackageName),
+    M("android/content/pm/PackageManager", "canRequestPackageInstalls", NULL, PM2_canRequestPackageInstalls),
+    M("android/content/pm/PackageManager", "getPermissionInfo", NULL, PM2_getPermissionInfo),
+    M("android/content/pm/PackageManager", "queryPermissionsByGroup", NULL, PM2_queryPermissionsByGroup),
+    M("android/content/pm/PackageManager", "getPermissionGroupInfo", NULL, PM2_getPermissionGroupInfo),
+    M("android/content/pm/PackageManager", "getAllPermissionGroups", NULL, PM2_getAllPermissionGroups),
+    M("android/content/pm/PackageManager", "getSystemSharedLibraryNames", NULL, PM2_getSystemSharedLibraryNames),
+    M("android/content/pm/PackageManager", "getSharedLibraries", NULL, PM2_getSharedLibraries),
+    M("android/content/pm/PackageManager", "getChangedPackages", NULL, PM2_getChangedPackages),
+    M("android/content/pm/PackageManager", "getDefaultBrowser", NULL, PM2_getDefaultBrowser),
+    M("android/content/pm/PackageManager", "setDefaultBrowser", NULL, PM2_setDefaultBrowser),
+    M("android/content/pm/PackageManager", "isInstantApp", NULL, PM2_isInstantApp),
+    M("android/content/pm/PackageManager", "isPackageSuspended", NULL, PM2_isPackageSuspended),
+    M("android/content/pm/PackageManager", "getPackageInstaller", NULL, PM2_getPackageInstaller),
+    M("android/content/pm/PackageManager", "getResourcesForActivity", NULL, PM2_getResourcesForActivity),
+    M("android/content/pm/PackageManager", "getResourcesForApplication", NULL, PM2_getResourcesForApplication),
+    M("android/content/pm/PackageManager", "getText", NULL, PM2_getText),
+    M("android/content/pm/PackageManager", "getXml", NULL, PM2_getXml),
+    M("android/content/pm/PackageManager", "addPermission", NULL, PM2_addPermission),
+    M("android/content/pm/PackageManager", "removePermission", NULL, PM2_removePermission),
+    M("android/content/pm/PackageManager", "isPermissionRevokedByPolicy", NULL, PM2_isPermissionRevokedByPolicy),
+    M("android/content/pm/PackageManager", "extendVerificationTimeout", NULL, PM2_extendVerificationTimeout),
+    M("android/content/pm/PackageManager", "verifyPendingInstall", NULL, PM2_verifyPendingInstall),
+    M("android/content/pm/PackageManager", "setInstallerPackageName", NULL, PM2_setInstallerPackageName),
+    M("android/content/pm/PackageManager", "setApplicationEnabledSetting", NULL, PM2_setApplicationEnabledSetting),
+    M("android/content/pm/PackageManager", "getApplicationEnabledSetting", NULL, PM2_getApplicationEnabledSetting),
+    M("android/content/pm/PackageManager", "setComponentEnabledSetting", NULL, PM2_setComponentEnabledSetting),
+    M("android/content/pm/PackageManager", "getComponentEnabledSetting", NULL, PM2_getComponentEnabledSetting),
+    M("android/content/pm/PackageManager", "clearPackagePreferredActivities", NULL, PM2_clearPackagePreferredActivities),
+    M("android/content/pm/PackageManager", "getPreferredActivities", NULL, PM2_getPreferredActivities),
+    M("android/content/pm/PackageManager", "addPreferredActivity", NULL, PM2_addPreferredActivity),
     { NULL, NULL, NULL, NULL }
 };
 
@@ -16618,6 +16789,14 @@ static const struct { const char *name, *super; } k_more_classes[] = {
     { "android/appwidget/AppWidgetManager", "java/lang/Object" },
     { "android/database/MatrixCursor", "java/lang/Object" },
     { "android/service/notification/StatusBarNotification", "java/lang/Object" },
+    { "android/content/pm/ActivityInfo", "java/lang/Object" },
+    { "android/content/pm/ServiceInfo", "java/lang/Object" },
+    { "android/content/pm/ProviderInfo", "java/lang/Object" },
+    { "android/content/pm/PermissionInfo", "java/lang/Object" },
+    { "android/content/pm/PermissionGroupInfo", "java/lang/Object" },
+    { "android/content/pm/PackageInstaller", "java/lang/Object" },
+    { "android/content/pm/ResolveInfo", "java/lang/Object" },
+    { "android/content/pm/ChangedPackages", "java/lang/Object" },
 };
 
 void tl_more_install(void)

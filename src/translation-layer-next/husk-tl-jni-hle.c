@@ -304,8 +304,24 @@ static void PM_getApplicationInfo(tl_jcall *c) { c->ret = vl(H.appinfo); }
 static void PM_hasSystemFeature(tl_jcall *c)
 {
     const char *f = S(c->args[0].l);
-    c->ret = vz(!strcmp(f, "android.hardware.touchscreen") || !strcmp(f, "android.hardware.touchscreen.multitouch")
-             || !strcmp(f, "android.hardware.opengles.aep") || !strncmp(f, "android.hardware.vulkan", 23) ? 0 : 0);
+    static const char *const yes[] = {
+        "android.hardware.touchscreen", "android.hardware.opengles", "android.hardware.wifi",
+        "android.hardware.sensor", "android.hardware.camera", "android.hardware.location",
+        "android.hardware.microphone", "android.hardware.audio", "android.hardware.bluetooth",
+        "android.hardware.nfc", "android.hardware.screen", "android.hardware.ram",
+        "android.software.", "android.hardware.type.phone", "android.hardware.opengles.aep",
+    };
+    static const char *const no[] = {
+        "android.hardware.type.television", "android.hardware.type.automotive", "android.hardware.type.watch",
+        "android.hardware.television", "android.software.leanback", "android.hardware.faketouch",
+        "android.hardware.usb.host", "android.hardware.telephony", "android.hardware.ethernet",
+        "android.software.sip", "android.hardware.nfc.hcef", "android.software.device_admin",
+    };
+    for (size_t i = 0; i < sizeof(no) / sizeof(no[0]); i++)
+        if (!strncmp(f, no[i], strlen(no[i]))) { c->ret = vz(0); return; }
+    for (size_t i = 0; i < sizeof(yes) / sizeof(yes[0]); i++)
+        if (!strncmp(f, yes[i], strlen(yes[i]))) { c->ret = vz(1); return; }
+    c->ret = vz(0);
 }
 static void PM_getPackageInfo(tl_jcall *c)
 {
