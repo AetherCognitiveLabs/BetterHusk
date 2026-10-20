@@ -9698,7 +9698,7 @@ typedef struct {
     int which; /* 1=md5 2=sha1 3=sha256 4=sha512 5=sha224 6=sha384 */
     sbuf acc;  /* buffered input for the fallback path */
 #ifdef HUSK_CC
-    union { CC_MD5_CTX md5; CC_SHA1_CTX s1; CC_SHA256_CTX s256; CC_SHA512_CTX s512; CC_SHA224_CTX s224; CC_SHA384_CTX s384; } u;
+    union { CC_MD5_CTX md5; CC_SHA1_CTX s1; CC_SHA256_CTX s256; CC_SHA512_CTX s512; } u;
 #endif
 } dgst;
 static dgst *dg_of(jobj *o)
@@ -9715,8 +9715,6 @@ static int dg_init(dgst *d, const char *algo)
     if (!strcasecmp(algo, "SHA-1") || !strcasecmp(algo, "SHA1") || !strcasecmp(algo, "SHA")) { d->which = 2; CC_SHA1_Init(&d->u.s1); return 1; }
     if (!strcasecmp(algo, "SHA-256") || !strcasecmp(algo, "SHA256")) { d->which = 3; CC_SHA256_Init(&d->u.s256); return 1; }
     if (!strcasecmp(algo, "SHA-512") || !strcasecmp(algo, "SHA512")) { d->which = 4; CC_SHA512_Init(&d->u.s512); return 1; }
-    if (!strcasecmp(algo, "SHA-224") || !strcasecmp(algo, "SHA224")) { d->which = 5; CC_SHA224_Init(&d->u.s224); return 1; }
-    if (!strcasecmp(algo, "SHA-384") || !strcasecmp(algo, "SHA384")) { d->which = 6; CC_SHA384_Init(&d->u.s384); return 1; }
 #endif
     /* unknown: buffer and return a deterministic pseudo-hash so code proceeds */
     d->which = 0;
@@ -9730,8 +9728,6 @@ static void dg_upd(dgst *d, const void *p, size_t n)
     case 2: CC_SHA1_Update(&d->u.s1, p, (CC_LONG)n); return;
     case 3: CC_SHA256_Update(&d->u.s256, p, (CC_LONG)n); return;
     case 4: CC_SHA512_Update(&d->u.s512, p, (CC_LONG)n); return;
-    case 5: CC_SHA224_Update(&d->u.s224, p, (CC_LONG)n); return;
-    case 6: CC_SHA384_Update(&d->u.s384, p, (CC_LONG)n); return;
     }
 #endif
     sb_add_n(&d->acc, p, n);
@@ -9744,8 +9740,6 @@ static int dg_fin(dgst *d, uint8_t *out)
     case 2: CC_SHA1_Final(out, &d->u.s1); return CC_SHA1_DIGEST_LENGTH;
     case 3: CC_SHA256_Final(out, &d->u.s256); return CC_SHA256_DIGEST_LENGTH;
     case 4: CC_SHA512_Final(out, &d->u.s512); return CC_SHA512_DIGEST_LENGTH;
-    case 5: CC_SHA224_Final(out, &d->u.s224); return CC_SHA224_DIGEST_LENGTH;
-    case 6: CC_SHA384_Final(out, &d->u.s384); return CC_SHA384_DIGEST_LENGTH;
     }
 #endif
     /* FNV-1a expanded into 32 bytes — deterministic, not cryptographic */
@@ -9819,8 +9813,7 @@ static void MD_getDigestLength(tl_jcall *c)
     int n = 32;
 #ifdef HUSK_CC
     n = d->which == 1 ? CC_MD5_DIGEST_LENGTH : d->which == 2 ? CC_SHA1_DIGEST_LENGTH :
-        d->which == 3 ? CC_SHA256_DIGEST_LENGTH : d->which == 5 ? CC_SHA224_DIGEST_LENGTH :
-        d->which == 6 ? CC_SHA384_DIGEST_LENGTH : CC_SHA512_DIGEST_LENGTH;
+        d->which == 3 ? CC_SHA256_DIGEST_LENGTH : CC_SHA512_DIGEST_LENGTH;
 #endif
     c->ret = vi(n);
 }
