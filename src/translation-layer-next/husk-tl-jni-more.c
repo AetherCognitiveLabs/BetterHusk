@@ -11294,6 +11294,900 @@ static void CV_init_copy(tl_jcall *c)
     (void)d;
 }
 
+/* ============================================================== java.net ---
+ * URL and HttpURLConnection over tl_http_perform (the host's NSURLSession).
+ * SDKs that bypass UnityWebRequest -- custom analytics, REST wrappers,
+ * crash reporters -- go through openConnection(); an object whose getters
+ * all answered 0/null used to turn every request into a silent failure.
+ */
+typedef struct {
+    char scheme[16], userinfo[160], host[256], port[8], path[1024], query[2048], ref[512], file[3072];
+} parsed_url;
+
+static bool url_parse(const char *u, parsed_url *r)
+{
+    memset(r, 0, sizeof(*r));
+    if (!u || !*u) return false;
+    const char *p = u, *e = strchr(u, '#');
+    if (e) { snprintf(r->ref, sizeof(r->ref), "%s", e + 1); }
+    const char *hend = e ? e : u + strlen(u);
+    const char *colon = memchr(p, ':', (size_t)(hend - p));
+    if (colon) { snprintf(r->scheme, sizeof(r->scheme), "%.*s", (int)(colon - p), p); p = colon + 1; }
+    if ((size_t)(hend - p) >= 2 && p[0] == '/' && p[1] == '/') {
+        p += 2;
+        const char *slash = memchr(p, '/', (size_t)(hend - p));
+        const char *auth_end = slash ? slash : hend;
+        const char *at = memchr(p, '@', (size_t)(auth_end - p));
+        if (at) { snprintf(r->userinfo, sizeof(r->userinfo), "%.*s", (int)(at - p), p); p = at + 1; }
+        const char *pcolon = memchr(p, ':', (size_t)(auth_end - p));
+        snprintf(r->host, sizeof(r->host), "%.*s", (int)((pcolon ? pcolon : auth_end) - p), p);
+        if (pcolon) snprintf(r->port, sizeof(r->port), "%.*s", (int)(auth_end - pcolon - 1), pcolon + 1);
+        p = auth_end;
+    }
+    const char *q = memchr(p, '?', (size_t)(hend - p));
+    snprintf(r->path, sizeof(r->path), "%.*s", (int)((q ? q : hend) - p), p);
+    if (q) snprintf(r->query, sizeof(r->query), "%.*s", (int)(hend - q - 1), q + 1);
+    snprintf(r->file, sizeof(r->file), "%s%s%s", r->path, q ? "?" : "", q ? r->query : "");
+    return r->scheme[0] || r->host[0] || r->path[0];
+}
+
+typedef struct {
+    char *url, *method;
+    jvec req_names, req_vals;
+    bool do_input, do_output, follow_redirects, connected;
+    int connect_ms, read_ms, fixed_len;
+    int status, err;
+    char message[256];
+    jvec resp_names, resp_vals;
+    uint8_t *body; size_t body_len;
+    jobj *out_stream;
+} hconn;
+
+static hconn *hc_of(jobj *o)
+{
+    if (!o->native) {
+        hconn *h = calloc(1, sizeof(*h));
+        h->do_input = true; h->follow_redirects = true;
+        h->method = strdup("GET");
+        o->native = h;
+    }
+    return o->native;
+}
+static jobj *hc_strv(jvec *v, int i) { return (i >= 0 && i < v->n) ? v->v[i] : NULL; }
+
+static bool hc_exec(jobj *o)
+{
+    hconn *h = hc_of(o);
+    if (h->connected) return h->status > 0 || h->err == 0;
+    h->connected = true;
+    if (!h->url || !*h->url) { h->err = TL_HTTP_MALFORMED_URL; snprintf(h->message, sizeof(h->message), "no URL"); return false; }
+
+    const char *names[64], *vals[64];
+    int n = h->req_names.n < 64 ? h->req_names.n : 64;
+    for (int i = 0; i < n; i++) { names[i] = S(h->req_names.v[i]); vals[i] = S(h->req_vals.v[i]); }
+
+    const uint8_t *body = NULL; size_t blen = 0;
+    jobj *barr = NULL;
+    if (h->out_stream) {
+        barr = tl_jni_call(h->out_stream, "toByteArray", "()[B", NULL).l;
+        if (barr && barr->kind == TL_K_PRIM_ARRAY) { body = (const uint8_t *)barr->arr.data; blen = barr->arr.len; }
+    }
+    tl_http_request req = { h->url, h->method, n, names, vals, body, blen,
+        h->read_ms > 0 ? h->read_ms : h->connect_ms, h->follow_redirects };
+    tl_http_response resp;
+    memset(&resp, 0, sizeof(resp));
+    if (!tl_http_perform(&req, &resp)) { h->err = TL_HTTP_READ; snprintf(h->message, sizeof(h->message), "transport failure"); return false; }
+    h->err = resp.error;
+    snprintf(h->message, sizeof(h->message), "%s", resp.message);
+    h->status = resp.status;
+    for (int i = 0; i < resp.nheaders; i++) { vec_push(&h->resp_names, STR(resp.header_names[i])); vec_push(&h->resp_vals, STR(resp.header_values[i])); }
+    h->body = resp.body; h->body_len = resp.body_len; resp.body = NULL;   /* keep; freed with conn */
+    tl_http_response_free(&resp);
+    (void)barr;
+    return h->err == TL_HTTP_OK;
+}
+
+static jobj *hc_bais(hconn *h)
+{
+    jobj *s = make("java/io/ByteArrayInputStream");
+    jobj *a = tl_jni_new_prim_array('B', (uint32_t)h->body_len);
+    memcpy(a->arr.data, h->body, h->body_len);
+    jvalue arg = { .j = 0, .l = a };
+    tl_jni_call(s, "<init>", "([B)V", &arg);
+    return s;
+}
+static jvalue hc_find_header(hconn *h, const char *name)        /* last match wins, like the JDK */
+{
+    for (int i = h->resp_names.n - 1; i >= 0; i--)
+        if (strcasecmp(S(h->resp_names.v[i]), name) == 0) return (jvalue){ .j = 0, .l = tl_jni_ref(h->resp_vals.v[i]) };
+    return (jvalue){ .j = 0, .l = NULL };
+}
+
+static void URL_init(tl_jcall *c)   { set_str(c->self, "spec", S(c->args[0].l)); }
+static void URL_init2(tl_jcall *c)  /* URL(URL context, String spec) */
+{
+    const char *spec = S(c->args[1].l);
+    jobj *ctx = c->args[0].l;
+    jobj *base = ctx ? tl_jni_get_field(ctx, "spec", "Ljava/lang/String;").l : NULL;
+    /* relative spec + absolute base: protocol://host[/dir] + spec */
+    if (base && spec[0] && !strstr(spec, "://") && spec[0] != '/') {
+        parsed_url b; url_parse(S(base), &b);
+        char abs[4096];
+        const char *dir = strrchr(b.path, '/');
+        snprintf(abs, sizeof(abs), "%s://%s%s%s%.*s/%s",
+            b.scheme[0] ? b.scheme : "http", b.host,
+            b.port[0] ? ":" : "", b.port,
+            dir ? (int)(dir + 1 - b.path) : 0, b.path, spec);
+        set_str(c->self, "spec", abs);
+    } else if (base && spec[0] == '/' && !strstr(spec, "://")) {
+        parsed_url b; url_parse(S(base), &b);
+        char abs[4096];
+        snprintf(abs, sizeof(abs), "%s://%s%s%s%s",
+            b.scheme[0] ? b.scheme : "http", b.host,
+            b.port[0] ? ":" : "", b.port, spec);
+        set_str(c->self, "spec", abs);
+    } else {
+        set_str(c->self, "spec", spec);
+    }
+}
+static void URL_init4(tl_jcall *c)  /* URL(protocol, host, port, file) */
+{
+    char abs[4096];
+    if (c->args[2].i > 0)
+        snprintf(abs, sizeof(abs), "%s://%s:%d%s", S(c->args[0].l), S(c->args[1].l), c->args[2].i, S(c->args[3].l));
+    else
+        snprintf(abs, sizeof(abs), "%s://%s%s", S(c->args[0].l), S(c->args[1].l), S(c->args[3].l));
+    set_str(c->self, "spec", abs);
+}
+static void URL_init3(tl_jcall *c)  /* URL(protocol, host, file) */
+{
+    char abs[4096];
+    snprintf(abs, sizeof(abs), "%s://%s%s", S(c->args[0].l), S(c->args[1].l), S(c->args[2].l));
+    set_str(c->self, "spec", abs);
+}
+static void URL_get(tl_jcall *c, int field)
+{
+    parsed_url u;
+    jobj *spec = tl_jni_get_field(c->self, "spec", "Ljava/lang/String;").l;
+    url_parse(spec ? S(spec) : "", &u);
+    switch (field) {
+    case 0: c->ret = vl(STR(u.scheme)); break;
+    case 1: c->ret = vl(STR(u.host)); break;
+    case 2: c->ret = vi(u.port[0] ? atoi(u.port) : -1); break;
+    case 3: c->ret = vl(STR(u.path)); break;
+    case 4: c->ret = vl(u.query[0] ? STR(u.query) : NULL); break;
+    case 5: c->ret = vl(u.ref[0] ? STR(u.ref) : NULL); break;
+    case 6: c->ret = vl(STR(u.file)); break;
+    case 7: c->ret = vl(u.userinfo[0] ? STR(u.userinfo) : NULL); break;
+    }
+}
+static void URL_getProtocol(tl_jcall *c) { URL_get(c, 0); }
+static void URL_getHost(tl_jcall *c)     { URL_get(c, 1); }
+static void URL_getPort(tl_jcall *c)     { URL_get(c, 2); }
+static void URL_getPath(tl_jcall *c)     { URL_get(c, 3); }
+static void URL_getQuery(tl_jcall *c)    { URL_get(c, 4); }
+static void URL_getRef(tl_jcall *c)      { URL_get(c, 5); }
+static void URL_getFile(tl_jcall *c)     { URL_get(c, 6); }
+static void URL_getUserInfo(tl_jcall *c) { URL_get(c, 7); }
+static void URL_getAuthority(tl_jcall *c)
+{
+    parsed_url u;
+    jobj *spec = tl_jni_get_field(c->self, "spec", "Ljava/lang/String;").l;
+    url_parse(spec ? S(spec) : "", &u);
+    char b[520]; snprintf(b, sizeof(b), "%s%s%s%s%s", u.userinfo, u.userinfo[0] ? "@" : "", u.host, u.port[0] ? ":" : "", u.port);
+    c->ret = vl(u.host[0] ? STR(b) : NULL);
+}
+static void URL_toString(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "spec", "Ljava/lang/String;"); }
+static void URL_openConnection(tl_jcall *c)
+{
+    jobj *s = tl_jni_get_field(c->self, "spec", "Ljava/lang/String;").l;
+    jobj *conn = make("java/net/HttpURLConnection");
+    hconn *h = hc_of(conn);
+    free(h->url); h->url = strdup(s ? S(s) : "");
+    tl_jni_set_field(conn, "url", "Ljava/net/URL;", vl(tl_jni_ref(c->self)));
+    c->ret = vl(conn);
+}
+static void URL_openStream(tl_jcall *c)
+{
+    URL_openConnection(c);
+    jobj *conn = c->ret.l;
+    if (!conn || !hc_exec(conn)) { tl_jni_throw("java/io/IOException", "openStream failed"); c->ret = vl(NULL); return; }
+    hconn *h = hc_of(conn);
+    c->ret = vl(hc_bais(h));
+}
+
+static void HC_init(tl_jcall *c)
+{
+    hconn *h = hc_of(c->self);
+    jobj *url = c->args[0].l;
+    jobj *spec = url ? tl_jni_get_field(url, "spec", "Ljava/lang/String;").l : NULL;
+    /* String-typed args reach us too (loose sig): then the arg IS the spec */
+    if (!spec && url && url->kind == TL_K_STRING) spec = url;
+    free(h->url); h->url = strdup(spec ? S(spec) : "");
+    tl_jni_set_field(c->self, "url", "Ljava/net/URL;", c->args[0].l && url->kind == TL_K_OBJECT ? c->args[0] : (jvalue){0});
+}
+static void HC_setRequestMethod(tl_jcall *c) { hconn *h = hc_of(c->self); free(h->method); h->method = strdup(S(c->args[0].l)); }
+static void HC_setRequestProperty(tl_jcall *c)
+{
+    hconn *h = hc_of(c->self);
+    const char *k = S(c->args[0].l);
+    for (int i = 0; i < h->req_names.n; i++)
+        if (strcasecmp(S(h->req_names.v[i]), k) == 0) { h->req_vals.v[i] = STR(S(c->args[1].l)); return; }
+    vec_push(&h->req_names, STR(k)); vec_push(&h->req_vals, STR(S(c->args[1].l)));
+}
+static void HC_addRequestProperty(tl_jcall *c) { hconn *h = hc_of(c->self); vec_push(&h->req_names, STR(S(c->args[0].l))); vec_push(&h->req_vals, STR(S(c->args[1].l))); }
+static void HC_getRequestProperty(tl_jcall *c)
+{
+    hconn *h = hc_of(c->self);
+    for (int i = h->req_names.n - 1; i >= 0; i--)
+        if (strcasecmp(S(h->req_names.v[i]), S(c->args[0].l)) == 0) { c->ret = vl(tl_jni_ref(h->req_vals.v[i])); return; }
+    c->ret = vl(NULL);
+}
+static void HC_getRequestProperties(tl_jcall *c)
+{
+    hconn *h = hc_of(c->self);
+    jobj *m = make("java/util/HashMap");
+    for (int i = 0; i < h->req_names.n; i++) {
+        jvalue get = tl_jni_call(m, "get", "(Ljava/lang/Object;)Ljava/lang/Object;", &(jvalue){ .j = 0, .l = h->req_names.v[i] });
+        jobj *lst = get.l;
+        if (!lst) { lst = make("java/util/ArrayList"); jvalue pr[2] = { { .j = 0, .l = h->req_names.v[i] }, { .j = 0, .l = lst } }; tl_jni_call(m, "put", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", pr); }
+        jvalue a[1] = { { .j = 0, .l = h->req_vals.v[i] } };
+        tl_jni_call(lst, "add", "(Ljava/lang/Object;)Z", a);
+    }
+    c->ret = vl(m);
+}
+static void HC_setDoOutput(tl_jcall *c) { hc_of(c->self)->do_output = c->args[0].z; }
+static void HC_getDoOutput(tl_jcall *c) { c->ret = vz(hc_of(c->self)->do_output); }
+static void HC_setDoInput(tl_jcall *c)  { hc_of(c->self)->do_input = c->args[0].z; }
+static void HC_getDoInput(tl_jcall *c)  { c->ret = vz(hc_of(c->self)->do_input); }
+static void HC_setConnectTimeout(tl_jcall *c) { hc_of(c->self)->connect_ms = c->args[0].i; }
+static void HC_setReadTimeout(tl_jcall *c)    { hc_of(c->self)->read_ms = c->args[0].i; }
+static void HC_getConnectTimeout(tl_jcall *c) { c->ret = vi(hc_of(c->self)->connect_ms); }
+static void HC_getReadTimeout(tl_jcall *c)    { c->ret = vi(hc_of(c->self)->read_ms); }
+static void HC_setFollowRedirects(tl_jcall *c) { hc_of(c->self)->follow_redirects = c->args[0].z; }
+static void HC_getFollowRedirects(tl_jcall *c) { c->ret = vz(hc_of(c->self)->follow_redirects); }
+static void HC_setInstanceFollowRedirects(tl_jcall *c) { HC_setFollowRedirects(c); }
+static void HC_getInstanceFollowRedirects(tl_jcall *c) { HC_getFollowRedirects(c); }
+static void HC_setFixedLength(tl_jcall *c) { hc_of(c->self)->fixed_len = c->args[0].i; }
+static void HC_setField(tl_jcall *c)  { (void)c; }   /* useCaches / allowUserInteraction / chunked / ifModifiedSince */
+static void HC_connect(tl_jcall *c)
+{
+    if (!hc_exec(c->self)) { hconn *h = hc_of(c->self); tl_jni_throw("java/io/IOException", h->message); }
+}
+static void HC_getResponseCode(tl_jcall *c)
+{
+    hconn *h = hc_of(c->self);
+    if (!hc_exec(c->self)) { tl_jni_throw("java/io/IOException", h->message); c->ret = vi(-1); return; }
+    c->ret = vi(h->status);
+}
+static void HC_getResponseMessage(tl_jcall *c)
+{
+    hconn *h = hc_of(c->self);
+    hc_exec(c->self);
+    /* third token of the status line: "HTTP/1.1 200 OK" -> "OK" */
+    char msg[256] = "";
+    const char *line = h->resp_vals.n ? S(h->resp_vals.v[0]) : NULL;
+    if (line) {
+        const char *s = line; while (*s && *s != ' ') s++; while (*s == ' ') s++;
+        while (*s && *s != ' ') s++; while (*s == ' ') s++;
+        snprintf(msg, sizeof(msg), "%s", s);
+    }
+    c->ret = vl(STR(msg));
+}
+static void HC_getInputStream(tl_jcall *c)
+{
+    hconn *h = hc_of(c->self);
+    if (!hc_exec(c->self)) { tl_jni_throw("java/io/IOException", h->message); c->ret = vl(NULL); return; }
+    c->ret = vl(hc_bais(h));
+}
+static void HC_getErrorStream(tl_jcall *c)
+{
+    hconn *h = hc_of(c->self);
+    hc_exec(c->self);
+    c->ret = vl(h->status >= 400 && h->body_len ? hc_bais(h) : NULL);
+}
+static void HC_getOutputStream(tl_jcall *c)
+{
+    hconn *h = hc_of(c->self);
+    if (h->connected) { tl_jni_throw("java/net/ProtocolException", "already connected"); return; }
+    if (!h->out_stream) h->out_stream = make("java/io/ByteArrayOutputStream");
+    h->do_output = true;
+    c->ret = vl(tl_jni_ref(h->out_stream));
+}
+static void HC_disconnect(tl_jcall *c) { hc_of(c->self)->connected = false; }
+static void HC_usingProxy(tl_jcall *c)  { c->ret = vz(0); }
+static void HC_getURL(tl_jcall *c)      { c->ret = tl_jni_get_field(c->self, "url", "Ljava/net/URL;"); }
+static void HC_getHeaderFieldN(tl_jcall *c)
+{
+    /* index 0 is the status line ("HTTP/1.1 200 OK"): tl_http stores it as the
+     * first resp pair, so a straight index works */
+    hconn *h = hc_of(c->self); hc_exec(c->self);
+    jobj *v = hc_strv(&h->resp_vals, c->args[0].i);
+    c->ret = vl(v ? tl_jni_ref(v) : NULL);
+}
+static void HC_getHeaderFieldKeyN(tl_jcall *c)
+{
+    /* JDK: key 0 is null (the status line has no key) */
+    hconn *h = hc_of(c->self); hc_exec(c->self);
+    if (c->args[0].i == 0) { c->ret = vl(NULL); return; }
+    jobj *v = hc_strv(&h->resp_names, c->args[0].i);
+    c->ret = vl(v ? tl_jni_ref(v) : NULL);
+}
+static void HC_getHeaderFieldName(tl_jcall *c) { hconn *h = hc_of(c->self); hc_exec(c->self); c->ret = hc_find_header(h, S(c->args[0].l)); }
+static void HC_getHeaderFieldInt(tl_jcall *c)
+{
+    hconn *h = hc_of(c->self); hc_exec(c->self);
+    jvalue v = hc_find_header(h, S(c->args[0].l));
+    c->ret = vi(v.l ? atoi(S(v.l)) : c->args[1].i);
+}
+static void HC_getHeaderFieldLong(tl_jcall *c) { HC_getHeaderFieldInt(c); c->ret.j = (int64_t)c->ret.i; }
+static void HC_getHeaderFields(tl_jcall *c)
+{
+    hconn *h = hc_of(c->self); hc_exec(c->self);
+    jobj *m = make("java/util/HashMap");
+    for (int i = 0; i < h->resp_names.n; i++) {
+        jvalue get = tl_jni_call(m, "get", "(Ljava/lang/Object;)Ljava/lang/Object;", &(jvalue){ .j = 0, .l = h->resp_names.v[i] });
+        jobj *lst = get.l;
+        if (!lst) { lst = make("java/util/ArrayList"); jvalue pr[2] = { { .j = 0, .l = h->resp_names.v[i] }, { .j = 0, .l = lst } }; tl_jni_call(m, "put", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", pr); }
+        jvalue a[1] = { { .j = 0, .l = h->resp_vals.v[i] } };
+        tl_jni_call(lst, "add", "(Ljava/lang/Object;)Z", a);
+    }
+    c->ret = vl(m);
+}
+static void HC_getContentLength(tl_jcall *c)
+{
+    hconn *h = hc_of(c->self); hc_exec(c->self);
+    jvalue v = hc_find_header(h, "Content-Length");
+    c->ret = vi(v.l ? atoi(S(v.l)) : (h->body_len ? (int)h->body_len : -1));
+}
+static void HC_getContentLengthLong(tl_jcall *c) { HC_getContentLength(c); c->ret.j = c->ret.i; }
+static void HC_getContentType(tl_jcall *c)     { hconn *h = hc_of(c->self); hc_exec(c->self); c->ret = hc_find_header(h, "Content-Type"); }
+static void HC_getContentEncoding(tl_jcall *c) { hconn *h = hc_of(c->self); hc_exec(c->self); c->ret = hc_find_header(h, "Content-Encoding"); }
+static void HC_getContent(tl_jcall *c)         { HC_getInputStream(c); }
+/* RFC 1123 "EEE, dd MMM yyyy HH:mm:ss GMT" -> epoch millis (0 on parse failure) */
+static int64_t http_date_ms(const char *s)
+{
+    static const char *mon[] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+    int d, y, hh, mm, ss; char mn[8] = { 0 };
+    if (!s || sscanf(s, "%*[^,], %d %7s %d %d:%d:%d", &d, mn, &y, &hh, &mm, &ss) != 6) {
+        /* RFC 850 / asctime fallback: "EEEE, dd-MMM-yy HH:mm:ss GMT" */
+        if (!s || sscanf(s, "%*[^,], %d-%3[^-]-%d %d:%d:%d", &d, mn, &y, &hh, &mm, &ss) != 6) return 0;
+        if (y < 100) y += y < 70 ? 2000 : 1900;
+    }
+    int mo = -1;
+    for (int i = 0; i < 12; i++) if (!strncasecmp(mn, mon[i], 3)) { mo = i; break; }
+    if (mo < 0) return 0;
+    struct tm t = { .tm_sec = ss, .tm_min = mm, .tm_hour = hh, .tm_mday = d, .tm_mon = mo, .tm_year = y - 1900 };
+    return (int64_t)timegm(&t) * 1000;
+}
+static void HC_getHeaderFieldDate(tl_jcall *c)
+{
+    hconn *h = hc_of(c->self); hc_exec(c->self);
+    jvalue v = hc_find_header(h, S(c->args[0].l));
+    int64_t ms = v.l ? http_date_ms(S(v.l)) : 0;
+    c->ret = vj(ms ? ms : c->args[1].j);
+}
+static void HC_getDate(tl_jcall *c)         { hconn *h = hc_of(c->self); hc_exec(c->self); jvalue v = hc_find_header(h, "Date"); c->ret = vj(v.l ? http_date_ms(S(v.l)) : 0); }
+static void HC_getLastModified(tl_jcall *c) { hconn *h = hc_of(c->self); hc_exec(c->self); jvalue v = hc_find_header(h, "Last-Modified"); c->ret = vj(v.l ? http_date_ms(S(v.l)) : 0); }
+static void HC_getExpiration(tl_jcall *c)   { hconn *h = hc_of(c->self); hc_exec(c->self); jvalue v = hc_find_header(h, "Expires"); c->ret = vj(v.l ? http_date_ms(S(v.l)) : 0); }
+static void URLConn_guessContentType(tl_jcall *c)
+{
+    const char *f = S(c->args[0].l), *e = strrchr(f, '.');
+    const char *t = NULL;
+    if (e) {
+        struct { const char *ext, *mime; } m[] = {
+            { ".png", "image/png" }, { ".jpg", "image/jpeg" }, { ".jpeg", "image/jpeg" }, { ".gif", "image/gif" },
+            { ".webp", "image/webp" }, { ".json", "application/json" }, { ".xml", "text/xml" }, { ".html", "text/html" },
+            { ".txt", "text/plain" }, { ".mp3", "audio/mpeg" }, { ".mp4", "video/mp4" }, { ".zip", "application/zip" },
+            { ".wasm", "application/wasm" }, { ".bin", "application/octet-stream" },
+        };
+        for (size_t i = 0; i < sizeof(m) / sizeof(m[0]); i++) if (!strcasecmp(e, m[i].ext)) { t = m[i].mime; break; }
+    }
+    c->ret = vl(t ? STR(t) : NULL);
+}
+static void HC_noop(tl_jcall *c)               { (void)c; }
+
+/* ------------------------------------------------ java.net sockets (real BSD) */
+/* Blocking TCP/UDP through the host's sockets: OkHttp's raw layer, MQTT
+ * clients, game netcode (Minecraft/UE), analytics beacons. */
+#include <sys/socket.h>
+#include <sys/ioctl.h>
+#include <sys/time.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <unistd.h>
+
+typedef struct {
+    int fd;
+    char host[256];
+    int port, local_port, timeout_ms;
+    bool connected, closed, udp;
+    jobj *in, *out;
+} jsock;
+
+static jsock *sock_of(jobj *o) { if (!o->native) o->native = calloc(1, sizeof(jsock)); jsock *s = o->native; if (s->fd == 0) s->fd = -1; return s; }
+
+static int sock_dial(jsock *s, char *err, size_t errn)
+{
+    struct addrinfo hints = { .ai_family = AF_UNSPEC, .ai_socktype = s->udp ? SOCK_DGRAM : SOCK_STREAM }, *res = NULL;
+    char port[8]; snprintf(port, sizeof(port), "%d", s->port);
+    if (getaddrinfo(s->host, port, &hints, &res) || !res) { snprintf(err, errn, "unknown host: %s", s->host); return -1; }
+    int fd = -1;
+    for (struct addrinfo *a = res; a && fd < 0; a = a->ai_next) {
+        fd = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
+        if (fd < 0) continue;
+        if (!s->udp && connect(fd, a->ai_addr, a->ai_addrlen) < 0) { close(fd); fd = -1; continue; }
+        if (s->udp && connect(fd, a->ai_addr, a->ai_addrlen) < 0) { close(fd); fd = -1; continue; }  /* sets default peer */
+        struct sockaddr_storage ss; socklen_t sl = sizeof(ss);
+        if (!getsockname(fd, (struct sockaddr *)&ss, &sl))
+            s->local_port = ss.ss_family == AF_INET ? ntohs(((struct sockaddr_in *)&ss)->sin_port) : ntohs(((struct sockaddr_in6 *)&ss)->sin6_port);
+    }
+    freeaddrinfo(res);
+    if (fd < 0) snprintf(err, errn, "connect failed: %s", strerror(errno));
+    return fd;
+}
+static void sock_apply_timeout(jsock *s)
+{
+    if (s->timeout_ms > 0) {
+        struct timeval tv = { .tv_sec = s->timeout_ms / 1000, .tv_usec = (s->timeout_ms % 1000) * 1000 };
+        setsockopt(s->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    }
+}
+static void Sock_init(tl_jcall *c) { jsock *s = sock_of(c->self); s->fd = -1; }
+static void Sock_init_hp(tl_jcall *c)  /* Socket(String|InetAddress host, int port) */
+{
+    jsock *s = sock_of(c->self); s->fd = -1;
+    jobj *h = c->args[0].l;
+    if (h && h->kind == TL_K_OBJECT) h = get_str(h, "hostName");   /* InetAddress */
+    snprintf(s->host, sizeof(s->host), "%s", h ? S(h) : ""); s->port = c->args[1].i;
+    char err[128] = "";
+    s->fd = sock_dial(s, err, sizeof(err));
+    if (s->fd < 0) { tl_jni_throw("java/net/ConnectException", err); return; }
+    s->connected = true;
+}
+static void Sock_init_addr(tl_jcall *c) /* Socket(InetSocketAddress) */
+{
+    Sock_init(c);
+    jobj *ep = c->args[0].l;
+    if (!ep) return;
+    jsock *s = sock_of(c->self);
+    jobj *h = tl_jni_get_field(ep, "host", "Ljava/lang/String;").l;
+    snprintf(s->host, sizeof(s->host), "%s", h ? S(h) : ""); s->port = get_int(ep, "port");
+    char err[128] = "";
+    s->fd = sock_dial(s, err, sizeof(err));
+    if (s->fd < 0) { tl_jni_throw("java/net/ConnectException", err); return; }
+    s->connected = true;
+}
+static void sock_dial_or_throw(tl_jcall *c)
+{
+    jsock *s = sock_of(c->self);
+    char err[128] = "";
+    s->fd = sock_dial(s, err, sizeof(err));
+    if (s->fd < 0) { tl_jni_throw("java/net/ConnectException", err); return; }
+    sock_apply_timeout(s); s->connected = true;
+}
+static void Sock_connect(tl_jcall *c)  /* connect(SocketAddress) */
+{
+    jsock *s = sock_of(c->self);
+    if (s->connected) { tl_jni_throw("java/net/SocketException", "already connected"); return; }
+    jobj *ep = c->args[0].l;
+    if (ep) {
+        jobj *h = tl_jni_get_field(ep, "host", "Ljava/lang/String;").l;
+        snprintf(s->host, sizeof(s->host), "%s", h ? S(h) : ""); s->port = get_int(ep, "port");
+    }
+    sock_dial_or_throw(c);
+}
+static void Sock_connect_to(tl_jcall *c)  /* connect(SocketAddress, int timeoutMs) */
+{
+    sock_of(c->self)->timeout_ms = c->args[1].i;
+    Sock_connect(c);
+}
+static void Sock_close(tl_jcall *c)
+{
+    jsock *s = sock_of(c->self);
+    if (s->fd >= 0) close(s->fd);
+    s->fd = -1; s->closed = true; s->connected = false;
+}
+static void Sock_isConnected(tl_jcall *c) { c->ret = vz(sock_of(c->self)->connected); }
+static void Sock_isClosed(tl_jcall *c)    { c->ret = vz(sock_of(c->self)->closed); }
+static void Sock_isBound(tl_jcall *c)     { c->ret = vz(sock_of(c->self)->fd >= 0); }
+static void Sock_getInetAddress(tl_jcall *c)
+{
+    jsock *s = sock_of(c->self);
+    jobj *a = make("java/net/InetAddress");
+    set_str(a, "hostName", s->host); set_str(a, "hostAddress", s->host);
+    c->ret = vl(a);
+}
+static void Sock_getPort(tl_jcall *c)      { c->ret = vi(sock_of(c->self)->port); }
+static void Sock_getLocalPort(tl_jcall *c) { c->ret = vi(sock_of(c->self)->local_port); }
+static void Sock_getRemoteSocketAddress(tl_jcall *c)
+{
+    jsock *s = sock_of(c->self);
+    jobj *ep = make("java/net/InetSocketAddress");
+    set_str(ep, "host", s->host); set_int(ep, "port", s->port);
+    c->ret = vl(ep);
+}
+static void Sock_setSoTimeout(tl_jcall *c) { jsock *s = sock_of(c->self); s->timeout_ms = c->args[0].i; if (s->fd >= 0) sock_apply_timeout(s); }
+static void Sock_getSoTimeout(tl_jcall *c) { c->ret = vi(sock_of(c->self)->timeout_ms); }
+static void Sock_setTcpNoDelay(tl_jcall *c)
+{
+    jsock *s = sock_of(c->self); int v = c->args[0].z ? 1 : 0;
+    if (s->fd >= 0) setsockopt(s->fd, IPPROTO_TCP, TCP_NODELAY, &v, sizeof(v));
+}
+static void Sock_setKeepAlive(tl_jcall *c)
+{
+    jsock *s = sock_of(c->self); int v = c->args[0].z ? 1 : 0;
+    if (s->fd >= 0) setsockopt(s->fd, SOL_SOCKET, SO_KEEPALIVE, &v, sizeof(v));
+}
+static void Sock_setReuseAddress(tl_jcall *c)
+{
+    jsock *s = sock_of(c->self); int v = c->args[0].z ? 1 : 0;
+    if (s->fd >= 0) setsockopt(s->fd, SOL_SOCKET, SO_REUSEADDR, &v, sizeof(v));
+}
+static void Sock_setSendBufferSize(tl_jcall *c)
+{
+    jsock *s = sock_of(c->self); int v = c->args[0].i;
+    if (s->fd >= 0) setsockopt(s->fd, SOL_SOCKET, SO_SNDBUF, &v, sizeof(v));
+}
+static void Sock_setReceiveBufferSize(tl_jcall *c)
+{
+    jsock *s = sock_of(c->self); int v = c->args[0].i;
+    if (s->fd >= 0) setsockopt(s->fd, SOL_SOCKET, SO_RCVBUF, &v, sizeof(v));
+}
+static void Sock_shutdownInput(tl_jcall *c)  { jsock *s = sock_of(c->self); if (s->fd >= 0) shutdown(s->fd, SHUT_RD); }
+static void Sock_shutdownOutput(tl_jcall *c) { jsock *s = sock_of(c->self); if (s->fd >= 0) shutdown(s->fd, SHUT_WR); }
+static void Sock_toString(tl_jcall *c)
+{
+    jsock *s = sock_of(c->self); char b[400];
+    snprintf(b, sizeof(b), "Socket[addr=%s,port=%d,localport=%d]", s->host, s->port, s->local_port);
+    c->ret = vl(STR(b));
+}
+
+/* Socket streams: InputStream/OutputStream subclasses backed by the fd */
+typedef struct { int fd; jobj *owner; int timeout_ms; } fstream;
+static fstream *fs_of(jobj *o) { if (!o->native) o->native = calloc(1, sizeof(fstream)); return o->native; }
+
+static void Sock_getInputStream(tl_jcall *c)
+{
+    jsock *s = sock_of(c->self);
+    if (!s->connected || s->fd < 0) { tl_jni_throw("java/net/SocketException", "not connected"); return; }
+    if (!s->in) {
+        s->in = make("java/net/Socket$SocketInputStream");
+        fstream *f = fs_of(s->in); f->fd = s->fd; f->owner = tl_jni_ref(c->self); f->timeout_ms = s->timeout_ms;
+    }
+    c->ret = vl(tl_jni_ref(s->in));
+}
+static void Sock_getOutputStream(tl_jcall *c)
+{
+    jsock *s = sock_of(c->self);
+    if (!s->connected || s->fd < 0) { tl_jni_throw("java/net/SocketException", "not connected"); return; }
+    if (!s->out) {
+        s->out = make("java/net/Socket$SocketOutputStream");
+        fstream *f = fs_of(s->out); f->fd = s->fd; f->owner = tl_jni_ref(c->self);
+    }
+    c->ret = vl(tl_jni_ref(s->out));
+}
+static void SIS_read(tl_jcall *c)
+{
+    fstream *f = fs_of(c->self);
+    if (f->fd < 0) { tl_jni_throw("java/net/SocketException", "socket closed"); c->ret = vi(-1); return; }
+    uint8_t b; ssize_t n = recv(f->fd, &b, 1, 0);
+    if (n == 0) { c->ret = vi(-1); return; }
+    if (n < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) { tl_jni_throw("java/net/SocketTimeoutException", "read timed out"); c->ret = vi(-1); return; }
+        tl_jni_throw("java/net/SocketException", strerror(errno)); c->ret = vi(-1); return;
+    }
+    c->ret = vi(b);
+}
+static void sis_read(tl_jcall *c, int off, int len)
+{
+    fstream *f = fs_of(c->self);
+    if (f->fd < 0) { tl_jni_throw("java/net/SocketException", "socket closed"); c->ret = vi(-1); return; }
+    jobj *arr = c->args[0].l;
+    if (!arr || arr->kind != TL_K_PRIM_ARRAY || len <= 0) { c->ret = vi(len == 0 ? 0 : -1); return; }
+    ssize_t n = recv(f->fd, (uint8_t *)arr->arr.data + off, (size_t)len, 0);
+    if (n == 0) { c->ret = vi(-1); return; }
+    if (n < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) { tl_jni_throw("java/net/SocketTimeoutException", "read timed out"); c->ret = vi(-1); return; }
+        tl_jni_throw("java/net/SocketException", strerror(errno)); c->ret = vi(-1); return;
+    }
+    c->ret = vi((int)n);
+}
+static void SIS_read_buf(tl_jcall *c)  { sis_read(c, 0, c->args[0].l && c->args[0].l->kind == TL_K_PRIM_ARRAY ? (int)c->args[0].l->arr.len : 0); }
+static void SIS_read_off(tl_jcall *c)  { sis_read(c, c->args[1].i, c->args[2].i); }
+static void SIS_available(tl_jcall *c)
+{
+    fstream *f = fs_of(c->self); int n = 0;
+    if (f->fd >= 0) ioctl(f->fd, FIONREAD, &n);
+    c->ret = vi(n);
+}
+static void SIS_skip(tl_jcall *c)
+{
+    fstream *f = fs_of(c->self); char buf[4096]; int64_t left = c->args[0].j, got = 0;
+    while (left > 0 && f->fd >= 0) {
+        ssize_t n = recv(f->fd, buf, left > (int64_t)sizeof(buf) ? sizeof(buf) : (size_t)left, 0);
+        if (n <= 0) break;
+        got += n; left -= n;
+    }
+    c->ret = vj(got);
+}
+static void SIS_close(tl_jcall *c)   { fstream *f = fs_of(c->self); if (f->fd >= 0) { close(f->fd); f->fd = -1; } }
+static void SOS_write_i(tl_jcall *c)
+{
+    fstream *f = fs_of(c->self);
+    if (f->fd < 0) { tl_jni_throw("java/net/SocketException", "socket closed"); return; }
+    uint8_t b = (uint8_t)c->args[0].i;
+    if (send(f->fd, &b, 1, 0) < 0) tl_jni_throw("java/net/SocketException", strerror(errno));
+}
+static void sos_write(tl_jcall *c, int off, int len)
+{
+    fstream *f = fs_of(c->self);
+    if (f->fd < 0) { tl_jni_throw("java/net/SocketException", "socket closed"); return; }
+    jobj *arr = c->args[0].l;
+    if (!arr || arr->kind != TL_K_PRIM_ARRAY || len <= 0) return;
+    size_t done = 0;
+    while (done < (size_t)len) {
+        ssize_t n = send(f->fd, (const uint8_t *)arr->arr.data + off + done, (size_t)len - done, 0);
+        if (n < 0) { tl_jni_throw("java/net/SocketException", strerror(errno)); return; }
+        done += (size_t)n;
+    }
+}
+static void SOS_write_buf(tl_jcall *c) { sos_write(c, 0, c->args[0].l && c->args[0].l->kind == TL_K_PRIM_ARRAY ? (int)c->args[0].l->arr.len : 0); }
+static void SOS_write_off(tl_jcall *c) { sos_write(c, c->args[1].i, c->args[2].i); }
+static void SOS_flush(tl_jcall *c) { (void)c; }
+static void SOS_close(tl_jcall *c) { SIS_close(c); }
+
+/* InetSocketAddress + SocketAddress */
+static void ISA_init(tl_jcall *c)      /* (String|InetAddress host, int port) */
+{
+    jobj *h = c->args[0].l;
+    if (h && h->kind == TL_K_OBJECT) h = get_str(h, "hostName");   /* InetAddress arg */
+    set_str(c->self, "host", h ? S(h) : ""); set_int(c->self, "port", c->args[1].i);
+}
+static void ISA_init_port(tl_jcall *c) /* (int port) */
+{
+    set_str(c->self, "host", "0.0.0.0"); set_int(c->self, "port", c->args[0].i);
+}
+static void ISA_init0(tl_jcall *c)     { set_str(c->self, "host", "0.0.0.0"); set_int(c->self, "port", 0); }
+static void ISA_getHostString(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "host", "Ljava/lang/String;"); }
+static void ISA_getHostName(tl_jcall *c)   { ISA_getHostString(c); }
+static void ISA_getPort(tl_jcall *c)       { c->ret = vi(get_int(c->self, "port")); }
+static void ISA_isUnresolved(tl_jcall *c)  { c->ret = vz(0); }
+static void ISA_toString(tl_jcall *c)
+{
+    char b[300]; snprintf(b, sizeof(b), "%s:%d", S(get_str(c->self, "host")), get_int(c->self, "port"));
+    c->ret = vl(STR(b));
+}
+static void ISA_createUnresolved(tl_jcall *c)
+{
+    jobj *ep = make("java/net/InetSocketAddress");
+    set_str(ep, "host", S(c->args[0].l)); set_int(ep, "port", c->args[1].i);
+    c->ret = vl(ep);
+}
+
+/* DatagramSocket + DatagramPacket (UDP): game LAN discovery, QUIC fallbacks */
+typedef struct { int fd; int timeout_ms; bool bound, closed; uint16_t lport; } dsock;
+static dsock *ds_of(jobj *o) { if (!o->native) o->native = calloc(1, sizeof(dsock)); dsock *d = o->native; if (d->fd == 0) d->fd = -1; return d; }
+static int ds_open(dsock *d)
+{
+    if (d->fd >= 0) return d->fd;
+    d->fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (d->fd < 0) return -1;
+    struct sockaddr_in sa = { .sin_family = AF_INET, .sin_addr.s_addr = INADDR_ANY, .sin_port = htons(d->lport) };
+    if (bind(d->fd, (struct sockaddr *)&sa, sizeof(sa)) < 0) { close(d->fd); d->fd = -1; return -1; }
+    socklen_t sl = sizeof(sa); getsockname(d->fd, (struct sockaddr *)&sa, &sl); d->lport = ntohs(sa.sin_port);
+    if (d->timeout_ms > 0) {
+        struct timeval tv = { .tv_sec = d->timeout_ms / 1000, .tv_usec = (d->timeout_ms % 1000) * 1000 };
+        setsockopt(d->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    }
+    d->bound = true;
+    return d->fd;
+}
+static void dsock_construct(tl_jcall *c, uint16_t port)
+{
+    dsock *d = ds_of(c->self); d->fd = -1; d->lport = port;
+    if (ds_open(d) < 0) tl_jni_throw("java/net/SocketException", strerror(errno));
+}
+static void DSock_init(tl_jcall *c)      { dsock_construct(c, 0); }
+static void DSock_init_port(tl_jcall *c) { dsock_construct(c, (uint16_t)c->args[0].i); }
+static void DSock_send(tl_jcall *c)
+{
+    dsock *d = ds_of(c->self);
+    if (ds_open(d) < 0) { tl_jni_throw("java/net/SocketException", strerror(errno)); return; }
+    jobj *p = c->args[0].l; if (!p) return;
+    jobj *data = tl_jni_get_field(p, "data", "[B").l;
+    int off = get_int(p, "offset"), len = get_int(p, "length"), port = get_int(p, "port");
+    jobj *addr = tl_jni_get_field(p, "address", "Ljava/net/InetAddress;").l;
+    const char *host = addr ? S(get_str(addr, "hostName")) : "255.255.255.255";
+    struct sockaddr_in sa = { .sin_family = AF_INET, .sin_port = htons((uint16_t)port) };
+    inet_pton(AF_INET, host, &sa.sin_addr);
+    int on = 1; setsockopt(d->fd, SOL_SOCKET, SO_BROADCAST, &on, sizeof(on));
+    if (data && data->kind == TL_K_PRIM_ARRAY)
+        sendto(d->fd, (const uint8_t *)data->arr.data + off, (size_t)len, 0, (struct sockaddr *)&sa, sizeof(sa));
+}
+static void DSock_receive(tl_jcall *c)
+{
+    dsock *d = ds_of(c->self);
+    if (ds_open(d) < 0) { tl_jni_throw("java/net/SocketException", strerror(errno)); return; }
+    jobj *p = c->args[0].l; if (!p) return;
+    jobj *data = tl_jni_get_field(p, "data", "[B").l;
+    int off = get_int(p, "offset"), len = get_int(p, "length");
+    if (len <= 0 && data) len = (int)data->arr.len;
+    if (!data || data->kind != TL_K_PRIM_ARRAY) return;
+    struct sockaddr_in sa; socklen_t sl = sizeof(sa);
+    ssize_t n = recvfrom(d->fd, (uint8_t *)data->arr.data + off, (size_t)len, 0, (struct sockaddr *)&sa, &sl);
+    if (n < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) { tl_jni_throw("java/net/SocketTimeoutException", "receive timed out"); return; }
+        tl_jni_throw("java/net/SocketException", strerror(errno)); return;
+    }
+    set_int(p, "length", (int)n);
+    char ip[64]; inet_ntop(AF_INET, &sa.sin_addr, ip, sizeof(ip));
+    jobj *a = make("java/net/InetAddress"); set_str(a, "hostName", ip); set_str(a, "hostAddress", ip);
+    set_obj(p, "address", "Ljava/net/InetAddress;", a); set_int(p, "port", ntohs(sa.sin_port));
+}
+static void DSock_close(tl_jcall *c)      { dsock *d = ds_of(c->self); if (d->fd >= 0) close(d->fd); d->fd = -1; d->closed = true; }
+static void DSock_isClosed(tl_jcall *c)   { c->ret = vz(ds_of(c->self)->closed); }
+static void DSock_setSoTimeout(tl_jcall *c) { dsock *d = ds_of(c->self); d->timeout_ms = c->args[0].i; if (d->fd >= 0) { struct timeval tv = { .tv_sec = d->timeout_ms / 1000, .tv_usec = (d->timeout_ms % 1000) * 1000 }; setsockopt(d->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)); } }
+static void DSock_setBroadcast(tl_jcall *c) { dsock *d = ds_of(c->self); int on = c->args[0].z; if (d->fd >= 0) setsockopt(d->fd, SOL_SOCKET, SO_BROADCAST, &on, sizeof(on)); }
+static void DSock_getLocalPort(tl_jcall *c) { c->ret = vi(ds_of(c->self)->lport); }
+static void DSock_connect(tl_jcall *c)      { (void)c; }
+
+static void dp_fill(jobj *self, jobj *addr_arg, int port_arg)
+{
+    if (!addr_arg) return;
+    if (addr_arg->kind == TL_K_OBJECT && get_str(addr_arg, "host")) {   /* InetSocketAddress */
+        jobj *ia = make("java/net/InetAddress"); set_str(ia, "hostName", S(get_str(addr_arg, "host")));
+        set_obj(self, "address", "Ljava/net/InetAddress;", ia);
+        set_int(self, "port", get_int(addr_arg, "port"));
+    } else {
+        set_obj(self, "address", "Ljava/net/InetAddress;", addr_arg);
+        set_int(self, "port", port_arg);
+    }
+}
+static void DP_init_2(tl_jcall *c)   /* (byte[], int length) — receive form */
+{
+    set_obj(c->self, "data", "[B", c->args[0].l);
+    set_int(c->self, "offset", 0); set_int(c->self, "length", c->args[1].i);
+}
+static void DP_init_3(tl_jcall *c)   /* (byte[], int off, int len) */
+{
+    set_obj(c->self, "data", "[B", c->args[0].l);
+    set_int(c->self, "offset", c->args[1].i); set_int(c->self, "length", c->args[2].i);
+}
+static void DP_init_3a(tl_jcall *c)  /* (byte[], int len, SocketAddress|InetAddress) */
+{
+    DP_init_2(c); dp_fill(c->self, c->args[2].l, 0);
+}
+static void DP_init_4(tl_jcall *c)   /* (byte[], int len, InetAddress, int port) */
+{
+    DP_init_2(c); dp_fill(c->self, c->args[2].l, c->args[3].i);
+}
+static void DP_init_4s(tl_jcall *c)  /* (byte[], int off, int len, SocketAddress) */
+{
+    DP_init_3(c); dp_fill(c->self, c->args[3].l, 0);
+}
+static void DP_init_5(tl_jcall *c)   /* (byte[], int off, int len, InetAddress, int port) */
+{
+    DP_init_3(c); dp_fill(c->self, c->args[3].l, c->args[4].i);
+}
+static void DP_getData(tl_jcall *c)    { c->ret = tl_jni_get_field(c->self, "data", "[B"); }
+static void DP_getLength(tl_jcall *c)  { c->ret = vi(get_int(c->self, "length")); }
+static void DP_setLength(tl_jcall *c)  { set_int(c->self, "length", c->args[0].i); }
+static void DP_getOffset(tl_jcall *c)  { c->ret = vi(get_int(c->self, "offset")); }
+static void DP_getAddress(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "address", "Ljava/net/InetAddress;"); }
+static void DP_getPort(tl_jcall *c)    { c->ret = vi(get_int(c->self, "port")); }
+static void DP_setAddress(tl_jcall *c) { set_obj(c->self, "address", "Ljava/net/InetAddress;", c->args[0].l); }
+static void DP_setPort(tl_jcall *c)    { set_int(c->self, "port", c->args[0].i); }
+static void DP_setData(tl_jcall *c)     /* setData(byte[]) */
+{
+    set_obj(c->self, "data", "[B", c->args[0].l);
+    set_int(c->self, "offset", 0);
+    set_int(c->self, "length", c->args[0].l && c->args[0].l->kind == TL_K_PRIM_ARRAY ? (int)c->args[0].l->arr.len : 0);
+}
+static void DP_setData_3(tl_jcall *c)   /* setData(byte[], off, len) */
+{
+    set_obj(c->self, "data", "[B", c->args[0].l);
+    set_int(c->self, "offset", c->args[1].i); set_int(c->self, "length", c->args[2].i);
+}
+static void DP_setSocketAddress(tl_jcall *c)
+{
+    jobj *ep = c->args[0].l;
+    jobj *ia = make("java/net/InetAddress"); set_str(ia, "hostName", S(get_str(ep, "host")));
+    set_obj(c->self, "address", "Ljava/net/InetAddress;", ia); set_int(c->self, "port", get_int(ep, "port"));
+}
+static void DP_getSocketAddress(tl_jcall *c)
+{
+    jobj *ep = make("java/net/InetSocketAddress");
+    jobj *a = get_str(c->self, "address");
+    set_str(ep, "host", a ? S(get_str(a, "hostName")) : ""); set_int(ep, "port", get_int(c->self, "port"));
+    c->ret = vl(ep);
+}
+
+/* MulticastSocket: join/leave group for LAN discovery */
+static void MSock_joinGroup(tl_jcall *c)
+{
+    dsock *d = ds_of(c->self); if (ds_open(d) < 0) return;
+    jobj *ep = c->args[0].l;  /* SocketAddress or InetAddress */
+    jobj *a = ep ? get_str(ep, "host") : NULL;
+    if (!a) a = ep;
+    struct ip_mreq m = { 0 };
+    if (a) inet_pton(AF_INET, a->kind == TL_K_STRING ? S(a) : S(get_str(a, "hostName")), &m.imr_multiaddr);
+    m.imr_interface.s_addr = INADDR_ANY;
+    setsockopt(d->fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &m, sizeof(m));
+}
+static void MSock_leaveGroup(tl_jcall *c)
+{
+    dsock *d = ds_of(c->self); if (d->fd < 0) return;
+    jobj *ep = c->args[0].l;
+    struct ip_mreq m = { 0 };
+    jobj *a = ep ? get_str(ep, "host") : NULL;
+    if (a) inet_pton(AF_INET, S(a), &m.imr_multiaddr);
+    else if (ep) inet_pton(AF_INET, S(get_str(ep, "hostName")), &m.imr_multiaddr);
+    m.imr_interface.s_addr = INADDR_ANY;
+    setsockopt(d->fd, IPPROTO_IP, IP_DROP_MEMBERSHIP, &m, sizeof(m));
+}
+static void MSock_setTimeToLive(tl_jcall *c)
+{
+    dsock *d = ds_of(c->self); if (d->fd < 0) return;
+    uint8_t v = (uint8_t)c->args[0].i;
+    setsockopt(d->fd, IPPROTO_IP, IP_MULTICAST_TTL, &v, sizeof(v));
+}
+
+/* ServerSocket: NanoHTTPD/embedded servers, cast receivers, dev tooling */
+static void srv_bind_port(tl_jcall *c, int port)
+{
+    jsock *s = sock_of(c->self); s->fd = -1;
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) { tl_jni_throw("java/net/BindException", strerror(errno)); return; }
+    int on = 1; setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+    struct sockaddr_in sa = { .sin_family = AF_INET, .sin_addr.s_addr = INADDR_ANY, .sin_port = htons((uint16_t)port) };
+    if (bind(fd, (struct sockaddr *)&sa, sizeof(sa)) < 0 || listen(fd, 50) < 0) {
+        int e = errno; close(fd);
+        tl_jni_throw("java/net/BindException", strerror(e)); return;
+    }
+    s->fd = fd; s->local_port = port ? port : 0;
+    if (!port) { socklen_t sl = sizeof(sa); getsockname(fd, (struct sockaddr *)&sa, &sl); s->local_port = ntohs(sa.sin_port); }
+    s->connected = true;
+}
+static void Srv_init_port(tl_jcall *c) { srv_bind_port(c, c->args[0].i); }
+static void Srv_init(tl_jcall *c) { sock_of(c->self)->fd = -1; }
+static void Srv_bind(tl_jcall *c)   /* bind(SocketAddress [, backlog]) */
+{
+    jobj *ep = c->args[0].l;
+    srv_bind_port(c, ep ? get_int(ep, "port") : 0);
+}
+static void Srv_accept(tl_jcall *c)
+{
+    jsock *s = sock_of(c->self);
+    if (s->fd < 0) { tl_jni_throw("java/net/SocketException", "socket closed"); return; }
+    struct sockaddr_in ca; socklen_t cl = sizeof(ca);
+    int fd = accept(s->fd, (struct sockaddr *)&ca, &cl);
+    if (fd < 0) { tl_jni_throw("java/net/SocketException", strerror(errno)); return; }
+    jobj *o = make("java/net/Socket");
+    jsock *cs = sock_of(o); cs->fd = fd; cs->connected = true;
+    char ip[64]; inet_ntop(AF_INET, &ca.sin_addr, ip, sizeof(ip));
+    snprintf(cs->host, sizeof(cs->host), "%s", ip); cs->port = ntohs(ca.sin_port);
+    struct sockaddr_in la; socklen_t ll = sizeof(la);
+    getsockname(fd, (struct sockaddr *)&la, &ll); cs->local_port = ntohs(la.sin_port);
+    c->ret = vl(o);
+}
+static void Srv_close(tl_jcall *c)      { Sock_close(c); }
+static void Srv_isClosed(tl_jcall *c)   { c->ret = vz(sock_of(c->self)->closed); }
+static void Srv_getLocalPort(tl_jcall *c) { c->ret = vi(sock_of(c->self)->local_port); }
+static void Srv_setSoTimeout(tl_jcall *c) { Sock_setSoTimeout(c); }
+static void Srv_getInetAddress(tl_jcall *c)
+{
+    jobj *a = make("java/net/InetAddress");
+    set_str(a, "hostName", "0.0.0.0"); set_str(a, "hostAddress", "0.0.0.0");
+    c->ret = vl(a);
+}
+static void Srv_getLocalSocketAddress(tl_jcall *c)
+{
+    jobj *ep = make("java/net/InetSocketAddress");
+    set_str(ep, "host", "0.0.0.0"); set_int(ep, "port", sock_of(c->self)->local_port);
+    c->ret = vl(ep);
+}
+
 /* ============================================================== resources.arsc
  * The binary resource table in the APK. SDKs and apps pull strings (API keys,
  * app_name), colors, dimensions, and booleans through Resources.getString(id)
@@ -15523,9 +16417,9 @@ static const tl_jhle k_more_hle[] = {
     M("android/net/Uri", "getEncodedUserInfo", NULL, Uri_getEncodedUserInfo),
     M("android/net/Uri", "getUserInfo", NULL, Uri_getUserInfo),
     M("android/net/Uri", "checkSafe", NULL, Uri_checkSafe),
-    M("java/net/InetAddress", "getByName", "(I)Ljava/lang/Object;", Inet_getByName),
-    M("java/net/Inet4Address", "getByName", "(I)Ljava/lang/Object;", Inet_getByName),
-    M("java/net/Inet6Address", "getByName", "(I)Ljava/lang/Object;", Inet_getByName),
+    M("java/net/InetAddress", "getByName", "(Ljava/lang/Object;)Ljava/lang/Object;", Inet_getByName),
+    M("java/net/Inet4Address", "getByName", "(Ljava/lang/Object;)Ljava/lang/Object;", Inet_getByName),
+    M("java/net/Inet6Address", "getByName", "(Ljava/lang/Object;)Ljava/lang/Object;", Inet_getByName),
     M("java/net/InetAddress", "getLocalHost", NULL, Inet_getLocalHost),
     M("java/net/Inet4Address", "getLocalHost", NULL, Inet_getLocalHost),
     M("java/net/Inet6Address", "getLocalHost", NULL, Inet_getLocalHost),
@@ -17285,6 +18179,186 @@ static const tl_jhle k_more_hle[] = {
     M("android/content/ContentResolver", "openAssetFileDescriptor", NULL, CR_openAssetFileDescriptor),
     M("android/content/ContentResolver", "openTypedAssetFileDescriptor", NULL, CR_openTypedAssetFileDescriptor),
     M("android/content/ContentResolver", "loadThumbnail", NULL, CR_loadThumbnail),
+    /* java.net: real HTTP through the host's NSURLSession */
+    M("java/net/URL", "<init>", "(Ljava/lang/Object;)V", URL_init),
+    M("java/net/URL", "<init>", "(Ljava/lang/Object;Ljava/lang/Object;)V", URL_init2),
+    M("java/net/URL", "<init>", "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)V", URL_init3),
+    M("java/net/URL", "<init>", "(Ljava/lang/Object;Ljava/lang/Object;ILjava/lang/Object;)V", URL_init4),
+    M("java/net/URL", "getProtocol", NULL, URL_getProtocol),
+    M("java/net/URL", "getHost", NULL, URL_getHost),
+    M("java/net/URL", "getPort", NULL, URL_getPort),
+    M("java/net/URL", "getPath", NULL, URL_getPath),
+    M("java/net/URL", "getQuery", NULL, URL_getQuery),
+    M("java/net/URL", "getRef", NULL, URL_getRef),
+    M("java/net/URL", "getFile", NULL, URL_getFile),
+    M("java/net/URL", "getUserInfo", NULL, URL_getUserInfo),
+    M("java/net/URL", "getAuthority", NULL, URL_getAuthority),
+    M("java/net/URL", "toString", NULL, URL_toString),
+    M("java/net/URL", "toExternalForm", NULL, URL_toString),
+    M("java/net/URL", "openConnection", "()Ljava/lang/Object;", URL_openConnection),
+    M("java/net/URL", "openStream", "()Ljava/lang/Object;", URL_openStream),
+    M("java/net/HttpURLConnection", "<init>", "(Ljava/lang/Object;)V", HC_init),
+    M("java/net/HttpURLConnection", "setRequestMethod", "(Ljava/lang/Object;)V", HC_setRequestMethod),
+    M("java/net/HttpURLConnection", "setRequestProperty", "(Ljava/lang/Object;Ljava/lang/Object;)V", HC_setRequestProperty),
+    M("java/net/HttpURLConnection", "addRequestProperty", "(Ljava/lang/Object;Ljava/lang/Object;)V", HC_addRequestProperty),
+    M("java/net/HttpURLConnection", "getRequestProperty", "(Ljava/lang/Object;)Ljava/lang/Object;", HC_getRequestProperty),
+    M("java/net/HttpURLConnection", "getRequestProperties", "()Ljava/lang/Object;", HC_getRequestProperties),
+    M("java/net/HttpURLConnection", "setDoOutput", "(Z)V", HC_setDoOutput),
+    M("java/net/HttpURLConnection", "getDoOutput", "()Z", HC_getDoOutput),
+    M("java/net/HttpURLConnection", "setDoInput", "(Z)V", HC_setDoInput),
+    M("java/net/HttpURLConnection", "getDoInput", "()Z", HC_getDoInput),
+    M("java/net/HttpURLConnection", "setConnectTimeout", "(I)V", HC_setConnectTimeout),
+    M("java/net/HttpURLConnection", "getConnectTimeout", "()I", HC_getConnectTimeout),
+    M("java/net/HttpURLConnection", "setReadTimeout", "(I)V", HC_setReadTimeout),
+    M("java/net/HttpURLConnection", "getReadTimeout", "()I", HC_getReadTimeout),
+    M("java/net/HttpURLConnection", "setInstanceFollowRedirects", "(Z)V", HC_setInstanceFollowRedirects),
+    M("java/net/HttpURLConnection", "getInstanceFollowRedirects", "()Z", HC_getInstanceFollowRedirects),
+    M("java/net/HttpURLConnection", "setFollowRedirects", "(Z)V", HC_setFollowRedirects),
+    M("java/net/HttpURLConnection", "getFollowRedirects", "()Z", HC_getFollowRedirects),
+    M("java/net/HttpURLConnection", "setFixedLengthStreamingMode", "(I)V", HC_setFixedLength),
+    M("java/net/HttpURLConnection", "setChunkedStreamingMode", "(I)V", HC_setField),
+    M("java/net/HttpURLConnection", "setUseCaches", "(Z)V", HC_setField),
+    M("java/net/HttpURLConnection", "setAllowUserInteraction", "(Z)V", HC_setField),
+    M("java/net/HttpURLConnection", "setIfModifiedSince", "(J)V", HC_setField),
+    M("java/net/HttpURLConnection", "connect", "()V", HC_connect),
+    M("java/net/HttpURLConnection", "getResponseCode", "()I", HC_getResponseCode),
+    M("java/net/HttpURLConnection", "getResponseMessage", "()Ljava/lang/Object;", HC_getResponseMessage),
+    M("java/net/HttpURLConnection", "getInputStream", "()Ljava/lang/Object;", HC_getInputStream),
+    M("java/net/HttpURLConnection", "getErrorStream", "()Ljava/lang/Object;", HC_getErrorStream),
+    M("java/net/HttpURLConnection", "getOutputStream", "()Ljava/lang/Object;", HC_getOutputStream),
+    M("java/net/HttpURLConnection", "disconnect", "()V", HC_disconnect),
+    M("java/net/HttpURLConnection", "usingProxy", "()Z", HC_usingProxy),
+    M("java/net/HttpURLConnection", "getURL", "()Ljava/lang/Object;", HC_getURL),
+    M("java/net/HttpURLConnection", "getHeaderField", "(I)Ljava/lang/Object;", HC_getHeaderFieldN),
+    M("java/net/HttpURLConnection", "getHeaderFieldKey", "(I)Ljava/lang/Object;", HC_getHeaderFieldKeyN),
+    M("java/net/HttpURLConnection", "getHeaderField", "(Ljava/lang/Object;)Ljava/lang/Object;", HC_getHeaderFieldName),
+    M("java/net/HttpURLConnection", "getHeaderFieldInt", "(Ljava/lang/Object;I)I", HC_getHeaderFieldInt),
+    M("java/net/HttpURLConnection", "getHeaderFieldLong", "(Ljava/lang/Object;J)J", HC_getHeaderFieldLong),
+    M("java/net/HttpURLConnection", "getHeaderFields", "()Ljava/lang/Object;", HC_getHeaderFields),
+    M("java/net/HttpURLConnection", "getContentLength", "()I", HC_getContentLength),
+    M("java/net/HttpURLConnection", "getContentLengthLong", "()J", HC_getContentLengthLong),
+    M("java/net/HttpURLConnection", "getHeaderFieldDate", "(Ljava/lang/Object;J)J", HC_getHeaderFieldDate),
+    M("java/net/HttpURLConnection", "getDate", "()J", HC_getDate),
+    M("java/net/HttpURLConnection", "getLastModified", "()J", HC_getLastModified),
+    M("java/net/HttpURLConnection", "getExpiration", "()J", HC_getExpiration),
+    M("java/net/HttpURLConnection", "getContentType", "()Ljava/lang/Object;", HC_getContentType),
+    M("java/net/HttpURLConnection", "getContentEncoding", "()Ljava/lang/Object;", HC_getContentEncoding),
+    M("java/net/HttpURLConnection", "getContent", "()Ljava/lang/Object;", HC_getContent),
+    M("java/net/URLConnection", "connect", "()V", HC_connect),
+    M("java/net/URLConnection", "getInputStream", "()Ljava/lang/Object;", HC_getInputStream),
+    M("java/net/URLConnection", "getOutputStream", "()Ljava/lang/Object;", HC_getOutputStream),
+    M("java/net/URLConnection", "getURL", "()Ljava/lang/Object;", HC_getURL),
+    M("java/net/URLConnection", "getContentLength", "()I", HC_getContentLength),
+    M("java/net/URLConnection", "getContentType", "()Ljava/lang/Object;", HC_getContentType),
+    M("java/net/URLConnection", "getHeaderField", "(Ljava/lang/Object;)Ljava/lang/Object;", HC_getHeaderFieldName),
+    M("java/net/URLConnection", "setConnectTimeout", "(I)V", HC_setConnectTimeout),
+    M("java/net/URLConnection", "setReadTimeout", "(I)V", HC_setReadTimeout),
+    M("java/net/URLConnection", "setDoOutput", "(Z)V", HC_setDoOutput),
+    M("java/net/URLConnection", "setRequestProperty", "(Ljava/lang/Object;Ljava/lang/Object;)V", HC_setRequestProperty),
+    M("java/net/URLConnection", "addRequestProperty", "(Ljava/lang/Object;Ljava/lang/Object;)V", HC_addRequestProperty),
+    M("java/net/URLConnection", "getRequestProperty", "(Ljava/lang/Object;)Ljava/lang/Object;", HC_getRequestProperty),
+    M("java/net/URLConnection", "setDoInput", "(Z)V", HC_setDoInput),
+    M("java/net/URLConnection", "getDoInput", "()Z", HC_getDoInput),
+    M("java/net/URLConnection", "getHeaderFields", "()Ljava/lang/Object;", HC_getHeaderFields),
+    M("java/net/URLConnection", "getHeaderFieldInt", "(Ljava/lang/Object;I)I", HC_getHeaderFieldInt),
+    M("java/net/URLConnection", "getHeaderFieldDate", "(Ljava/lang/Object;J)J", HC_getHeaderFieldDate),
+    M("java/net/URLConnection", "getContentEncoding", "()Ljava/lang/Object;", HC_getContentEncoding),
+    M("java/net/URLConnection", "getContent", "()Ljava/lang/Object;", HC_getContent),
+    M("java/net/URLConnection", "getDate", "()J", HC_getDate),
+    M("java/net/URLConnection", "getLastModified", "()J", HC_getLastModified),
+    M("java/net/URLConnection", "getExpiration", "()J", HC_getExpiration),
+    M("java/net/URLConnection", "setUseCaches", "(Z)V", HC_setField),
+    M("java/net/URLConnection", "setDefaultUseCaches", "(Z)V", HC_setField),
+    M("java/net/URLConnection", "guessContentTypeFromName", "(Ljava/lang/Object;)Ljava/lang/Object;", URLConn_guessContentType),
+    M("java/net/Socket", "<init>", "()V", Sock_init),
+    M("java/net/Socket", "<init>", "(Ljava/lang/Object;I)V", Sock_init_hp),
+    M("java/net/Socket", "<init>", "(Ljava/lang/Object;)V", Sock_init_addr),
+    M("java/net/Socket", "connect", "(Ljava/lang/Object;)V", Sock_connect),
+    M("java/net/Socket", "connect", "(Ljava/lang/Object;I)V", Sock_connect_to),
+    M("java/net/Socket", "close", "()V", Sock_close),
+    M("java/net/Socket", "isConnected", "()Z", Sock_isConnected),
+    M("java/net/Socket", "isClosed", "()Z", Sock_isClosed),
+    M("java/net/Socket", "isBound", "()Z", Sock_isBound),
+    M("java/net/Socket", "getInetAddress", "()Ljava/lang/Object;", Sock_getInetAddress),
+    M("java/net/Socket", "getPort", "()I", Sock_getPort),
+    M("java/net/Socket", "getLocalPort", "()I", Sock_getLocalPort),
+    M("java/net/Socket", "getRemoteSocketAddress", "()Ljava/lang/Object;", Sock_getRemoteSocketAddress),
+    M("java/net/Socket", "setSoTimeout", "(I)V", Sock_setSoTimeout),
+    M("java/net/Socket", "getSoTimeout", "()I", Sock_getSoTimeout),
+    M("java/net/Socket", "setTcpNoDelay", "(Z)V", Sock_setTcpNoDelay),
+    M("java/net/Socket", "setKeepAlive", "(Z)V", Sock_setKeepAlive),
+    M("java/net/Socket", "setReuseAddress", "(Z)V", Sock_setReuseAddress),
+    M("java/net/Socket", "setSendBufferSize", "(I)V", Sock_setSendBufferSize),
+    M("java/net/Socket", "setReceiveBufferSize", "(I)V", Sock_setReceiveBufferSize),
+    M("java/net/Socket", "shutdownInput", "()V", Sock_shutdownInput),
+    M("java/net/Socket", "shutdownOutput", "()V", Sock_shutdownOutput),
+    M("java/net/Socket", "getInputStream", "()Ljava/lang/Object;", Sock_getInputStream),
+    M("java/net/Socket", "getOutputStream", "()Ljava/lang/Object;", Sock_getOutputStream),
+    M("java/net/Socket", "toString", "()Ljava/lang/Object;", Sock_toString),
+    M("java/net/Socket$SocketInputStream", "read", "()I", SIS_read),
+    M("java/net/Socket$SocketInputStream", "read", "([B)I", SIS_read_buf),
+    M("java/net/Socket$SocketInputStream", "read", "([BII)I", SIS_read_off),
+    M("java/net/Socket$SocketInputStream", "available", "()I", SIS_available),
+    M("java/net/Socket$SocketInputStream", "skip", "(J)J", SIS_skip),
+    M("java/net/Socket$SocketInputStream", "close", "()V", SIS_close),
+    M("java/net/Socket$SocketOutputStream", "write", "(I)V", SOS_write_i),
+    M("java/net/Socket$SocketOutputStream", "write", "([B)V", SOS_write_buf),
+    M("java/net/Socket$SocketOutputStream", "write", "([BII)V", SOS_write_off),
+    M("java/net/Socket$SocketOutputStream", "flush", "()V", SOS_flush),
+    M("java/net/Socket$SocketOutputStream", "close", "()V", SOS_close),
+    M("java/net/InetSocketAddress", "<init>", "(Ljava/lang/Object;I)V", ISA_init),
+    M("java/net/InetSocketAddress", "<init>", "(I)V", ISA_init_port),
+    M("java/net/InetSocketAddress", "<init>", "()V", ISA_init0),
+    M("java/net/InetSocketAddress", "getHostString", "()Ljava/lang/Object;", ISA_getHostString),
+    M("java/net/InetSocketAddress", "getHostName", "()Ljava/lang/Object;", ISA_getHostName),
+    M("java/net/InetSocketAddress", "getPort", "()I", ISA_getPort),
+    M("java/net/InetSocketAddress", "isUnresolved", "()Z", ISA_isUnresolved),
+    M("java/net/InetSocketAddress", "toString", "()Ljava/lang/Object;", ISA_toString),
+    M("java/net/InetSocketAddress", "createUnresolved", "(Ljava/lang/Object;I)Ljava/lang/Object;", ISA_createUnresolved),
+    M("java/net/DatagramSocket", "<init>", "()V", DSock_init),
+    M("java/net/DatagramSocket", "<init>", "(I)V", DSock_init_port),
+    M("java/net/DatagramSocket", "send", "(Ljava/lang/Object;)V", DSock_send),
+    M("java/net/DatagramSocket", "receive", "(Ljava/lang/Object;)V", DSock_receive),
+    M("java/net/DatagramSocket", "close", "()V", DSock_close),
+    M("java/net/DatagramSocket", "isClosed", "()Z", DSock_isClosed),
+    M("java/net/DatagramSocket", "setSoTimeout", "(I)V", DSock_setSoTimeout),
+    M("java/net/DatagramSocket", "setBroadcast", "(Z)V", DSock_setBroadcast),
+    M("java/net/DatagramSocket", "getLocalPort", "()I", DSock_getLocalPort),
+    M("java/net/DatagramSocket", "connect", "(Ljava/lang/Object;)V", DSock_connect),
+    M("java/net/DatagramSocket", "connect", "(Ljava/lang/Object;I)V", DSock_connect),
+    M("java/net/DatagramPacket", "<init>", "([BI)V", DP_init_2),
+    M("java/net/DatagramPacket", "<init>", "([BII)V", DP_init_3),
+    M("java/net/DatagramPacket", "<init>", "([BILjava/lang/Object;)V", DP_init_3a),
+    M("java/net/DatagramPacket", "<init>", "([BILjava/lang/Object;I)V", DP_init_4),
+    M("java/net/DatagramPacket", "<init>", "([BIILjava/lang/Object;)V", DP_init_4s),
+    M("java/net/DatagramPacket", "<init>", "([BIILjava/lang/Object;I)V", DP_init_5),
+    M("java/net/DatagramPacket", "getData", "()[B", DP_getData),
+    M("java/net/DatagramPacket", "getLength", "()I", DP_getLength),
+    M("java/net/DatagramPacket", "setLength", "(I)V", DP_setLength),
+    M("java/net/DatagramPacket", "getOffset", "()I", DP_getOffset),
+    M("java/net/DatagramPacket", "getAddress", "()Ljava/lang/Object;", DP_getAddress),
+    M("java/net/DatagramPacket", "getPort", "()I", DP_getPort),
+    M("java/net/DatagramPacket", "setAddress", "(Ljava/lang/Object;)V", DP_setAddress),
+    M("java/net/DatagramPacket", "setPort", "(I)V", DP_setPort),
+    M("java/net/DatagramPacket", "setData", "([B)V", DP_setData),
+    M("java/net/DatagramPacket", "setData", "([BII)V", DP_setData_3),
+    M("java/net/DatagramPacket", "setSocketAddress", "(Ljava/lang/Object;)V", DP_setSocketAddress),
+    M("java/net/DatagramPacket", "getSocketAddress", "()Ljava/lang/Object;", DP_getSocketAddress),
+    M("java/net/MulticastSocket", "joinGroup", "(Ljava/lang/Object;)V", MSock_joinGroup),
+    M("java/net/MulticastSocket", "leaveGroup", "(Ljava/lang/Object;)V", MSock_leaveGroup),
+    M("java/net/MulticastSocket", "setTimeToLive", "(I)V", MSock_setTimeToLive),
+    M("java/net/ServerSocket", "<init>", "()V", Srv_init),
+    M("java/net/ServerSocket", "<init>", "(I)V", Srv_init_port),
+    M("java/net/ServerSocket", "<init>", "(II)V", Srv_init_port),
+    M("java/net/ServerSocket", "bind", "(Ljava/lang/Object;)V", Srv_bind),
+    M("java/net/ServerSocket", "bind", "(Ljava/lang/Object;I)V", Srv_bind),
+    M("java/net/ServerSocket", "accept", "()Ljava/lang/Object;", Srv_accept),
+    M("java/net/ServerSocket", "close", "()V", Srv_close),
+    M("java/net/ServerSocket", "isClosed", "()Z", Srv_isClosed),
+    M("java/net/ServerSocket", "getLocalPort", "()I", Srv_getLocalPort),
+    M("java/net/ServerSocket", "setSoTimeout", "(I)V", Srv_setSoTimeout),
+    M("java/net/ServerSocket", "getInetAddress", "()Ljava/lang/Object;", Srv_getInetAddress),
+    M("java/net/ServerSocket", "getLocalSocketAddress", "()Ljava/lang/Object;", Srv_getLocalSocketAddress),
     /* Resources: resolve real ids/values from resources.arsc */
     M("android/content/res/Resources", "getIdentifier", "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)I", Res_getIdentifier),
     M("android/content/res/Resources", "getString", "(I)Ljava/lang/Object;", Res_getString),
@@ -17326,6 +18400,24 @@ static const struct { const char *name, *super; } k_more_classes[] = {
     { "java/io/EOFException", "java/io/IOException" },
     { "java/net/SocketException", "java/io/IOException" },
     { "java/net/UnknownHostException", "java/io/IOException" },
+    { "java/net/ProtocolException", "java/io/IOException" },
+    { "java/net/URL", "java/lang/Object" },
+    { "java/net/URLConnection", "java/lang/Object" },
+    { "java/net/HttpURLConnection", "java/net/URLConnection" },
+    { "java/net/SocketAddress", "java/lang/Object" },
+    { "java/net/InetSocketAddress", "java/net/SocketAddress" },
+    { "java/net/Socket", "java/lang/Object" },
+    { "java/net/Socket$SocketInputStream", "java/io/InputStream" },
+    { "java/net/Socket$SocketOutputStream", "java/io/OutputStream" },
+    { "java/net/DatagramPacket", "java/lang/Object" },
+    { "java/net/DatagramSocket", "java/lang/Object" },
+    { "java/net/MulticastSocket", "java/net/DatagramSocket" },
+    { "java/net/SocketTimeoutException", "java/io/InterruptedIOException" },
+    { "java/net/ConnectException", "java/net/SocketException" },
+    { "java/net/BindException", "java/net/SocketException" },
+    { "java/net/NoRouteToHostException", "java/net/SocketException" },
+    { "java/net/PortUnreachableException", "java/net/SocketException" },
+    { "java/net/ServerSocket", "java/lang/Object" },
     { "java/net/ConnectException", "java/net/SocketException" },
     { "java/io/InterruptedIOException", "java/io/IOException" },
     { "java/net/SocketTimeoutException", "java/io/InterruptedIOException" },
