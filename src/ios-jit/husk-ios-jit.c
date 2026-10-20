@@ -33,7 +33,14 @@
 #include <sys/ucontext.h>   /* not <ucontext.h>: that one #errors without _XOPEN_SOURCE */
 #include <unistd.h>
 #include <fcntl.h>
+#include <sys/proc_info.h>  /* struct proc_bsdinfo, PROC_PIDTBSDINFO */
+#if __has_include(<libproc.h>)
 #include <libproc.h>        /* proc_pidinfo: who is tracing us, which csops alone cannot say */
+#else
+/* The iPhoneOS SDK ships sys/proc_info.h but not libproc.h; libsystem still
+ * exports the call, so declare it ourselves. */
+int proc_pidinfo(int pid, int flavor, uint64_t arg, void *buffer, int buffersize);
+#endif
 
 /*
  * Provide pipe2 for iOS systems where libc does not export it.
