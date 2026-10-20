@@ -12087,6 +12087,457 @@ static void MCI_getSupportedTypes(tl_jcall *c)
     c->ret = vl(arr);
 }
 
+/* android.media.MediaExtractor — MP4 demuxer. Walks moov/trak/mdia/minf/stbl
+ * to build per-track sample tables (offsets, sizes, pts, sync), pulls codec
+ * config out of avcC/esds and converts length-prefixed samples to Annex-B. */
+typedef struct {
+    int kind;                        /* 'vide' or 'soun' */
+    char mime[32];
+    uint32_t timescale;
+    uint8_t *csd; size_t csd_n;      /* annex-B sps/pps or AudioSpecificConfig */
+    int nal_len_size;
+    uint32_t ns;
+    uint32_t *sizes;
+    uint64_t *offs;
+    int64_t *pts;                    /* timescale units */
+    uint8_t *sync;
+    int cur;
+    bool selected;
+} mxtrack;
+typedef struct { const uint8_t *d; size_t n; mxtrack tr[2]; int ntr; } mx;
+
+static uint32_t be32(const uint8_t *p) { return ((uint32_t)p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3]; }
+static uint64_t be64(const uint8_t *p) { return ((uint64_t)be32(p) << 32) | be32(p + 4); }
+
+static const uint8_t *mx_find_box(const uint8_t *d, size_t n, const char *want, size_t *body)
+{
+    size_t p = 0;
+    while (p + 8 <= n) {
+        uint64_t sz = be32(d + p); size_t hdr = 8;
+        if (sz == 1 && p + 16 <= n) { sz = be64(d + p + 8); hdr = 16; }
+        else if (sz == 0) sz = n - p;
+        if (sz < hdr || p + sz > n) break;
+        if (!memcmp(d + p + 4, want, 4)) { *body = (size_t)sz - hdr; return d + p + hdr; }
+        p += (size_t)sz;
+    }
+    return NULL;
+}
+/* container-aware box walker: tries the path a/b/c inside progressively nested boxes */
+static const uint8_t *mx_path(const uint8_t *d, size_t n, const char *path, size_t *body)
+{
+    const uint8_t *cur = d; size_t cn = n;
+    char box[5] = {0};
+    while (*path) {
+        memcpy(box, path, 4); path += 4;
+        /* containers start with a full-box version/flags field? stbl/minf/mdia do not; skip their leading none */
+        const uint8_t *b = mx_find_box(cur, cn, box, body);
+        if (!b) return NULL;
+        cur = b; cn = *body;
+    }
+    return cur;
+}
+
+static void mx_stbl(mxtrack *t, const uint8_t *stbl, size_t n, const uint8_t *file)
+{
+    size_t b;
+    /* stsd: codec + config */
+    const uint8_t *stsd = mx_find_box(stbl, n, "stsd", &b);
+    if (stsd && b >= 16) {
+        const uint8_t *e = stsd + 8;               /* version/flags + entry count */
+        size_t en = (size_t)b - 8;
+        if (en >= 8) {
+            uint32_t esz = be32(e);
+            if (esz >= 8 && esz <= en) {
+                char fmt[5] = {0}; memcpy(fmt, e + 4, 4);
+                const uint8_t *eb = e + 8; size_t ebn = (size_t)esz - 8;
+                if (!strcmp(fmt, "avc1") || !strcmp(fmt, "avc3") || !strcmp(fmt, "hvc1") || !strcmp(fmt, "hev1")) {
+                    t->kind = 'vide';
+                    strcpy(t->mime, fmt[0] == 'h' ? "video/hevc" : "video/avc");
+                    /* sample entry: 6 reserved + 2 ref + 70 video fields = 78; boxes after */
+                    const uint8_t *avcc = mx_find_box(eb + 78, ebn > 78 ? ebn - 78 : 0, fmt[0] == 'h' ? "hvcC" : "avcC", &b);
+                    if (avcc && b > 7) {
+                        /* avcC: profile/level, nalLenSize-1, numSPS, sps..., numPPS, pps... */
+                        if (fmt[0] == 'h') {
+                            /* hvcC: arrays at offset 22 */
+                            t->nal_len_size = (avcc[21] & 3) + 1;
+                            sbuf out = {0};
+                            uint8_t narrays = avcc[22]; const uint8_t *q = avcc + 23; size_t left = b - 23;
+                            static const uint8_t sc[4] = {0, 0, 0, 1};
+                            for (int i = 0; i < narrays && left >= 3; i++) {
+                                q++; left--;
+                                uint16_t nn = (uint16_t)((q[0] << 8) | q[1]); q += 2; left -= 2;
+                                for (int j = 0; j < nn && left >= 2; j++) {
+                                    uint16_t nl = (uint16_t)((q[0] << 8) | q[1]); q += 2; left -= 2;
+                                    if (nl > left) break;
+                                    sb_add_n(&out, (const char *)sc, 4); sb_add_n(&out, (const char *)q, nl);
+                                    q += nl; left -= nl;
+                                }
+                            }
+                            t->csd = (uint8_t *)out.p; t->csd_n = out.n;
+                        } else {
+                            t->nal_len_size = (avcc[4] & 3) + 1;
+                            sbuf out = {0};
+                            static const uint8_t sc[4] = {0, 0, 0, 1};
+                            const uint8_t *q = avcc + 5; size_t left = b - 5;
+                            int nsps = *q & 0x1f; q++; left--;
+                            for (int i = 0; i < nsps && left >= 2; i++) {
+                                uint16_t nl = (uint16_t)((q[0] << 8) | q[1]); q += 2; left -= 2;
+                                if (nl > left) break;
+                                sb_add_n(&out, (const char *)sc, 4); sb_add_n(&out, (const char *)q, nl);
+                                q += nl; left -= nl;
+                            }
+                            if (left >= 1) {
+                                int npps = *q; q++; left--;
+                                for (int i = 0; i < npps && left >= 2; i++) {
+                                    uint16_t nl = (uint16_t)((q[0] << 8) | q[1]); q += 2; left -= 2;
+                                    if (nl > left) break;
+                                    sb_add_n(&out, (const char *)sc, 4); sb_add_n(&out, (const char *)q, nl);
+                                    q += nl; left -= nl;
+                                }
+                            }
+                            t->csd = (uint8_t *)out.p; t->csd_n = out.n;
+                        }
+                    }
+                } else if (!strcmp(fmt, "mp4a")) {
+                    t->kind = 'soun';
+                    strcpy(t->mime, "audio/mp4a-latm");
+                    /* audio sample entry: 6+2+8+2+2+4+4 = 28; esds after */
+                    const uint8_t *esds = mx_find_box(eb + 28, ebn > 28 ? ebn - 28 : 0, "esds", &b);
+                    if (esds && b > 4) {
+                        /* scan for the DecoderSpecificInfo descriptor (tag 5) */
+                        const uint8_t *q = esds + 4, *end = esds + b;
+                        while (q + 2 <= end) {
+                            if (*q == 5) {
+                                const uint8_t *l = q + 1; uint32_t dl = 0, sh;
+                                do { sh = *l++; dl = (dl << 7) | (sh & 0x7f); } while ((sh & 0x80) && l < end);
+                                if (dl && l + dl <= end) {
+                                    t->csd = malloc(dl); memcpy(t->csd, l, dl); t->csd_n = dl;
+                                    break;
+                                }
+                            }
+                            q++;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    /* stts/stsz: sizes first, then cumulative pts */
+    const uint8_t *stts = mx_find_box(stbl, n, "stts", &b);
+    /* stsz: sample sizes */
+    const uint8_t *stsz = mx_find_box(stbl, n, "stsz", &b);
+    if (stsz && b >= 12) {
+        uint32_t def = be32(stsz + 4), cnt = be32(stsz + 8);
+        t->ns = cnt;
+        t->sizes = malloc((cnt ? cnt : 1) * sizeof(uint32_t));
+        if (def) { for (uint32_t i = 0; i < cnt; i++) t->sizes[i] = def; }
+        else for (uint32_t i = 0; i < cnt && 12 + (size_t)i * 4 + 4 <= b; i++) t->sizes[i] = be32(stsz + 12 + i * 4);
+    }
+    if (!t->ns) return;
+    t->pts = calloc(t->ns, sizeof(int64_t));
+    t->offs = calloc(t->ns, sizeof(uint64_t));
+    t->sync = malloc(t->ns); memset(t->sync, 1, t->ns);
+    /* stts entries */
+    if (stts && b >= 8) {
+        uint32_t ne = be32(stts + 4); const uint8_t *q = stts + 8; uint32_t idx = 0; int64_t acc = 0;
+        for (uint32_t i = 0; i < ne && q + 8 <= stts + b && idx < t->ns; i++, q += 8) {
+            uint32_t cnt = be32(q), delta = be32(q + 4);
+            for (uint32_t j = 0; j < cnt && idx < t->ns; j++) { t->pts[idx++] = acc; acc += delta; }
+        }
+    }
+    /* stsc + stco/co64: per-sample file offsets */
+    const uint8_t *stsc = mx_find_box(stbl, n, "stsc", &b);
+    uint64_t *chunks = NULL; uint32_t nchunks = 0;
+    const uint8_t *stco = mx_find_box(stbl, n, "stco", &b);
+    bool co64 = false;
+    if (!stco) { stco = mx_find_box(stbl, n, "co64", &b); co64 = true; }
+    if (stco && b >= 8) {
+        nchunks = be32(stco + 4);
+        chunks = malloc(nchunks * sizeof(uint64_t));
+        for (uint32_t i = 0; i < nchunks; i++)
+            chunks[i] = co64 ? be64(stco + 8 + i * 8) : be32(stco + 8 + i * 4);
+    }
+    if (stsc && chunks && b >= 8) {
+        uint32_t ne = be32(stsc + 4);
+        uint32_t idx = 0;
+        const uint8_t *q = stsc + 8;
+        for (uint32_t i = 0; i < ne && idx < t->ns; i++, q += 8) {
+            if (q + 8 > stsc + b) break;
+            uint32_t first = be32(q), per = be32(q + 4);
+            uint32_t next_first = (i + 1 < ne && q + 16 <= stsc + b) ? be32(q + 8) : nchunks + 1;
+            for (uint32_t ch = first; ch < next_first && ch <= nchunks; ch++) {
+                uint64_t off = chunks[ch - 1];
+                for (uint32_t s = 0; s < per && idx < t->ns; s++, idx++) {
+                    t->offs[idx] = off;
+                    off += t->sizes[idx];
+                }
+            }
+        }
+    }
+    free(chunks);
+    /* stss: non-sync flags (video) */
+    const uint8_t *stss = mx_find_box(stbl, n, "stss", &b);
+    if (stss && b >= 8) {
+        memset(t->sync, 0, t->ns);
+        uint32_t ne = be32(stss + 4);
+        for (uint32_t i = 0; i < ne; i++) {
+            uint32_t s = be32(stss + 8 + i * 4);
+            if (s >= 1 && s <= t->ns) t->sync[s - 1] = 1;
+        }
+    }
+    /* ctts: composition offsets */
+    const uint8_t *ctts = mx_find_box(stbl, n, "ctts", &b);
+    if (ctts && b >= 8) {
+        uint32_t ne = be32(ctts + 4); const uint8_t *q = ctts + 8; uint32_t idx = 0;
+        for (uint32_t i = 0; i < ne && q + 8 <= ctts + b && idx < t->ns; i++, q += 8) {
+            uint32_t cnt = be32(q); int32_t off = (int32_t)be32(q + 4);
+            for (uint32_t j = 0; j < cnt && idx < t->ns; j++) t->pts[idx++] += off;
+        }
+    }
+    (void)file;
+}
+
+static bool mx_open(mx *m, const uint8_t *d, size_t n)
+{
+    size_t b;
+    const uint8_t *moov = mx_find_box(d, n, "moov", &b);
+    if (!moov) return false;
+    size_t p = 0;
+    while (p + 8 <= b) {
+        uint64_t sz = be32(moov + p);
+        if (sz == 1 && p + 16 <= b) sz = be64(moov + p + 8);
+        if (sz < 8 || p + sz > b) break;
+        if (!memcmp(moov + p + 4, "trak", 4) && m->ntr < 2) {
+            mxtrack *t = &m->tr[m->ntr];
+            memset(t, 0, sizeof(*t));
+            size_t mb;
+            const uint8_t *mdia = mx_path(moov + p + 8, (size_t)sz - 8, "mdia", &mb);
+            const uint8_t *mdhd = mdia ? mx_find_box(mdia, mb, "mdhd", &mb) : NULL;
+            if (mdhd && mb >= 24) {
+                uint8_t ver = mdhd[0];
+                t->timescale = be32(mdhd + (ver == 1 ? 20 : 12));
+            }
+            const uint8_t *hdlr = mdia ? mx_find_box(mdia, mb, "hdlr", &mb) : NULL;
+            int hkind = 0;
+            if (hdlr && mb >= 12) hkind = (int)be32(hdlr + 8);
+            const uint8_t *stbl = mdia ? mx_path(mdia, mb, "minfstbl", &mb) : NULL;
+            if (stbl) mx_stbl(t, stbl, mb, m->d);
+            if (t->ns && (t->kind == hkind || !hkind)) m->ntr++;
+            else { free(t->sizes); free(t->offs); free(t->pts); free(t->sync); free(t->csd); memset(t, 0, sizeof(*t)); }
+        }
+        p += (size_t)sz;
+    }
+    return m->ntr > 0;
+}
+
+static mx *mx_of(jobj *o) { return o->native ? o->native : (o->native = calloc(1, sizeof(mx))); }
+static void MX_init(tl_jcall *c) { mx_of(c->self); }
+static void MX_setDataSource(tl_jcall *c)
+{
+    mx *m = mx_of(c->self);
+    const char *path = S(c->args[0].l);
+    FILE *f = fopen(path, "rb");
+    if (!f) { tl_jni_throw("java/io/IOException", "cannot open"); return; }
+    fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
+    uint8_t *d = malloc((size_t)n);
+    if (!d || fread(d, 1, (size_t)n, f) != (size_t)n) { free(d); fclose(f); tl_jni_throw("java/io/IOException", "read failed"); return; }
+    fclose(f);
+    if (!mx_open(m, d, (size_t)n)) { free(d); tl_jni_throw("java/io/IOException", "not an MP4"); return; }
+    m->d = d; m->n = (size_t)n;
+}
+static void MX_getTrackCount(tl_jcall *c) { c->ret = vi(mx_of(c->self)->ntr); }
+static void MX_getTrackFormat(tl_jcall *c)
+{
+    mx *m = mx_of(c->self); int i = c->args[0].i;
+    if (i < 0 || i >= m->ntr) { c->ret = vl(NULL); return; }
+    mxtrack *t = &m->tr[i];
+    jobj *f = make("android/media/MediaFormat"); map_of(f);
+    map_put(map_of(f), STR("mime"), STR(t->mime));
+    if (t->kind == 'vide') {
+        map_put(map_of(f), STR("width"), box_int(0));
+        map_put(map_of(f), STR("height"), box_int(0));
+        if (t->csd_n) {
+            /* split annex-B csd into csd-0/csd-1 blobs as ByteBuffers */
+            int part = 0; const uint8_t *q = t->csd, *end = t->csd + t->csd_n;
+            while (q + 4 <= end && part < 2) {
+                if (!(q[0] == 0 && q[1] == 0 && q[2] == 0 && q[3] == 1)) break;
+                const uint8_t *nx = q + 4;
+                while (nx + 4 <= end && !(nx[0] == 0 && nx[1] == 0 && nx[2] == 0 && nx[3] == 1)) nx++;
+                size_t nl = (size_t)(nx - (q + 4));
+                uint8_t *cp = malloc(nl); memcpy(cp, q + 4, nl);
+                char key[8]; snprintf(key, 8, "csd-%d", part++);
+                map_put(map_of(f), STR(key), new_bb(cp, (int64_t)nl, true));
+                q = nx;
+            }
+        }
+    } else if (t->csd_n) {
+        uint8_t *cp = malloc(t->csd_n); memcpy(cp, t->csd, t->csd_n);
+        map_put(map_of(f), STR("csd-0"), new_bb(cp, (int64_t)t->csd_n, true));
+        map_put(map_of(f), STR("sample-rate"), box_int(0));
+        map_put(map_of(f), STR("channel-count"), box_int(0));
+    }
+    c->ret = vl(f);
+}
+static void MX_selectTrack(tl_jcall *c)   { int i = c->args[0].i; if (i >= 0 && i < mx_of(c->self)->ntr) mx_of(c->self)->tr[i].selected = true; }
+static void MX_unselectTrack(tl_jcall *c) { int i = c->args[0].i; if (i >= 0 && i < mx_of(c->self)->ntr) mx_of(c->self)->tr[i].selected = false; }
+static void MX_getTrackIdx(tl_jcall *c)
+{
+    mx *m = mx_of(c->self);
+    const char *want = S(c->args[0].l);
+    for (int i = 0; i < m->ntr; i++)
+        if (!strncmp(m->tr[i].mime, want, strlen(want))) { c->ret = vi(i); return; }
+    c->ret = vi(-1);
+}
+static void MX_getSampleTrack(tl_jcall *c)
+{
+    mx *m = mx_of(c->self);
+    int best = -1; uint32_t low = ~0u;
+    for (int i = 0; i < m->ntr; i++)
+        if (m->tr[i].selected && m->tr[i].cur < (int)m->tr[i].ns && m->tr[i].pts[m->tr[i].cur] < low) {
+            low = (uint32_t)m->tr[i].pts[m->tr[i].cur]; best = i;
+        }
+    c->ret = vi(best);
+}
+static mxtrack *mx_sample_track(tl_jcall *c)
+{
+    mx *m = mx_of(c->self);
+    int best = -1; int64_t low = INT64_MAX;
+    for (int i = 0; i < m->ntr; i++)
+        if (m->tr[i].selected && m->tr[i].cur < (int)m->tr[i].ns && m->tr[i].pts[m->tr[i].cur] < low) {
+            low = m->tr[i].pts[m->tr[i].cur]; best = i;
+        }
+    return best >= 0 ? &m->tr[best] : NULL;
+}
+/* convert one length-prefixed video sample to annex-B into out; returns new size */
+static size_t mx_to_annexb(mxtrack *t, const uint8_t *d, size_t n, uint8_t *out, size_t cap)
+{
+    static const uint8_t sc[4] = {0, 0, 0, 1};
+    if (t->kind != 'vide' || t->nal_len_size < 1 || t->nal_len_size > 4) {
+        if (n <= cap) { memcpy(out, d, n); return n; }
+        return 0;
+    }
+    size_t w = 0, p = 0;
+    while (p + (size_t)t->nal_len_size <= n) {
+        uint32_t nl = 0;
+        for (int i = 0; i < t->nal_len_size; i++) nl = (nl << 8) | d[p + i];
+        p += (size_t)t->nal_len_size;
+        if (nl > n - p) nl = (uint32_t)(n - p);
+        if (w + 4 + nl > cap) break;
+        memcpy(out + w, sc, 4); w += 4;
+        memcpy(out + w, d + p, nl); w += nl;
+        p += nl;
+    }
+    return w;
+}
+static void MX_readSampleData(tl_jcall *c)
+{
+    mx *m = mx_of(c->self);
+    mxtrack *t = mx_sample_track(c);
+    if (!t) { c->ret = vi(-1); return; }
+    jobj *bb = c->args[0].l; int off = c->args[1].i;
+    uint8_t *addr = bb ? (uint8_t *)(uintptr_t)get_lng(bb, "addr") : NULL;
+    int lim = bb ? get_int(bb, "lim") : 0;
+    if (!addr || off < 0 || off >= lim) { c->ret = vi(-1); return; }
+    uint32_t i = (uint32_t)t->cur;
+    size_t cap = (size_t)(lim - off);
+    size_t wrote = 0;
+    if (t->kind == 'vide') {
+        uint8_t *tmp = malloc(t->sizes[i] * 4 + 16);
+        size_t conv = mx_to_annexb(t, m->d + t->offs[i], t->sizes[i], tmp, t->sizes[i] * 4 + 16);
+        wrote = conv < cap ? conv : cap;
+        memcpy(addr + off, tmp, wrote); free(tmp);
+    } else {
+        wrote = t->sizes[i] < cap ? t->sizes[i] : cap;
+        memcpy(addr + off, m->d + t->offs[i], wrote);
+    }
+    c->ret = vi((int)wrote);
+}
+static void MX_advance(tl_jcall *c)
+{
+    mxtrack *t = mx_sample_track(c);
+    if (t) t->cur++;
+    c->ret = vz(mx_sample_track(c) != NULL);
+}
+static void MX_getSampleTime(tl_jcall *c)
+{
+    mxtrack *t = mx_sample_track(c);
+    if (!t || !t->timescale) { c->ret = vj(-1); return; }
+    c->ret = vj(t->pts[t->cur] * 1000000LL / t->timescale);
+}
+static void MX_getSampleFlags(tl_jcall *c)
+{
+    mxtrack *t = mx_sample_track(c);
+    c->ret = vi(t && t->sync[t->cur] ? 1 : 0);
+}
+static void MX_getSampleSize(tl_jcall *c)
+{
+    mxtrack *t = mx_sample_track(c);
+    c->ret = vj(t ? (int64_t)t->sizes[t->cur] : -1);
+}
+static void MX_seekTo(tl_jcall *c)
+{
+    mx *m = mx_of(c->self);
+    int64_t us = c->args[0].j; int mode = c->args[1].i;
+    for (int i = 0; i < m->ntr; i++) {
+        mxtrack *t = &m->tr[i];
+        if (!t->selected || !t->timescale) continue;
+        int64_t target = us * t->timescale / 1000000LL;
+        int j = 0;
+        for (; j < (int)t->ns; j++) if (t->pts[j] >= target) break;
+        if (mode == 0 /* PREVIOUS_SYNC */ || mode == 2 /* CLOSEST_SYNC */) {
+            while (j > 0 && (!t->sync[j] || t->pts[j] > target)) j--;
+            if (mode == 2 && j + 1 < (int)t->ns && t->sync[j + 1]) j++;
+        }
+        t->cur = j;
+    }
+}
+static void MX_release(tl_jcall *c)
+{
+    mx *m = mx_of(c->self);
+    for (int i = 0; i < m->ntr; i++) {
+        free(m->tr[i].sizes); free(m->tr[i].offs); free(m->tr[i].pts);
+        free(m->tr[i].sync); free(m->tr[i].csd);
+    }
+    free((void *)m->d);
+    memset(m, 0, sizeof(*m));
+}
+static void MX_setDataSourceFD(tl_jcall *c)
+{
+    mx *m = mx_of(c->self);
+    jobj *fd = c->args[0].l;
+    int fdn = fd ? get_int(fd, "fd") : -1;
+    if (fdn < 0) fdn = fd ? get_int(fd, "descriptor") : -1;
+    int64_t off = c->args[1].j, len = c->args[2].j;
+    if (fdn < 0) { tl_jni_throw("java/io/IOException", "bad fd"); return; }
+    int d2 = dup(fdn);
+    FILE *f = fdopen(d2, "rb");
+    if (!f) { close(d2); tl_jni_throw("java/io/IOException", "cannot open fd"); return; }
+    fseek(f, 0, SEEK_END); long tot = ftell(f);
+    if (len <= 0 || off + len > tot) len = tot - off;
+    fseek(f, (long)off, SEEK_SET);
+    uint8_t *d = malloc((size_t)len);
+    if (!d || fread(d, 1, (size_t)len, f) != (size_t)len) { free(d); fclose(f); tl_jni_throw("java/io/IOException", "read failed"); return; }
+    fclose(f);
+    if (!mx_open(m, d, (size_t)len)) { free(d); tl_jni_throw("java/io/IOException", "not an MP4"); return; }
+    m->d = d; m->n = (size_t)len;
+}
+static void MX_setDataSourceFD1(tl_jcall *c)
+{
+    jvalue a[3]; a[0] = c->args[0]; a[1].j = 0; a[2].j = 0;
+    tl_jcall t = *c; t.args = a;
+    MX_setDataSourceFD(&t);
+}
+static void MX_hasTrack(tl_jcall *c)
+{
+    mx *m = mx_of(c->self);
+    const char *want = S(c->args[0].l);
+    for (int i = 0; i < m->ntr; i++)
+        if (!strncmp(m->tr[i].mime, want, strlen(want))) { c->ret = vz(true); return; }
+    c->ret = vz(false);
+}
+static void MX_getCachedDuration(tl_jcall *c) { (void)c; c->ret = vj(-1); }
+static void MX_getMetrics(tl_jcall *c)        { c->ret = vl(make("android/os/PersistableBundle")); }
+
 /* SoundPool */
 static void SP2_init(tl_jcall *c) { (void)c; }
 static void SP2Builder_build(tl_jcall *c) { c->ret = vl(make("android/media/SoundPool")); }
@@ -20768,6 +21219,25 @@ static const tl_jhle k_more_hle[] = {
     M("android/media/MediaCodecInfo", "getName", NULL, MCI_getName),
     M("android/media/MediaCodecInfo", "isEncoder", NULL, MCI_isEncoder),
     M("android/media/MediaCodecInfo", "getSupportedTypes", NULL, MCI_getSupportedTypes),
+    M("android/media/MediaExtractor", "<init>", "()V", MX_init),
+    M("android/media/MediaExtractor", "setDataSource", "(Ljava/lang/String;)V", MX_setDataSource),
+    M("android/media/MediaExtractor", "setDataSource", "(Ljava/io/FileDescriptor;JJ)V", MX_setDataSourceFD),
+    M("android/media/MediaExtractor", "setDataSource", "(Ljava/io/FileDescriptor;)V", MX_setDataSourceFD1),
+    M("android/media/MediaExtractor", "getTrackCount", NULL, MX_getTrackCount),
+    M("android/media/MediaExtractor", "getTrackFormat", "(I)Landroid/media/MediaFormat;", MX_getTrackFormat),
+    M("android/media/MediaExtractor", "selectTrack", "(I)V", MX_selectTrack),
+    M("android/media/MediaExtractor", "unselectTrack", "(I)V", MX_unselectTrack),
+    M("android/media/MediaExtractor", "hasTrack", "(Ljava/lang/String;)Z", MX_hasTrack),
+    M("android/media/MediaExtractor", "getSampleTrackIndex", NULL, MX_getSampleTrack),
+    M("android/media/MediaExtractor", "readSampleData", "(Ljava/nio/ByteBuffer;I)I", MX_readSampleData),
+    M("android/media/MediaExtractor", "advance", NULL, MX_advance),
+    M("android/media/MediaExtractor", "getSampleTime", NULL, MX_getSampleTime),
+    M("android/media/MediaExtractor", "getSampleFlags", NULL, MX_getSampleFlags),
+    M("android/media/MediaExtractor", "getSampleSize", NULL, MX_getSampleSize),
+    M("android/media/MediaExtractor", "seekTo", "(JI)V", MX_seekTo),
+    M("android/media/MediaExtractor", "getCachedDuration", NULL, MX_getCachedDuration),
+    M("android/media/MediaExtractor", "getMetrics", NULL, MX_getMetrics),
+    M("android/media/MediaExtractor", "release", NULL, MX_release),
     M("android/media/MediaPlayer", "reset", NULL, MP_reset),
     M("android/media/MediaPlayer", "seekTo", "(I)V", MP_seekTo),
     M("android/media/MediaPlayer", "getCurrentPosition", NULL, MP_getCurrentPosition),
