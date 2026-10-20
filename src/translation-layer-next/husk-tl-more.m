@@ -346,9 +346,9 @@ static CGColorRef cv_color(uint32_t argb)
     CGColorSpaceRelease(cs);
     return col;
 }
-void tl_canvas_text(int id, const char *s, float x0, float y0, float size, uint32_t argb, int bold)
+void tl_canvas_text(int cid, const char *s, float x0, float y0, float size, uint32_t argb, int bold)
 {
-    CGContextRef x = cv_ctx(id); if (!x || !s) return;
+    CGContextRef x = cv_ctx(cid); if (!x || !s) return;
     CTFontRef f = CTFontCreateWithName(bold ? CFSTR("Helvetica-Bold") : CFSTR("Helvetica"), size, NULL);
     if (!f) return;
     CGColorRef col = cv_color(argb);
