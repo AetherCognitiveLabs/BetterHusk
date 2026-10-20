@@ -12133,6 +12133,306 @@ static void MSock_setTimeToLive(tl_jcall *c)
     setsockopt(d->fd, IPPROTO_IP, IP_MULTICAST_TTL, &v, sizeof(v));
 }
 
+/* ---- android.util.JsonReader/JsonWriter: real streaming pull parser ----
+ * okhttp3, Firebase, crash reporters and GSON's streaming API consume these.
+ * Input is buffered fully, then tokenised lazily. */
+typedef struct {
+    char *buf; size_t n, pos;
+    int stack[64], sp;            /* 1=object-expecting-name,2=object-expecting-value,3=array */
+    bool lenient;
+    int pending;                  /* deferred peek, -1 none */
+    char *pending_name;
+} jread;
+static jread *jr_of(jobj *o) { if (!o->native) o->native = calloc(1, sizeof(jread)); return o->native; }
+
+static void jr_ws(jread *r)
+{
+    while (r->pos < r->n) {
+        char ch = r->buf[r->pos];
+        if (ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r') r->pos++;
+        else if (ch == '/' && r->pos + 1 < r->n && r->buf[r->pos + 1] == '/') { while (r->pos < r->n && r->buf[r->pos] != '\n') r->pos++; }
+        else break;
+    }
+}
+static int jr_peek(jread *r)
+{
+    /* 0 BEG_OBJ, 1 END_OBJ, 2 BEG_ARR, 3 END_ARR, 4 NAME, 5 STRING, 6 NUMBER, 7 BOOL, 8 NULL, 9 END_DOC */
+    if (r->pending >= 0) return r->pending;
+    jr_ws(r);
+    if (r->pos >= r->n) return r->pending = 9;
+    int top = r->sp ? r->stack[r->sp - 1] : 0;
+    char ch = r->buf[r->pos];
+    if (top == 1) { /* after name comes ':' then value */
+        if (ch == ':') { r->pos++; jr_ws(r); ch = r->pos < r->n ? r->buf[r->pos] : 0; }
+    } else if (top == 2 || top == 3) {
+        if (ch == ',') { r->pos++; jr_ws(r); ch = r->pos < r->n ? r->buf[r->pos] : 0; }
+        else if (top == 3 && ch == ']') return r->pending = 3;
+        else if (top == 2 && ch == '}') return r->pending = 1;
+        if (top == 2 && ch != '}') {
+            /* expecting "name" */
+            return r->pending = 4;
+        }
+    }
+    if (ch == '{') return r->pending = 0;
+    if (ch == '}') return r->pending = 1;
+    if (ch == '[') return r->pending = 2;
+    if (ch == ']') return r->pending = 3;
+    if (ch == '"' || ch == '\'') return r->pending = (top == 2) ? 4 : 5;
+    if (!strncmp(r->buf + r->pos, "true", 4) || !strncmp(r->buf + r->pos, "false", 5)) return r->pending = 7;
+    if (!strncmp(r->buf + r->pos, "null", 4)) return r->pending = 8;
+    if (top == 2) return r->pending = 4;   /* lenient unquoted name */
+    return r->pending = 6;
+}
+static char *jr_string(jread *r)
+{
+    jr_ws(r);
+    if (r->pos >= r->n) return strdup("");
+    char ch = r->buf[r->pos];
+    if (ch == '"' || ch == '\'') {
+        char q = ch; r->pos++;
+        char *out = malloc(r->n); size_t k = 0;
+        while (r->pos < r->n && r->buf[r->pos] != q) {
+            char c2 = r->buf[r->pos++];
+            if (c2 == '\\' && r->pos < r->n) {
+                char e = r->buf[r->pos++];
+                switch (e) {
+                case 'n': out[k++] = '\n'; break; case 't': out[k++] = '\t'; break;
+                case 'r': out[k++] = '\r'; break; case 'b': out[k++] = '\b'; break;
+                case 'f': out[k++] = '\f'; break;
+                case 'u': { char hx[5] = { 0 }; memcpy(hx, r->buf + r->pos, r->pos + 4 <= r->n ? 4 : r->n - r->pos); r->pos += 4; out[k++] = (char)strtol(hx, NULL, 16); break; }
+                default: out[k++] = e; break;
+                }
+            } else out[k++] = c2;
+        }
+        if (r->pos < r->n) r->pos++;
+        out[k] = 0;
+        return out;
+    }
+    /* unquoted literal: number/bool/null or lenient name */
+    size_t s = r->pos;
+    while (r->pos < r->n && !strchr(" \t\r\n,:}[]", r->buf[r->pos])) r->pos++;
+    size_t m = r->pos - s;
+    char *out = malloc(m + 1); memcpy(out, r->buf + s, m); out[m] = 0;
+    return out;
+}
+static void jr_eat_end(jread *r, char want)
+{
+    jr_ws(r);
+    if (r->pos < r->n && r->buf[r->pos] == want) r->pos++;
+    if (r->sp) r->sp--;
+    if (r->pending == 1 || r->pending == 3) r->pending = -1;
+    if (r->sp && r->stack[r->sp - 1] == 1) r->stack[r->sp - 1] = 2;   /* completed a value inside an object */
+}
+static jobj *jr_token(const char *name, int ord)
+{
+    static jobj *toks[10]; static const char *names[10] = {
+        "BEGIN_OBJECT", "END_OBJECT", "BEGIN_ARRAY", "END_ARRAY", "NAME", "STRING", "NUMBER", "BOOLEAN", "NULL", "END_DOCUMENT" };
+    if (ord < 0 || ord > 9) return NULL;
+    if (!toks[ord]) {
+        toks[ord] = make("android/util/JsonToken");
+        set_str(toks[ord], "name", names[ord]); set_int(toks[ord], "ordinal", ord);
+    }
+    return toks[ord];
+}
+static void JR_init(tl_jcall *c)
+{
+    jread *r = jr_of(c->self);
+    /* arg is a Reader: drain it now through read() */
+    jobj *in = c->args[0].l;
+    sbuf b = { 0 };
+    for (;;) {
+        jvalue r2 = tl_jni_call(in, "read", "()I", NULL);
+        if (r2.i <= 0) break;   /* -1 EOF; 0 guards a missing impl from running away */
+        sb_putc(&b, (char)r2.i);
+        if (b.n > 16 << 20) break;
+    }
+    free(r->buf); r->buf = malloc(b.n + 1); memcpy(r->buf, b.p, b.n); r->buf[r->n = b.n] = 0;
+    free(b.p);
+    r->pos = 0; r->pending = -1;
+}
+static void JR_beginObject(tl_jcall *c)
+{
+    jread *r = jr_of(c->self);
+    if (jr_peek(r) != 0) { tl_jni_throw("java/lang/IllegalStateException", "expected BEGIN_OBJECT"); return; }
+    r->pos++; r->stack[r->sp++] = 2; r->pending = -1;
+}
+static void JR_endObject(tl_jcall *c)   { jr_eat_end(jr_of(c->self), '}'); }
+static void JR_beginArray(tl_jcall *c)
+{
+    jread *r = jr_of(c->self);
+    if (jr_peek(r) != 2) { tl_jni_throw("java/lang/IllegalStateException", "expected BEGIN_ARRAY"); return; }
+    r->pos++; r->stack[r->sp++] = 3; r->pending = -1;
+}
+static void JR_endArray(tl_jcall *c)    { jr_eat_end(jr_of(c->self), ']'); }
+static void JR_hasNext(tl_jcall *c)
+{
+    jread *r = jr_of(c->self); int p = jr_peek(r);
+    c->ret = vz(p != 1 && p != 3 && p != 9);
+}
+static void JR_peek(tl_jcall *c)        { c->ret = vl(jr_token(NULL, jr_peek(jr_of(c->self)))); }
+static void JR_nextName(tl_jcall *c)
+{
+    jread *r = jr_of(c->self);
+    if (jr_peek(r) != 4) { tl_jni_throw("java/lang/IllegalStateException", "expected NAME"); c->ret = vl(NULL); return; }
+    char *nm = jr_string(r);
+    r->stack[r->sp - 1] = 1;   /* now expect : value */
+    r->pending = -1;
+    free(r->pending_name); r->pending_name = strdup(nm);
+    c->ret = vl(STR(nm)); free(nm);
+}
+static void JR_nextString(tl_jcall *c)
+{
+    jread *r = jr_of(c->self);
+    char *v = jr_string(r);
+    r->pending = -1;
+    if (r->sp && r->stack[r->sp - 1] == 1) r->stack[r->sp - 1] = 2;
+    c->ret = vl(STR(v)); free(v);
+}
+static void JR_nextInt(tl_jcall *c)
+{
+    jread *r = jr_of(c->self); char *v = jr_string(r); r->pending = -1;
+    if (r->sp && r->stack[r->sp - 1] == 1) r->stack[r->sp - 1] = 2;
+    c->ret = vi(atoi(v)); free(v);
+}
+static void JR_nextLong(tl_jcall *c)
+{
+    jread *r = jr_of(c->self); char *v = jr_string(r); r->pending = -1;
+    if (r->sp && r->stack[r->sp - 1] == 1) r->stack[r->sp - 1] = 2;
+    c->ret = vj(strtoll(v, NULL, 10)); free(v);
+}
+static void JR_nextDouble(tl_jcall *c)
+{
+    jread *r = jr_of(c->self); char *v = jr_string(r); r->pending = -1;
+    if (r->sp && r->stack[r->sp - 1] == 1) r->stack[r->sp - 1] = 2;
+    c->ret = vd(strtod(v, NULL)); free(v);
+}
+static void JR_nextBoolean(tl_jcall *c)
+{
+    jread *r = jr_of(c->self); char *v = jr_string(r); r->pending = -1;
+    if (r->sp && r->stack[r->sp - 1] == 1) r->stack[r->sp - 1] = 2;
+    c->ret = vz(!strcmp(v, "true")); free(v);
+}
+static void JR_nextNull(tl_jcall *c)
+{
+    jread *r = jr_of(c->self); char *v = jr_string(r); free(v); r->pending = -1;
+    if (r->sp && r->stack[r->sp - 1] == 1) r->stack[r->sp - 1] = 2;
+}
+static void jr_skip_value(jread *r)
+{
+    int depth = 0;
+    int p = jr_peek(r);
+    if (p == 4) { free(jr_string(r)); r->pending = -1; if (r->sp) r->stack[r->sp - 1] = 1; }
+    for (;;) {
+        p = jr_peek(r); r->pending = -1;
+        jr_ws(r);
+        if (p == 0 || p == 2) { r->pos++; depth++; }
+        else if (p == 1 || p == 3) { r->pos++; if (--depth <= 0) break; }
+        else { char *v = jr_string(r); free(v); if (depth == 0) break; }
+        jr_ws(r);
+        if (r->pos < r->n && r->buf[r->pos] == ',') r->pos++;
+        else if (depth == 0) break;
+    }
+    if (r->sp && r->stack[r->sp - 1] == 1) r->stack[r->sp - 1] = 2;
+}
+static void JR_skipValue(tl_jcall *c) { jr_skip_value(jr_of(c->self)); }
+static void JR_setLenient(tl_jcall *c)  { jr_of(c->self)->lenient = c->args[0].z; }
+static void JR_isLenient(tl_jcall *c)   { c->ret = vz(jr_of(c->self)->lenient); }
+static void JR_close(tl_jcall *c)       { jread *r = jr_of(c->self); free(r->buf); r->buf = NULL; r->n = r->pos = 0; }
+
+/* JsonWriter: serialises into a Writer (StringWriter path) */
+static void JW_call(tl_jcall *c, const char *s)
+{
+    jobj *w = tl_jni_get_field(c->self, "out", "Ljava/io/Writer;").l;
+    if (w) { jvalue a = { .j = 0, .l = (jobj *)STR(s) }; tl_jni_call(w, "write", "(Ljava/lang/Object;)V", &a); }
+}
+static void JW_init(tl_jcall *c)        { set_obj(c->self, "out", "Ljava/io/Writer;", c->args[0].l); set_bool(c->self, "inArr", 0); }
+static void JW_beginObject(tl_jcall *c) { JW_call(c, "{"); set_bool(c->self, "first", 1); c->ret = vl(tl_jni_ref(c->self)); }
+static void JW_endObject(tl_jcall *c)   { JW_call(c, "}"); c->ret = vl(tl_jni_ref(c->self)); }
+static void JW_beginArray(tl_jcall *c)  { JW_call(c, "["); set_bool(c->self, "first", 1); c->ret = vl(tl_jni_ref(c->self)); }
+static void JW_endArray(tl_jcall *c)    { JW_call(c, "]"); c->ret = vl(tl_jni_ref(c->self)); }
+static void JW_sep(tl_jcall *c)
+{
+    if (tl_jni_get_field(c->self, "first", "Z").z) set_bool(c->self, "first", 0); else JW_call(c, ",");
+}
+static void JW_name(tl_jcall *c)
+{
+    JW_sep(c); char b[512]; snprintf(b, sizeof(b), "\"%s\":", S(c->args[0].l)); JW_call(c, b);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void JW_value_s(tl_jcall *c)
+{
+    char b[1024]; snprintf(b, sizeof(b), "\"%s\"", S(c->args[0].l)); JW_call(c, b);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void JW_value_n(tl_jcall *c)
+{
+    char b[64]; snprintf(b, sizeof(b), "%lld", c->args[0].j); JW_call(c, b);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void JW_value_d(tl_jcall *c)
+{
+    char b[64]; snprintf(b, sizeof(b), "%g", c->args[0].d); JW_call(c, b);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void JW_value_b(tl_jcall *c)     { JW_call(c, c->args[0].z ? "true" : "false"); c->ret = vl(tl_jni_ref(c->self)); }
+static void JW_nullValue(tl_jcall *c)   { JW_call(c, "null"); c->ret = vl(tl_jni_ref(c->self)); }
+static void JW_flush(tl_jcall *c)
+{
+    jobj *w = tl_jni_get_field(c->self, "out", "Ljava/io/Writer;").l;
+    if (w) tl_jni_call(w, "flush", "()V", NULL);
+}
+static void JW_close(tl_jcall *c)       { JW_flush(c); }
+
+/* MediaMetadataRetriever: game/asset tooling asks for durations and album art.
+ * Without a codec stack we answer honestly: real path/FD kept, extraction
+ * yields null rather than fabricated values. */
+static void MMR_init(tl_jcall *c)      { (void)c; }
+static void MMR_setDataSource_path(tl_jcall *c) { set_str(c->self, "path", S(c->args[0].l)); }
+static void MMR_setDataSource_fd(tl_jcall *c)
+{
+    /* FileDescriptor arg: stash the object; dup its fd lazily if needed */
+    set_obj(c->self, "fd", "Ljava/io/FileDescriptor;", c->args[0].l);
+}
+static void MMR_setDataSource_ctx(tl_jcall *c)
+{
+    /* (Context, Uri): resolve content:// through the ContentResolver later;
+     * keep the uri so callers can at least requery */
+    set_obj(c->self, "uri", "Landroid/net/Uri;", c->args[1].l);
+    if (c->args[1].l) {
+        jobj *u = c->args[1].l;
+        jobj *s = tl_jni_get_field(u, "uri", "Ljava/lang/String;").l;
+        if (s && strncmp(S(s), "file://", 7) == 0) set_str(c->self, "path", S(s) + 7);
+    }
+}
+static void MMR_extractMetadata(tl_jcall *c)
+{
+    int key = c->args[0].i;
+    const char *path = S(get_str(c->self, "path"));
+    /* METADATA_KEY_DURATION=9, BITRATE=20, HAS_AUDIO=17, HAS_VIDEO=18,
+     * VIDEO_WIDTH=19, VIDEO_HEIGHT=21, NUM_TRACKS=10, TITLE=7, ARTIST=2,
+     * ALBUM=1, DATE=5, MIMETYPE=12, CAPTURE_FRAMERATE=25 */
+    if (!path || !*path) { c->ret = vl(NULL); return; }
+    const char *e = strrchr(path, '.');
+    const char *mime = NULL;
+    if (e) {
+        struct { const char *x, *m; } t[] = {
+            { ".mp4", "video/mp4" }, { ".m4a", "audio/mp4" }, { ".mp3", "audio/mpeg" },
+            { ".ogg", "audio/ogg" }, { ".wav", "audio/wav" }, { ".webm", "video/webm" },
+            { ".mkv", "video/x-matroska" }, { ".aac", "audio/aac" },
+        };
+        for (size_t i = 0; i < sizeof(t) / sizeof(t[0]); i++) if (!strcasecmp(e, t[i].x)) { mime = t[i].m; break; }
+    }
+    switch (key) {
+    case 12: c->ret = vl(mime ? STR(mime) : NULL); return;
+    case 17: c->ret = vl(mime && strncmp(mime, "video", 5) ? STR("yes") : STR("no")); return;
+    case 18: c->ret = vl(mime && !strncmp(mime, "video", 5) ? STR("yes") : STR("no")); return;
+    default: c->ret = vl(NULL); return;
+    }
+}
+static void MMR_getFrameAtTime(tl_jcall *c) { c->ret = vl(NULL); }
+static void MMR_getEmbeddedPicture(tl_jcall *c) { c->ret = vl(NULL); }
+static void MMR_release(tl_jcall *c) { (void)c; }
+
 /* ServerSocket: NanoHTTPD/embedded servers, cast receivers, dev tooling */
 static void srv_bind_port(tl_jcall *c, int port)
 {
@@ -18359,6 +18659,46 @@ static const tl_jhle k_more_hle[] = {
     M("java/net/ServerSocket", "setSoTimeout", "(I)V", Srv_setSoTimeout),
     M("java/net/ServerSocket", "getInetAddress", "()Ljava/lang/Object;", Srv_getInetAddress),
     M("java/net/ServerSocket", "getLocalSocketAddress", "()Ljava/lang/Object;", Srv_getLocalSocketAddress),
+    M("android/util/JsonReader", "<init>", "(Ljava/lang/Object;)V", JR_init),
+    M("android/util/JsonReader", "beginObject", "()V", JR_beginObject),
+    M("android/util/JsonReader", "endObject", "()V", JR_endObject),
+    M("android/util/JsonReader", "beginArray", "()V", JR_beginArray),
+    M("android/util/JsonReader", "endArray", "()V", JR_endArray),
+    M("android/util/JsonReader", "hasNext", "()Z", JR_hasNext),
+    M("android/util/JsonReader", "peek", "()Ljava/lang/Object;", JR_peek),
+    M("android/util/JsonReader", "nextName", "()Ljava/lang/Object;", JR_nextName),
+    M("android/util/JsonReader", "nextString", "()Ljava/lang/Object;", JR_nextString),
+    M("android/util/JsonReader", "nextInt", "()I", JR_nextInt),
+    M("android/util/JsonReader", "nextLong", "()J", JR_nextLong),
+    M("android/util/JsonReader", "nextDouble", "()D", JR_nextDouble),
+    M("android/util/JsonReader", "nextBoolean", "()Z", JR_nextBoolean),
+    M("android/util/JsonReader", "nextNull", "()V", JR_nextNull),
+    M("android/util/JsonReader", "skipValue", "()V", JR_skipValue),
+    M("android/util/JsonReader", "setLenient", "(Z)V", JR_setLenient),
+    M("android/util/JsonReader", "isLenient", "()Z", JR_isLenient),
+    M("android/util/JsonReader", "close", "()V", JR_close),
+    M("android/util/JsonWriter", "<init>", "(Ljava/lang/Object;)V", JW_init),
+    M("android/util/JsonWriter", "beginObject", "()Ljava/lang/Object;", JW_beginObject),
+    M("android/util/JsonWriter", "endObject", "()Ljava/lang/Object;", JW_endObject),
+    M("android/util/JsonWriter", "beginArray", "()Ljava/lang/Object;", JW_beginArray),
+    M("android/util/JsonWriter", "endArray", "()Ljava/lang/Object;", JW_endArray),
+    M("android/util/JsonWriter", "name", "(Ljava/lang/Object;)Ljava/lang/Object;", JW_name),
+    M("android/util/JsonWriter", "value", "(Ljava/lang/Object;)Ljava/lang/Object;", JW_value_s),
+    M("android/util/JsonWriter", "value", "(J)Ljava/lang/Object;", JW_value_n),
+    M("android/util/JsonWriter", "value", "(D)Ljava/lang/Object;", JW_value_d),
+    M("android/util/JsonWriter", "value", "(Z)Ljava/lang/Object;", JW_value_b),
+    M("android/util/JsonWriter", "nullValue", "()Ljava/lang/Object;", JW_nullValue),
+    M("android/util/JsonWriter", "flush", "()V", JW_flush),
+    M("android/util/JsonWriter", "close", "()V", JW_close),
+    M("android/media/MediaMetadataRetriever", "<init>", "()V", MMR_init),
+    M("android/media/MediaMetadataRetriever", "setDataSource", "(Ljava/lang/Object;)V", MMR_setDataSource_path),
+    M("android/media/MediaMetadataRetriever", "setDataSource", "(Ljava/lang/Object;Ljava/lang/Object;)V", MMR_setDataSource_ctx),
+    M("android/media/MediaMetadataRetriever", "setDataSource", "(Ljava/lang/Object;JJ)V", MMR_setDataSource_fd),
+    M("android/media/MediaMetadataRetriever", "extractMetadata", "(I)Ljava/lang/Object;", MMR_extractMetadata),
+    M("android/media/MediaMetadataRetriever", "getFrameAtTime", "(J)Ljava/lang/Object;", MMR_getFrameAtTime),
+    M("android/media/MediaMetadataRetriever", "getFrameAtTime", "(JI)Ljava/lang/Object;", MMR_getFrameAtTime),
+    M("android/media/MediaMetadataRetriever", "getEmbeddedPicture", "()[B", MMR_getEmbeddedPicture),
+    M("android/media/MediaMetadataRetriever", "release", "()V", MMR_release),
     /* Resources: resolve real ids/values from resources.arsc */
     M("android/content/res/Resources", "getIdentifier", "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)I", Res_getIdentifier),
     M("android/content/res/Resources", "getString", "(I)Ljava/lang/Object;", Res_getString),
@@ -18418,6 +18758,10 @@ static const struct { const char *name, *super; } k_more_classes[] = {
     { "java/net/NoRouteToHostException", "java/net/SocketException" },
     { "java/net/PortUnreachableException", "java/net/SocketException" },
     { "java/net/ServerSocket", "java/lang/Object" },
+    { "android/util/JsonToken", "java/lang/Enum" },
+    { "android/util/JsonReader", "java/lang/Object" },
+    { "android/util/JsonWriter", "java/lang/Object" },
+    { "android/media/MediaMetadataRetriever", "java/lang/Object" },
     { "java/net/ConnectException", "java/net/SocketException" },
     { "java/io/InterruptedIOException", "java/io/IOException" },
     { "java/net/SocketTimeoutException", "java/io/InterruptedIOException" },
