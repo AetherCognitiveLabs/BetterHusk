@@ -361,8 +361,11 @@ enum JITBootstrap {
     @MainActor
     static func requestTrollStoreAttach() -> Bool {
         HuskLog.log("jit", "requestTrollStoreAttach() -- handing off to TrollStore")
-        guard let bundleID = Bundle.main.bundleIdentifier else { return false }
-        
+        // Inside LiveContainer the running process is the container's, so the bundle id TrollStore
+        // resolves and attaches to is LiveContainer's (attachBundleID), not ours.
+        let bundleID = attachBundleID
+        guard !bundleID.isEmpty else { return false }
+
         let url = "apple-magnifier://enable-jit?bundle-id=\(bundleID)"
         guard isTrollStoreInstalled, let launchURL = URL(string: url) else {
             HuskLog.log("jit", "FAIL: TrollStore is not installed")
