@@ -9745,7 +9745,6 @@ static void Surf_describeContents(tl_jcall *c) { c->ret = vi(0); }
 static void Surf_writeToParcel(tl_jcall *c) { (void)c; }
 static void Surf_readFromParcel(tl_jcall *c) { (void)c; }
 static void Surf_toString(tl_jcall *c) { c->ret = vl(STR("Surface(name=betterhusk)")); }
-
 /* WindowManager.LayoutParams */
 static void WLP_init(tl_jcall *c) { (void)c; }
 static void WLP_initWH(tl_jcall *c)
@@ -12538,6 +12537,155 @@ static void BM_eraseColor(tl_jcall *c)
     }
 }
 static void BM_compress(tl_jcall *c) { (void)c; c->ret = vz(0); }
+
+static void Surf_init_tex(tl_jcall *c)   /* <init>(SurfaceTexture): texture-backed window */
+{
+    if (c->args[0].l) tl_jni_set_field(c->self, "huskTexture", "Landroid/graphics/SurfaceTexture;", c->args[0]);
+}
+
+/* ---- SurfaceView / SurfaceHolder / GLSurfaceView ----
+ * Hybrid engines drive their surface through these Java objects. The holder
+ * hands out one persistent Surface; callbacks fire surfaceCreated +
+ * surfaceChanged immediately (our window already exists), which is what the
+ * surfaceReady flag on real devices converges to. lockCanvas draws into a
+ * bitmap whose pixels are posted to the window on unlock. */
+void *tl_nwindow_get(void);
+void tl_nwindow_post(void *window, const void *rgba, int w, int h, bool flip);
+int tl_nwindow_width(void *window);
+int tl_nwindow_height(void *window);
+
+typedef struct { jvec cbs; jobj *surf; void *win; jobj *canvas, *cbmp; } holder;
+static holder *holder_of(jobj *o) { if (!o->native) o->native = calloc(1, sizeof(holder)); return o->native; }
+
+static jobj *holder_surface(holder *h)
+{
+    if (!h->surf) { h->surf = tl_jni_ref(make("android/view/Surface")); h->surf->native = h; }
+    return h->surf;
+}
+static void SH_addCallback(tl_jcall *c)
+{
+    holder *h = holder_of(c->self);
+    jobj *cb = c->args[0].l;
+    if (!cb) return;
+    for (int i = 0; i < h->cbs.n; i++) if (h->cbs.v[i] == cb) return;
+    vec_push(&h->cbs, tl_jni_ref(cb));
+    /* the surface already exists: report created + changed right away */
+    jvalue s[1] = { { .j = 0, .l = c->self } };
+    tl_jni_call(cb, "surfaceCreated", "(Landroid/view/SurfaceHolder;)V", s);
+    if (tl_jni_pending()) tl_jni_clear();
+    int w = 0, hh = 0;
+    if (h->win) { w = tl_nwindow_width(h->win); hh = tl_nwindow_height(h->win); }
+    jvalue s3[4] = { { .j = 0, .l = c->self }, { .i = 1 }, { .i = w }, { .i = hh } };
+    tl_jni_call(cb, "surfaceChanged", "(Landroid/view/SurfaceHolder;III)V", s3);
+    if (tl_jni_pending()) tl_jni_clear();
+}
+static void SH_removeCallback(tl_jcall *c)
+{
+    holder *h = holder_of(c->self); jobj *cb = c->args[0].l;
+    for (int i = 0; i < h->cbs.n; i++) if (h->cbs.v[i] == cb) {
+        memmove(&h->cbs.v[i], &h->cbs.v[i + 1], (size_t)(h->cbs.n - i - 1) * sizeof(jobj *)); h->cbs.n--; break;
+    }
+}
+static void SH_getSurface(tl_jcall *c)  { c->ret = vl(holder_surface(holder_of(c->self))); }
+static void SH_isCreating(tl_jcall *c)  { c->ret = vz(0); }
+static void SH_setFixedSize(tl_jcall *c) { set_int(c->self, "fixedW", c->args[0].i); set_int(c->self, "fixedH", c->args[1].i); }
+static void SH_setFormat(tl_jcall *c)    { set_int(c->self, "format", c->args[0].i); }
+static void SH_setKeepScreenOn(tl_jcall *c) { (void)c; }
+static void SH_setSizeFromLayout(tl_jcall *c) { (void)c; }
+static void SH_getSurfaceFrame(tl_jcall *c)
+{
+    holder *h = holder_of(c->self);
+    int w = h->win ? tl_nwindow_width(h->win) : 0, hh = h->win ? tl_nwindow_height(h->win) : 0;
+    jobj *r = make("android/graphics/Rect");
+    set_int(r, "left", 0); set_int(r, "top", 0); set_int(r, "right", w); set_int(r, "bottom", hh);
+    c->ret = vl(r);
+}
+static void SH_lockCanvas(tl_jcall *c)
+{
+    holder *h = holder_of(c->self);
+    if (!h->win) h->win = tl_nwindow_get();
+    int w = tl_nwindow_width(h->win), hh = tl_nwindow_height(h->win);
+    if (w <= 0 || hh <= 0) { w = 1080; hh = 2400; }
+    if (!h->cbmp)
+        h->cbmp = tl_jni_ref(bitmap_from_decoded(calloc((size_t)w * hh, 4), w, hh));
+    if (!h->canvas) {
+        h->canvas = tl_jni_ref(make("android/graphics/Canvas"));
+        if (h->canvas) {
+            jvalue a[1] = { { .j = 0, .l = h->cbmp } };
+            tl_jni_call(h->canvas, "<init>", "(Ljava/lang/Object;)V", a);
+        }
+    }
+    c->ret = vl(h->canvas);
+}
+static void SH_unlockCanvasAndPost(tl_jcall *c)
+{
+    holder *h = holder_of(c->self);
+    if (h->win && h->cbmp) {
+        bmpx *p = bmpx_of(h->cbmp);
+        if (p->px) tl_nwindow_post(h->win, p->px, p->w, p->h, false);
+    }
+}
+static void SV_init(tl_jcall *c) { (void)c; }
+static void SV_getHolder(tl_jcall *c)
+{
+    jobj *h = tl_jni_get_field(c->self, "holder", "Landroid/view/SurfaceHolder;").l;
+    if (!h) {
+        h = make("android/view/SurfaceHolder");
+        ((holder *)holder_of(h))->win = tl_nwindow_get();
+        tl_jni_set_field(c->self, "holder", "Landroid/view/SurfaceHolder;", vl(h));
+    }
+    c->ret = vl(h);
+}
+static void SV_zorder(tl_jcall *c) { (void)c; }
+static void SV_setSecure(tl_jcall *c)  { (void)c; }
+
+/* GLSurfaceView: store the renderer + surface state, run queueEvent
+ * inline, and fire the Renderer interface when it is installed so engines
+ * that create their EGL state from those callbacks still get them. */
+typedef struct { jobj *renderer; int es; bool resumed; } glsv;
+static glsv *glsv_of(jobj *o) { if (!o->native) o->native = calloc(1, sizeof(glsv)); return o->native; }
+static void GLSV_init(tl_jcall *c) { (void)c; }
+static void GLSV_setEGLContextClientVersion(tl_jcall *c) { glsv_of(c->self)->es = c->args[0].i; }
+static void GLSV_queueEvent(tl_jcall *c)
+{
+    if (c->args[0].l) { tl_jni_call(c->args[0].l, "run", "()V", NULL); if (tl_jni_pending()) tl_jni_clear(); }
+}
+static void glsv_fire(glsv *g)
+{
+    if (!g->renderer) return;
+    void *nw = tl_nwindow_get();
+    int w = tl_nwindow_width(nw), h = tl_nwindow_height(nw);
+    jobj *cfg = make("javax/microedition/khronos/egl/EGLConfig");
+    jobj *gl  = make("javax/microedition/khronos/opengles/GL10");
+    jvalue a[2] = { { .j = 0, .l = gl }, { .j = 0, .l = cfg } };
+    tl_jni_call(g->renderer, "onSurfaceCreated", "(Ljavax/microedition/khronos/opengles/GL10;Ljavax/microedition/khronos/egl/EGLConfig;)V", a);
+    if (tl_jni_pending()) tl_jni_clear();
+    jvalue a2[3] = { { .j = 0, .l = gl }, { .i = w }, { .i = h } };
+    tl_jni_call(g->renderer, "onSurfaceChanged", "(Ljavax/microedition/khronos/opengles/GL10;II)V", a2);
+    if (tl_jni_pending()) tl_jni_clear();
+}
+static void GLSV_setRenderer(tl_jcall *c)
+{
+    glsv *g = glsv_of(c->self);
+    g->renderer = tl_jni_ref(c->args[0].l);
+    g->resumed = true;
+    glsv_fire(g);
+}
+static void GLSV_onPause(tl_jcall *c)  { glsv_of(c->self)->resumed = false; }
+static void GLSV_onResume(tl_jcall *c) { glsv_of(c->self)->resumed = true; }
+static void GLSV_setPreserveEGLContextOnPause(tl_jcall *c) { (void)c; }
+static void GLSV_requestRender(tl_jcall *c)
+{
+    glsv *g = glsv_of(c->self);
+    if (g->renderer) {
+        jvalue a[1] = { { .j = 0, .l = make("javax/microedition/khronos/opengles/GL10") } };
+        tl_jni_call(g->renderer, "onDrawFrame", "(Ljavax/microedition/khronos/opengles/GL10;)V", a);
+        if (tl_jni_pending()) tl_jni_clear();
+    }
+}
+static void GLSV_setRenderMode(tl_jcall *c) { set_int(c->self, "renderMode", c->args[0].i); }
+static void GLSV_getRenderMode(tl_jcall *c) { c->ret = vi(get_int(c->self, "renderMode")); }
+
 
 /* ---- android.graphics.Canvas: real drawing into Bitmap pixels via CG ----
  * Games and libs do `new Canvas(bitmap)` then drawColor/drawRect/drawText/
@@ -18234,6 +18382,33 @@ static const tl_jhle k_more_hle[] = {
     M("android/view/Surface", "writeToParcel", NULL, Surf_writeToParcel),
     M("android/view/Surface", "readFromParcel", NULL, Surf_readFromParcel),
     M("android/view/Surface", "toString", NULL, Surf_toString),
+    M("android/view/Surface", "<init>", "(Ljava/lang/Object;)V", Surf_init_tex),
+    M("android/view/SurfaceHolder", "addCallback", "(Ljava/lang/Object;)V", SH_addCallback),
+    M("android/view/SurfaceHolder", "removeCallback", "(Ljava/lang/Object;)V", SH_removeCallback),
+    M("android/view/SurfaceHolder", "getSurface", "()Ljava/lang/Object;", SH_getSurface),
+    M("android/view/SurfaceHolder", "isCreating", "()Z", SH_isCreating),
+    M("android/view/SurfaceHolder", "setFixedSize", "(II)V", SH_setFixedSize),
+    M("android/view/SurfaceHolder", "setFormat", "(I)V", SH_setFormat),
+    M("android/view/SurfaceHolder", "setKeepScreenOn", "(Z)V", SH_setKeepScreenOn),
+    M("android/view/SurfaceHolder", "setSizeFromLayout", "()V", SH_setSizeFromLayout),
+    M("android/view/SurfaceHolder", "getSurfaceFrame", "()Ljava/lang/Object;", SH_getSurfaceFrame),
+    M("android/view/SurfaceHolder", "lockCanvas", "()Ljava/lang/Object;", SH_lockCanvas),
+    M("android/view/SurfaceHolder", "unlockCanvasAndPost", "(Ljava/lang/Object;)V", SH_unlockCanvasAndPost),
+    M("android/view/SurfaceView", "<init>", NULL, SV_init),
+    M("android/view/SurfaceView", "getHolder", "()Ljava/lang/Object;", SV_getHolder),
+    M("android/view/SurfaceView", "setZOrderOnTop", "(Z)V", SV_zorder),
+    M("android/view/SurfaceView", "setZOrderMediaOverlay", "(Z)V", SV_zorder),
+    M("android/view/SurfaceView", "setSecure", "(Z)V", SV_setSecure),
+    M("android/opengl/GLSurfaceView", "<init>", NULL, GLSV_init),
+    M("android/opengl/GLSurfaceView", "setEGLContextClientVersion", "(I)V", GLSV_setEGLContextClientVersion),
+    M("android/opengl/GLSurfaceView", "setRenderer", "(Ljava/lang/Object;)V", GLSV_setRenderer),
+    M("android/opengl/GLSurfaceView", "queueEvent", "(Ljava/lang/Object;)V", GLSV_queueEvent),
+    M("android/opengl/GLSurfaceView", "onPause", "()V", GLSV_onPause),
+    M("android/opengl/GLSurfaceView", "onResume", "()V", GLSV_onResume),
+    M("android/opengl/GLSurfaceView", "setPreserveEGLContextOnPause", "(Z)V", GLSV_setPreserveEGLContextOnPause),
+    M("android/opengl/GLSurfaceView", "requestRender", "()V", GLSV_requestRender),
+    M("android/opengl/GLSurfaceView", "setRenderMode", "(I)V", GLSV_setRenderMode),
+    M("android/opengl/GLSurfaceView", "getRenderMode", "()I", GLSV_getRenderMode),
     M("android/view/WindowManager$LayoutParams", "<init>", "()V", WLP_init),
     M("android/view/WindowManager$LayoutParams", "<init>", "(II)V", WLP_initWH),
     M("android/view/WindowManager$LayoutParams", "copyFrom", "(Ljava/lang/Object;)Ljava/lang/Object;", WLP_copyFrom),
@@ -19756,6 +19931,17 @@ static const struct { const char *name, *super; } k_more_classes[] = {
     { "android/view/KeyEvent", "java/lang/Object" },
     { "android/view/InputDevice", "java/lang/Object" },
     { "android/view/Surface", "java/lang/Object" },
+    { "android/view/SurfaceHolder", "java/lang/Object" },
+    { "android/view/SurfaceView", "android/view/View" },
+    { "android/view/TextureView", "android/view/View" },
+    { "android/graphics/SurfaceTexture", "java/lang/Object" },
+    { "android/opengl/GLSurfaceView", "android/view/SurfaceView" },
+    { "javax/microedition/khronos/egl/EGLConfig", "java/lang/Object" },
+    { "javax/microedition/khronos/egl/EGLDisplay", "java/lang/Object" },
+    { "javax/microedition/khronos/egl/EGLContext", "java/lang/Object" },
+    { "javax/microedition/khronos/egl/EGLSurface", "java/lang/Object" },
+    { "javax/microedition/khronos/opengles/GL10", "java/lang/Object" },
+    { "javax/microedition/khronos/opengles/GL11", "javax/microedition/khronos/opengles/GL10" },
     { "android/view/WindowManager$LayoutParams", "java/lang/Object" },
     { "android/widget/Toast", "java/lang/Object" },
     { "android/app/Notification$Builder", "java/lang/Object" },
