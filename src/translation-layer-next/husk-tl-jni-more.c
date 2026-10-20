@@ -143,6 +143,7 @@ static void set_obj(jobj *o, const char *f, const char *sig, jobj *v) { tl_jni_s
 static int   get_int(jobj *o, const char *f) { return o ? tl_jni_get_field(o, f, "I").i : 0; }
 static int64_t get_lng(jobj *o, const char *f) { return o ? tl_jni_get_field(o, f, "J").j : 0; }
 static float get_flt(jobj *o, const char *f) { return o ? tl_jni_get_field(o, f, "F").f : 0; }
+static double get_dbl(jobj *o, const char *f) { return o ? tl_jni_get_field(o, f, "D").d : 0; }
 static jobj *get_str(jobj *o, const char *f) { return o ? tl_jni_get_field(o, f, "Ljava/lang/String;").l : NULL; }
 
 static void Noop(tl_jcall *c)  { (void)c; }
@@ -8013,6 +8014,43 @@ static void Telephony_isVoiceCapable(tl_jcall *c) { c->ret = vz(true); }
 static void Telephony_isSmsCapable(tl_jcall *c) { c->ret = vz(true); }
 static void Telephony_getCallState(tl_jcall *c) { c->ret = vi(0); }
 static void Telephony_getDataActivity(tl_jcall *c) { c->ret = vi(0); }
+
+/* android.location — provider plumbing, no real fix: last-known is null so
+ * apps take their "location unavailable" path instead of a fake position. */
+static void Loc_init(tl_jcall *c) { if (c->args && c->args[0].l) set_str(c->self, "provider", S(c->args[0].l)); }
+static void Loc_getProvider(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "provider", "Ljava/lang/String;"); }
+static void Loc_getLatitude(tl_jcall *c)  { c->ret = vd(get_dbl(c->self, "lat")); }
+static void Loc_getLongitude(tl_jcall *c) { c->ret = vd(get_dbl(c->self, "lng")); }
+static void Loc_getAltitude(tl_jcall *c)  { c->ret = vd(get_dbl(c->self, "alt")); }
+static void Loc_getAccuracy(tl_jcall *c)  { c->ret = vf(get_flt(c->self, "acc")); }
+static void Loc_hasAccuracy(tl_jcall *c)  { c->ret = vz(get_flt(c->self, "acc") != 0); }
+static void Loc_getSpeed(tl_jcall *c)     { c->ret = vf(get_flt(c->self, "speed")); }
+static void Loc_hasSpeed(tl_jcall *c)     { c->ret = vz(get_flt(c->self, "speed") != 0); }
+static void Loc_getBearing(tl_jcall *c)   { c->ret = vf(get_flt(c->self, "bearing")); }
+static void Loc_getTime(tl_jcall *c)      { c->ret = vj(get_lng(c->self, "time")); }
+static void Loc_getElapsedRealtimeNanos(tl_jcall *c) { c->ret = vj(get_lng(c->self, "eln")); }
+static void Loc_getExtras(tl_jcall *c)
+{
+    jobj *x = tl_jni_get_field(c->self, "extras", "Landroid/os/Bundle;").l;
+    c->ret = vl(x ? x : make("android/os/Bundle"));
+}
+static void Loc_setExtras(tl_jcall *c) { if (c->args) tl_jni_set_field(c->self, "extras", "Landroid/os/Bundle;", c->args[0]); }
+static void LocMgr_isProviderEnabled(tl_jcall *c)
+{
+    const char *p = c->args && c->args[0].l ? S(c->args[0].l) : "";
+    c->ret = vz(!strcmp(p, "gps") || !strcmp(p, "network") || !strcmp(p, "passive"));
+}
+static void LocMgr_getProviders(tl_jcall *c)
+{
+    jobj *l = make("java/util/ArrayList");
+    vec_push(vec_of(l), STR("gps")); vec_push(vec_of(l), STR("network")); vec_push(vec_of(l), STR("passive"));
+    c->ret = vl(l);
+}
+static void LocMgr_getBestProvider(tl_jcall *c) { (void)c; c->ret = vl(STR("gps")); }
+static void LocMgr_getLastKnownLocation(tl_jcall *c) { (void)c; c->ret = vl(NULL); }
+static void LocMgr_requestUpdates(tl_jcall *c) { (void)c; }
+static void LocMgr_removeUpdates(tl_jcall *c) { (void)c; }
+static void LocMgr_getAllProviders(tl_jcall *c) { LocMgr_getProviders(c); }
 
 /* ============================================================== android.graphics */
 
@@ -20145,6 +20183,27 @@ static const tl_jhle k_more_hle[] = {
     M("android/telephony/TelephonyManager", "isSmsCapable", NULL, Telephony_isSmsCapable),
     M("android/telephony/TelephonyManager", "getCallState", NULL, Telephony_getCallState),
     M("android/telephony/TelephonyManager", "getDataActivity", NULL, Telephony_getDataActivity),
+    M("android/location/Location", "<init>", "(Ljava/lang/String;)V", Loc_init),
+    M("android/location/Location", "getProvider", NULL, Loc_getProvider),
+    M("android/location/Location", "getLatitude", NULL, Loc_getLatitude),
+    M("android/location/Location", "getLongitude", NULL, Loc_getLongitude),
+    M("android/location/Location", "getAltitude", NULL, Loc_getAltitude),
+    M("android/location/Location", "getAccuracy", NULL, Loc_getAccuracy),
+    M("android/location/Location", "hasAccuracy", NULL, Loc_hasAccuracy),
+    M("android/location/Location", "getSpeed", NULL, Loc_getSpeed),
+    M("android/location/Location", "hasSpeed", NULL, Loc_hasSpeed),
+    M("android/location/Location", "getBearing", NULL, Loc_getBearing),
+    M("android/location/Location", "getTime", NULL, Loc_getTime),
+    M("android/location/Location", "getElapsedRealtimeNanos", NULL, Loc_getElapsedRealtimeNanos),
+    M("android/location/Location", "getExtras", NULL, Loc_getExtras),
+    M("android/location/Location", "setExtras", "(Landroid/os/Bundle;)V", Loc_setExtras),
+    M("android/location/LocationManager", "isProviderEnabled", "(Ljava/lang/String;)Z", LocMgr_isProviderEnabled),
+    M("android/location/LocationManager", "getProviders", "(Z)Ljava/util/List;", LocMgr_getProviders),
+    M("android/location/LocationManager", "getAllProviders", NULL, LocMgr_getAllProviders),
+    M("android/location/LocationManager", "getBestProvider", "(Landroid/location/Criteria;Z)Ljava/lang/String;", LocMgr_getBestProvider),
+    M("android/location/LocationManager", "getLastKnownLocation", "(Ljava/lang/String;)Landroid/location/Location;", LocMgr_getLastKnownLocation),
+    M("android/location/LocationManager", "requestLocationUpdates", NULL, LocMgr_requestUpdates),
+    M("android/location/LocationManager", "removeUpdates", NULL, LocMgr_removeUpdates),
     M("android/graphics/Rect", "<init>", NULL, Rect_init),
     M("android/graphics/Rect", "init4", "(IIII)V", Rect_init4),
     M("android/graphics/Rect", "initR", "(Ljava/lang/Object;)V", Rect_initR),
