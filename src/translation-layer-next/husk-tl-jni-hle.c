@@ -1853,6 +1853,7 @@ extern void tl_tls_install(void);
 extern void tl_gms_install(void);
 extern void tl_audiotrack_hle_install(void);
 extern void tl_assetstream_install(void);
+extern void tl_security_install(void);
 extern void tl_audio_install(void);
 void tl_jni_hle_install(void)
 {
@@ -1867,6 +1868,7 @@ void tl_jni_hle_install(void)
     tl_gms_install();
     tl_audiotrack_hle_install();   /* AudioTrack is a stock Android class: every engine route needs it */
     tl_assetstream_install();      /* AAssetManager natives likewise */
+    tl_security_install();         /* java.security Signature/KeyFactory for licence checks */
     if (!tl_cocos_audio_hook) tl_audio_install();
 
     H.activity = make("android/app/Activity");
