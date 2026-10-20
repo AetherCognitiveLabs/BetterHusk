@@ -201,7 +201,74 @@ static void Context_startService(tl_jcall *c)
 static void Context_stopService(tl_jcall *c)  { (void)c; c->ret = vz(1); }
 static void Context_bindService(tl_jcall *c)  { (void)c; c->ret = vz(1); }
 static void Context_noop(tl_jcall *c)         { (void)c; }
-static void Context_registerReceiver(tl_jcall *c) { c->ret = vl(NULL); }
+
+/* BroadcastReceiver registry: SDKs (Firebase, connectivity watchers, power
+ * monitors) register receivers and expect sticky broadcasts back immediately,
+ * plus real dispatch for sendBroadcast. */
+extern int tl_more_battery_pct(void);
+extern int tl_more_battery_state(void);
+
+typedef struct { jobj *rcv, *filter; } regd_rcv;
+static regd_rcv rcv_tab[64]; static int rcv_n;
+
+static int filter_matches(jobj *filter, const char *action)
+{
+    if (!filter) return 0;
+    jobj *acts = tl_jni_get_field(filter, "actions", "Ljava/util/ArrayList;").l;
+    if (!acts) {
+        /* the IF impl keeps lists under bm-style names too; try both */
+        acts = tl_jni_get_field(filter, "actions", "Ljava/util/List;").l;
+    }
+    if (!acts) return 1;   /* filterless receiver hears everything */
+    jvalue a[1] = { { .j = 0, .l = STR(action) } };
+    return tl_jni_call(acts, "contains", "(Ljava/lang/Object;)Z", a).z;
+}
+static jobj *battery_sticky_intent(void)
+{
+    jobj *i = make("android/content/Intent");
+    jvalue a[1] = { { .j = 0, .l = STR("android.intent.action.BATTERY_CHANGED") } };
+    tl_jni_call(i, "setAction", "(Ljava/lang/String;)Landroid/content/Intent;", a);
+    jvalue lv[2] = { { .j = 0, .l = STR("level") }, { .i = tl_more_battery_pct() } };
+    tl_jni_call(i, "putExtra", "(Ljava/lang/String;I)Landroid/content/Intent;", lv);
+    jvalue sc[2] = { { .j = 0, .l = STR("scale") }, { .i = 100 } };
+    tl_jni_call(i, "putExtra", "(Ljava/lang/String;I)Landroid/content/Intent;", sc);
+    jvalue st[2] = { { .j = 0, .l = STR("status") }, { .i = tl_more_battery_state() } };
+    tl_jni_call(i, "putExtra", "(Ljava/lang/String;I)Landroid/content/Intent;", st);
+    return i;
+}
+static void Context_registerReceiver(tl_jcall *c)
+{
+    jobj *rcv = c->args[0].l, *filter = c->args[1].l;
+    if (rcv_n < 64) { rcv_tab[rcv_n].rcv = tl_jni_ref(rcv); rcv_tab[rcv_n].filter = filter ? tl_jni_ref(filter) : NULL; rcv_n++; }
+    /* Sticky broadcasts: Android hands the current sticky intent back from
+     * registerReceiver. BATTERY_CHANGED is the one SDKs actually consume. */
+    if (filter_matches(filter, "android.intent.action.BATTERY_CHANGED")) { c->ret = vl(battery_sticky_intent()); return; }
+    if (filter_matches(filter, "android.net.conn.CONNECTIVITY_CHANGE")) {
+        jobj *i = make("android/content/Intent");
+        jvalue a[1] = { { .j = 0, .l = STR("android.net.conn.CONNECTIVITY_CHANGE") } };
+        tl_jni_call(i, "setAction", "(Ljava/lang/String;)Landroid/content/Intent;", a);
+        c->ret = vl(i); return;
+    }
+    c->ret = vl(NULL);
+}
+static void Context_unregisterReceiver(tl_jcall *c)
+{
+    for (int i = 0; i < rcv_n; i++) if (rcv_tab[i].rcv == c->args[0].l) {
+        rcv_tab[i] = rcv_tab[--rcv_n]; i--;
+    }
+}
+static void dispatch_to_receivers(jobj *ctx, jobj *intent)
+{
+    jobj *act = intent ? tl_jni_call(intent, "getAction", "()Ljava/lang/String;", NULL).l : NULL;
+    const char *name = act ? S(act) : "";
+    for (int i = 0; i < rcv_n; i++) {
+        if (!filter_matches(rcv_tab[i].filter, name)) continue;
+        jvalue a[2] = { { .j = 0, .l = ctx }, { .j = 0, .l = intent } };
+        tl_jni_call(rcv_tab[i].rcv, "onReceive", "(Landroid/content/Context;Landroid/content/Intent;)V", a);
+    }
+}
+static void Context_sendBroadcast(tl_jcall *c) { dispatch_to_receivers(c->self, c->args[0].l); }
+static void Context_sendStickyBroadcast(tl_jcall *c) { dispatch_to_receivers(c->self, c->args[0].l); }
 static void Context_openFileInput(tl_jcall *c)
 {
     char p[1000]; snprintf(p, sizeof(p), "%s/%s", H.files, S(c->args[0].l));
@@ -1525,8 +1592,12 @@ static const tl_jhle k_hle[] = {
     M("android/content/Context", "unbindService", "(Landroid/content/ServiceConnection;)V", Context_noop),
     M("android/content/Context", "registerReceiver", "(Landroid/content/BroadcastReceiver;Landroid/content/IntentFilter;)Landroid/content/Intent;", Context_registerReceiver),
     M("android/content/Context", "registerReceiver", "(Landroid/content/BroadcastReceiver;Landroid/content/IntentFilter;I)Landroid/content/Intent;", Context_registerReceiver),
-    M("android/content/Context", "unregisterReceiver", "(Landroid/content/BroadcastReceiver;)V", Context_noop),
-    M("android/content/Context", "sendBroadcast", "(Landroid/content/Intent;)V", Context_noop),
+    M("android/content/Context", "unregisterReceiver", "(Landroid/content/BroadcastReceiver;)V", Context_unregisterReceiver),
+    M("android/content/Context", "sendBroadcast", "(Landroid/content/Intent;)V", Context_sendBroadcast),
+    M("android/content/Context", "sendBroadcast", "(Landroid/content/Intent;Ljava/lang/String;)V", Context_sendBroadcast),
+    M("android/content/Context", "sendOrderedBroadcast", "(Landroid/content/Intent;Ljava/lang/String;)V", Context_sendBroadcast),
+    M("android/content/Context", "sendStickyBroadcast", "(Landroid/content/Intent;)V", Context_sendStickyBroadcast),
+    M("android/content/Context", "removeStickyBroadcast", "(Landroid/content/Intent;)V", Context_noop),
     M("android/content/Context", "sendOrderedBroadcast", "(Landroid/content/Intent;Ljava/lang/String;)V", Context_noop),
     M("android/content/Context", "openFileInput", "(Ljava/lang/String;)Ljava/io/FileInputStream;", Context_openFileInput),
     M("android/content/Context", "openFileOutput", "(Ljava/lang/String;I)Ljava/io/FileOutputStream;", Context_openFileOutput),
