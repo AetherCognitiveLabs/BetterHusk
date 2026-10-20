@@ -220,6 +220,54 @@ int tl_more_image_info(const char *path, int *w, int *h)
     return 1;
 }
 
+/* Real RGBA8888 decode for BitmapFactory: CGImageSource handles PNG/JPEG/GIF/
+ * WebP/HEIC. Caller frees *out. Returns 1 on success. */
+static int decode_into(CGDataProviderRef prov, int *w, int *h, void **out)
+{
+    CGImageSourceRef src = CGImageSourceCreateWithDataProvider(prov, NULL);
+    if (!src) return 0;
+    CGImageRef img = CGImageSourceCreateImageAtIndex(src, 0, NULL);
+    CFRelease(src);
+    if (!img) return 0;
+    size_t W = CGImageGetWidth(img), H = CGImageGetHeight(img);
+    if (!W || !H || W > 16384 || H > 16384) { CGImageRelease(img); return 0; }
+    uint8_t *px = malloc(W * H * 4);
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    CGContextRef ctx = CGBitmapContextCreate(px, W, H, 8, W * 4, cs,
+        (CGBitmapInfo)kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+    CGColorSpaceRelease(cs);
+    if (!ctx) { free(px); CGImageRelease(img); return 0; }
+    CGContextDrawImage(ctx, CGRectMake(0, 0, W, H), img);
+    CGContextRelease(ctx); CGImageRelease(img);
+    /* Android Bitmap is RGBA_8888 = premultiplied RGBA big-endian, which is
+     * exactly what we rendered. */
+    *w = (int)W; *h = (int)H; *out = px;
+    return 1;
+}
+
+int tl_more_decode_image(const char *path, int *w, int *h, void **out)
+{
+    if (!path || !out) return 0;
+    *out = NULL;
+    NSData *d = [NSData dataWithContentsOfFile:@(path)];
+    if (!d) return 0;
+    CGDataProviderRef prov = CGDataProviderCreateWithCFData((__bridge CFDataRef)d);
+    int ok = decode_into(prov, w, h, out);
+    CGDataProviderRelease(prov);
+    return ok;
+}
+
+int tl_more_decode_image_mem(const void *data, size_t n, int *w, int *h, void **out)
+{
+    if (!data || !n || !out) return 0;
+    *out = NULL;
+    NSData *d = [NSData dataWithBytes:data length:n];
+    CGDataProviderRef prov = CGDataProviderCreateWithCFData((__bridge CFDataRef)d);
+    int ok = decode_into(prov, w, h, out);
+    CGDataProviderRelease(prov);
+    return ok;
+}
+
 /* ------------------------------------------------------- MediaPlayer pool */
 
 static pthread_mutex_t g_mp_lock = PTHREAD_MUTEX_INITIALIZER;

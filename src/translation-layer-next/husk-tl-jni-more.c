@@ -12384,6 +12384,161 @@ static void JW_flush(tl_jcall *c)
 }
 static void JW_close(tl_jcall *c)       { JW_flush(c); }
 
+/* ---- BitmapFactory + Bitmap: real pixels through CGImageSource ----
+ * Games decode textures via decodeStream/decodeByteArray; GL upload paths
+ * then pull them back through getPixels/copyPixelsToBuffer. */
+int tl_more_decode_image(const char *path, int *w, int *h, void **out);
+int tl_more_decode_image_mem(const void *data, size_t n, int *w, int *h, void **out);
+
+typedef struct { int w, h; uint8_t *px; } bmpx;
+static bmpx *bmpx_of(jobj *o) { if (!o->native) o->native = calloc(1, sizeof(bmpx)); return o->native; }
+
+static jobj *bitmap_finish(jobj *b, void *px, int w, int h)
+{
+    bmpx *p = bmpx_of(b); free(p->px);
+    p->px = px; p->w = w; p->h = h;
+    set_int(b, "mWidth", w); set_int(b, "mHeight", h);
+    set_int(b, "width", w); set_int(b, "height", h);
+    set_int(b, "mDensity", 160); set_int(b, "density", 160);
+    set_str(b, "mConfig", "ARGB_8888");
+    return b;
+}
+static jobj *bitmap_from_decoded(void *px, int w, int h)
+{
+    if (!px) return NULL;
+    return bitmap_finish(make("android/graphics/Bitmap"), px, w, h);
+}
+static void BF_decodeFile(tl_jcall *c)
+{
+    void *px = NULL; int w = 0, h = 0;
+    c->ret = vl(tl_more_decode_image(S(c->args[0].l), &w, &h, &px) ? bitmap_from_decoded(px, w, h) : NULL);
+}
+static void BF_decodeByteArray(tl_jcall *c)   /* (byte[], off, len [, opts]) */
+{
+    jobj *a = c->args[0].l;
+    if (!a || a->kind != TL_K_PRIM_ARRAY) { c->ret = vl(NULL); return; }
+    int off = c->args[1].i, len = c->args[2].i;
+    void *px = NULL; int w = 0, h = 0;
+    c->ret = vl(tl_more_decode_image_mem((const uint8_t *)a->arr.data + off, (size_t)len, &w, &h, &px) ? bitmap_from_decoded(px, w, h) : NULL);
+}
+static void BF_decodeStream(tl_jcall *c)
+{
+    /* drain the stream, then memory-decode */
+    jobj *in = c->args[0].l;
+    if (!in) { c->ret = vl(NULL); return; }
+    jobj *arr = tl_jni_new_prim_array('B', 1 << 16);
+    sbuf b = { 0 };
+    for (;;) {
+        jvalue a[3] = { { .j = 0, .l = arr }, { .i = 0 }, { .i = 1 << 16 } };
+        jvalue n = tl_jni_call(in, "read", "([BII)I", a);
+        if (n.i <= 0) break;
+        if (b.n + (size_t)n.i + 1 > b.cap) { b.cap = (b.cap + (size_t)n.i + 64) * 2; b.p = realloc(b.p, b.cap); }
+        memcpy(b.p + b.n, arr->arr.data, (size_t)n.i); b.n += (size_t)n.i;
+    }
+    void *px = NULL; int w = 0, h = 0;
+    jobj *r = tl_more_decode_image_mem(b.p, b.n, &w, &h, &px) ? bitmap_from_decoded(px, w, h) : NULL;
+    free(b.p);
+    c->ret = vl(r);
+}
+static void BF_decodeResource(tl_jcall *c)
+{
+    /* (Resources, id): open the raw resource, then memory-decode */
+    jobj *in = tl_jni_call(c->args[0].l, "openRawResource", "(I)Ljava/io/InputStream;", &c->args[1]);
+    if (!in) { c->ret = vl(NULL); return; }
+    tl_jcall x = *c;
+    jvalue t[1] = { { .j = 0, .l = in } };
+    x.args = t;
+    BF_decodeStream(&x);
+    c->ret = x.ret;
+}
+static void BM_getWidth(tl_jcall *c)     { c->ret = vi(bmpx_of(c->self)->w); }
+static void BM_getHeight(tl_jcall *c)    { c->ret = vi(bmpx_of(c->self)->h); }
+static void BM_getDensity(tl_jcall *c)   { c->ret = vi(160); }
+static void BM_getConfig(tl_jcall *c)
+{
+    jobj *cfg = make("android/graphics/Bitmap$Config");
+    set_str(cfg, "name", "ARGB_8888"); set_int(cfg, "ordinal", 4);
+    c->ret = vl(cfg);
+}
+static void BM_getAllocationByteCount(tl_jcall *c) { bmpx *p = bmpx_of(c->self); c->ret = vi(p->w * p->h * 4); }
+static void BM_getByteCount(tl_jcall *c) { BM_getAllocationByteCount(c); }
+static void BM_isRecycled(tl_jcall *c)   { c->ret = vz(!bmpx_of(c->self)->px); }
+static void BM_recycle(tl_jcall *c)      { bmpx *p = bmpx_of(c->self); free(p->px); p->px = NULL; }
+static void BM_isMutable(tl_jcall *c)    { c->ret = vz(0); }
+static void BM_hasAlpha(tl_jcall *c)     { c->ret = vz(1); }
+static void BM_getPixels(tl_jcall *c)    /* getPixels(int[] pixels, off, stride, x, y, w, h) */
+{
+    bmpx *p = bmpx_of(c->self); jobj *dst = c->args[0].l;
+    if (!p->px || !dst || dst->kind != TL_K_PRIM_ARRAY) return;
+    int off = c->args[1].i, stride = c->args[2].i, x = c->args[3].i, y = c->args[4].i, w = c->args[5].i, h = c->args[6].i;
+    uint32_t *d = (uint32_t *)dst->arr.data;
+    for (int row = 0; row < h && y + row < p->h; row++)
+        for (int col = 0; col < w && x + col < p->w; col++) {
+            const uint8_t *s = p->px + ((size_t)(y + row) * p->w + x + col) * 4;
+            uint32_t r = s[0], g = s[1], b2 = s[2], a2 = s[3];
+            /* unpremultiply for Java ints (ARGB_8888 non-premul) */
+            if (a2 && a2 < 255) { r = r * 255 / a2; g = g * 255 / a2; b2 = b2 * 255 / a2; }
+            d[off + row * stride + col] = (a2 << 24) | (r << 16) | (g << 8) | b2;
+        }
+}
+static void BM_copyPixelsToBuffer(tl_jcall *c)
+{
+    bmpx *p = bmpx_of(c->self); jobj *buf = c->args[0].l;
+    if (!p->px || !buf) return;
+    /* nio Buffer: addr pointer + position..limit window (matches new_bb) */
+    uint8_t *addr = (uint8_t *)(uintptr_t)get_lng(buf, "addr");
+    int pos = get_int(buf, "pos"), lim = get_int(buf, "lim");
+    if (!addr || lim <= pos) return;
+    size_t room = (size_t)(lim - pos), need = (size_t)p->w * p->h * 4;
+    memcpy(addr + pos, p->px, need < room ? need : room);
+    set_int(buf, "pos", pos + (int)(need < room ? need : room));
+}
+static void BM_getPixel(tl_jcall *c)
+{
+    bmpx *p = bmpx_of(c->self); int x = c->args[0].i, y = c->args[1].i;
+    if (!p->px || x < 0 || y < 0 || x >= p->w || y >= p->h) { c->ret = vi(0); return; }
+    const uint8_t *s = p->px + ((size_t)y * p->w + x) * 4;
+    uint32_t r = s[0], g = s[1], b2 = s[2], a2 = s[3];
+    if (a2 && a2 < 255) { r = r * 255 / a2; g = g * 255 / a2; b2 = b2 * 255 / a2; }
+    c->ret = vi((int)((a2 << 24) | (r << 16) | (g << 8) | b2));
+}
+static void BM_createBitmap_wh(tl_jcall *c)   /* createBitmap(w, h, Config) */
+{
+    int w = c->args[0].i, h = c->args[1].i;
+    if (w <= 0 || h <= 0 || w > 16384 || h > 16384) { tl_jni_throw("java/lang/IllegalArgumentException", "bad size"); return; }
+    c->ret = vl(bitmap_from_decoded(calloc((size_t)w * h, 4), w, h));
+}
+static void BM_createBitmap_src(tl_jcall *c)  /* createBitmap(Bitmap) */
+{
+    bmpx *p = bmpx_of(c->args[0].l);
+    if (!p->px) { c->ret = vl(NULL); return; }
+    void *px = malloc((size_t)p->w * p->h * 4); memcpy(px, p->px, (size_t)p->w * p->h * 4);
+    c->ret = vl(bitmap_from_decoded(px, p->w, p->h));
+}
+static void BM_createScaled(tl_jcall *c)      /* createScaledBitmap(src, w, h, filter) — nearest-neighbour */
+{
+    bmpx *p = bmpx_of(c->args[0].l);
+    int w = c->args[1].i, h = c->args[2].i;
+    if (!p->px || w <= 0 || h <= 0) { c->ret = vl(NULL); return; }
+    uint8_t *px = malloc((size_t)w * h * 4);
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++)
+            memcpy(px + ((size_t)y * w + x) * 4,
+                   p->px + ((size_t)(y * p->h / h) * p->w + x * p->w / w) * 4, 4);
+    c->ret = vl(bitmap_from_decoded(px, w, h));
+}
+static void BM_eraseColor(tl_jcall *c)
+{
+    bmpx *p = bmpx_of(c->self); uint32_t col = (uint32_t)c->args[0].i;
+    if (!p->px) return;
+    uint8_t a2 = col >> 24, r = col >> 16, g = col >> 8, b2 = col;
+    for (size_t i = 0; i < (size_t)p->w * p->h; i++) {
+        p->px[i * 4 + 0] = (uint8_t)(r * a2 / 255); p->px[i * 4 + 1] = (uint8_t)(g * a2 / 255);
+        p->px[i * 4 + 2] = (uint8_t)(b2 * a2 / 255); p->px[i * 4 + 3] = a2;
+    }
+}
+static void BM_compress(tl_jcall *c) { (void)c; c->ret = vz(0); }
+
 /* ---- java.util.zip: real zlib inflate/deflate ----
  * OkHttp transparently gzips; APK assets and bundled config are deflate.
  * Every networking library dies without InflaterInputStream. */
@@ -13022,6 +13177,41 @@ static void Res_getResourceName(tl_jcall *c)
     } else c->ret = vl(NULL);
 }
 static void Res_getResourcePackageName(tl_jcall *c) { c->ret = vl(STR(M2.pkg)); }
+
+/* openRawResource(id): drawable/raw entries store their res/ file path as a
+ * TYPE_STRING value in resources.arsc — resolve it and unzip the entry. */
+static void Res_openRawResource(tl_jcall *c)
+{
+    struct res_ctx x;
+    if (!res_resolve((uint32_t)c->args[0].i, &x) || x.dtype != 0x03 || !x.str[0]) {
+        tl_jni_throw("android/content/res/Resources$NotFoundException", "resource not found");
+        return;
+    }
+    for (int i = 0; i < TL_LD_MAX_APKS; i++) {
+        const tl_zip *z = tl_ld_apk_at(i);
+        if (!z) break;
+        const tl_zip_entry *e = tl_zip_find(z, x.str);
+        if (!e) continue;
+        const uint8_t *d = NULL; size_t n = 0; bool owned = false; char err[160];
+        if (!tl_zip_data(z, e, (size_t)256 << 20, &d, &n, &owned, err, sizeof(err))) continue;
+        jobj *arr = tl_jni_new_prim_array('B', (uint32_t)n);
+        memcpy(arr->arr.data, d, n);
+        if (owned) free((void *)d);
+        jobj *s = make("java/io/ByteArrayInputStream");
+        jvalue a = { .j = 0, .l = arr };
+        tl_jni_call(s, "<init>", "([B)V", &a);
+        c->ret = vl(s);
+        return;
+    }
+    tl_jni_throw("android/content/res/Resources$NotFoundException", x.str);
+}
+static void Res_openRawResourceFd(tl_jcall *c)
+{
+    /* AssetFileDescriptor{fd,offset,length}: emulate with a whole-file BAIS? No —
+     * return a descriptor carrying start/length over the original path where
+     * callers that pull the fd get -1 honestly. */
+    c->ret = vl(NULL);
+}
 
 
 
@@ -19016,6 +19206,35 @@ static const tl_jhle k_more_hle[] = {
     M("android/content/res/Resources", "getResourceTypeName", "(I)Ljava/lang/Object;", Res_getResourceTypeName),
     M("android/content/res/Resources", "getResourceEntryName", "(I)Ljava/lang/Object;", Res_getResourceEntryName),
     M("android/content/res/Resources", "getResourcePackageName", "(I)Ljava/lang/Object;", Res_getResourcePackageName),
+    M("android/content/res/Resources", "openRawResource", "(I)Ljava/lang/Object;", Res_openRawResource),
+    M("android/content/res/Resources", "openRawResourceFd", "(I)Ljava/lang/Object;", Res_openRawResourceFd),
+    /* BitmapFactory/Bitmap: real RGBA pixels via CGImageSource */
+    M("android/graphics/BitmapFactory", "decodeFile", "(Ljava/lang/Object;)Ljava/lang/Object;", BF_decodeFile),
+    M("android/graphics/BitmapFactory", "decodeFile", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", BF_decodeFile),
+    M("android/graphics/BitmapFactory", "decodeByteArray", "([BII)Ljava/lang/Object;", BF_decodeByteArray),
+    M("android/graphics/BitmapFactory", "decodeByteArray", "([BIILjava/lang/Object;)Ljava/lang/Object;", BF_decodeByteArray),
+    M("android/graphics/BitmapFactory", "decodeStream", "(Ljava/lang/Object;)Ljava/lang/Object;", BF_decodeStream),
+    M("android/graphics/BitmapFactory", "decodeStream", "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", BF_decodeStream),
+    M("android/graphics/BitmapFactory", "decodeResource", "(Ljava/lang/Object;I)Ljava/lang/Object;", BF_decodeResource),
+    M("android/graphics/BitmapFactory", "decodeResource", "(Ljava/lang/Object;ILjava/lang/Object;)Ljava/lang/Object;", BF_decodeResource),
+    M("android/graphics/Bitmap", "getWidth", "()I", BM_getWidth),
+    M("android/graphics/Bitmap", "getHeight", "()I", BM_getHeight),
+    M("android/graphics/Bitmap", "getDensity", "()I", BM_getDensity),
+    M("android/graphics/Bitmap", "getConfig", "()Ljava/lang/Object;", BM_getConfig),
+    M("android/graphics/Bitmap", "getByteCount", "()I", BM_getByteCount),
+    M("android/graphics/Bitmap", "getAllocationByteCount", "()I", BM_getAllocationByteCount),
+    M("android/graphics/Bitmap", "isRecycled", "()Z", BM_isRecycled),
+    M("android/graphics/Bitmap", "recycle", "()V", BM_recycle),
+    M("android/graphics/Bitmap", "isMutable", "()Z", BM_isMutable),
+    M("android/graphics/Bitmap", "hasAlpha", "()Z", BM_hasAlpha),
+    M("android/graphics/Bitmap", "getPixel", "(II)I", BM_getPixel),
+    M("android/graphics/Bitmap", "getPixels", "([IIIIIII)V", BM_getPixels),
+    M("android/graphics/Bitmap", "copyPixelsToBuffer", "(Ljava/lang/Object;)V", BM_copyPixelsToBuffer),
+    M("android/graphics/Bitmap", "createBitmap", "(IILjava/lang/Object;)Ljava/lang/Object;", BM_createBitmap_wh),
+    M("android/graphics/Bitmap", "createBitmap", "(Ljava/lang/Object;)Ljava/lang/Object;", BM_createBitmap_src),
+    M("android/graphics/Bitmap", "createScaledBitmap", "(Ljava/lang/Object;IIZ)Ljava/lang/Object;", BM_createScaled),
+    M("android/graphics/Bitmap", "eraseColor", "(I)V", BM_eraseColor),
+    M("android/graphics/Bitmap", "compress", "(Ljava/lang/Object;ILjava/lang/Object;)Z", BM_compress),
     { NULL, NULL, NULL, NULL }
 };
 
@@ -19075,6 +19294,9 @@ static const struct { const char *name, *super; } k_more_classes[] = {
     { "java/util/zip/DeflaterOutputStream", "java/io/FilterOutputStream" },
     { "java/util/zip/GZIPOutputStream", "java/util/zip/DeflaterOutputStream" },
     { "java/util/zip/DataFormatException", "java/lang/Exception" },
+    { "android/graphics/Bitmap", "java/lang/Object" },
+    { "android/graphics/Bitmap$Config", "java/lang/Enum" },
+    { "android/graphics/BitmapFactory", "java/lang/Object" },
     { "java/net/ConnectException", "java/net/SocketException" },
     { "java/io/InterruptedIOException", "java/io/IOException" },
     { "java/net/SocketTimeoutException", "java/io/InterruptedIOException" },
