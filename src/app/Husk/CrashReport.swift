@@ -61,7 +61,8 @@ final class CrashReport: ObservableObject {
 
     // MARK: the note
 
-    private static var running: TLApp?
+    private static var runningLabel: String?
+    private static var runningID: String?
     private static var observers: [NSObjectProtocol] = []
 
     /// A game is starting: if Husk ends before `gameEnded`, the next launch will say so.
@@ -71,7 +72,21 @@ final class CrashReport: ObservableObject {
     /// no background notice at all (it is merely inactive while the switcher is up), which read as a crash every time
     /// (a Geometry Dash session closed that way). The note goes when Husk stops being active and comes back with it.
     static func gameStarted(_ app: TLApp) {
-        running = app
+        runningLabel = app.label
+        runningID = app.id
+        noteStarted()
+    }
+
+    /// The Android guest shares the fate and the flaw: QEMU runs inside Husk's process, so a guest crash or a jetsam
+    /// takes the app with it -- and without a marker the next launch has nothing to show for a dead Android either.
+    /// It has no library entry, so the report carries no app id.
+    static func guestStarted() {
+        runningLabel = "Android"
+        runningID = nil
+        noteStarted()
+    }
+
+    private static func noteStarted() {
         writeMarker()
         if observers.isEmpty {
             let nc = NotificationCenter.default
@@ -85,14 +100,15 @@ final class CrashReport: ObservableObject {
     }
 
     private static func writeMarker() {
-        guard let app = running else { return }
-        let info: [String: Any] = ["id": app.id, "label": app.label, "time": Date().timeIntervalSince1970]
+        guard let label = runningLabel else { return }
+        let info: [String: Any] = ["id": runningID ?? "", "label": label, "time": Date().timeIntervalSince1970]
         if let data = try? JSONSerialization.data(withJSONObject: info) { try? data.write(to: marker, options: .atomic) }
     }
 
-    /// The game was closed the normal way.
+    /// The game, or the Android guest, was closed the normal way.
     static func gameEnded() {
-        running = nil
+        runningLabel = nil
+        runningID = nil
         try? FileManager.default.removeItem(at: marker)
     }
 

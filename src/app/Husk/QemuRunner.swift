@@ -1422,6 +1422,9 @@ final class QemuRunner: ObservableObject {
 
         // 9p exports a directory that must already exist when QEMU starts.
         HuskBridgeFS.shared.prepare()
+        // The crash marker: QEMU lives in this process, so a guest crash or a jetsam ends Husk
+        // mid-line with nothing shown next launch. Cleared when the guest stops the normal way.
+        Task { @MainActor in CrashReport.guestStarted() }
         HuskLog.log("qemu", "spawning QEMU thread (stack 16 MiB)")
         t.start()
         startSerialTailer()
@@ -1731,6 +1734,8 @@ final class QemuRunner: ObservableObject {
         let booted = QemuRunner.didRestore || QemuRunner.shared.bootProgress >= 92
         DispatchQueue.main.async {
             self.isRunning = false
+            // The guest ended the normal way (or at least QEMU let go of the process): no crash to report next launch.
+            CrashReport.gameEnded()
             // A guest that left before ever finishing boot is a crash report's worth of news, not silence.
             if !booted {
                 AndroidHost.shared.say("Android stopped during startup",
