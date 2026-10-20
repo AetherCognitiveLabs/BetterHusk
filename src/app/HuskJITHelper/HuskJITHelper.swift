@@ -58,7 +58,7 @@ private enum HuskJITWork {
                       let scriptBase64 = request.scriptBase64, !scriptBase64.isEmpty else {
                     throw NSError(domain: "HuskJITHelper", code: 2,
                                   userInfo: [NSLocalizedDescriptionKey:
-                                    "The target process or Husk's JIT script was not provided."])
+                                    "The target process or BetterHusk's JIT script was not provided."])
                 }
                 try StikJIT.enableJIT(
                     targetPID: targetPID,
@@ -69,7 +69,7 @@ private enum HuskJITWork {
                     forceScript: true,
                     preparationProgress: { NSLog("[HuskJIT] prepare: %@", String(describing: $0)) },
                     progress: { NSLog("[HuskJIT] %@", $0) })
-                return .init(success: true, message: "Husk detached cleanly from its built-in JIT helper.",
+                return .init(success: true, message: "BetterHusk detached cleanly from its built-in JIT helper.",
                              txmPresent: StikJIT.isTXMPresent)
             case .resetDDI:
                 preconditionFailure("Handled above")
@@ -95,7 +95,7 @@ final class HuskJITHelperHandler: NSObject, NSExtensionRequestHandling {
             if let data, let request = try? JSONDecoder().decode(HuskJITRequest.self, from: data) {
                 response = HuskJITWork.handle(request)
             } else {
-                response = .init(success: false, message: "Husk's JIT helper received no request.",
+                response = .init(success: false, message: "BetterHusk's JIT helper received no request.",
                                  txmPresent: nil)
             }
             let item = NSExtensionItem()
