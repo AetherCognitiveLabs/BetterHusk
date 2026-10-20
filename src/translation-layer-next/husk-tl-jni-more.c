@@ -38,6 +38,7 @@
 #include <sys/time.h>
 #include <sys/types.h>
 #include <sys/utsname.h>
+#include <zlib.h>
 #include <time.h>
 #ifdef __APPLE__
 #include <mach/mach.h>
@@ -3753,7 +3754,21 @@ static void FIS_getFD(tl_jcall *c)
 static void FIS_getChannel(tl_jcall *c)
 {
     jobj *ch = make("java/nio/channels/FileChannel");
+    fdis *st = c->self->native;
     tl_jni_set_field(ch, "stream", "Ljava/io/InputStream;", vl(c->self));
+    set_long(ch, "fd", st ? st->fd : -1);
+    set_bool(ch, "writable", false);
+    tl_jni_ref(ch);
+    c->ret = vl(ch);
+}
+/* FileOutputStream's native is fd + 1 (the hle.c convention); its channel shares the descriptor. */
+static void FOS_getChannel(tl_jcall *c)
+{
+    jobj *ch = make("java/nio/channels/FileChannel");
+    tl_jni_set_field(ch, "stream", "Ljava/io/OutputStream;", vl(c->self));
+    set_long(ch, "fd", c->self->native ? (int)(intptr_t)c->self->native - 1 : -1);
+    set_bool(ch, "writable", true);
+    tl_jni_ref(ch);
     c->ret = vl(ch);
 }
 static void FD_sync(tl_jcall *c) { fdis st = { .fd = (int)get_lng(c->self, "fd") }; if (st.fd >= 0) fsync(st.fd); }
@@ -5489,12 +5504,665 @@ static uint8_t *b64dec(const char *s, size_t sn, size_t *outn)
     *outn = n;
     return o;
 }
+/* ---------------- java.util.zip ---------------- */
+/* ZipEntry: the field carrier. ZipFile fills the fields from the central directory; user-made ones
+   only carry what the caller set. */
+static void ZE_init(tl_jcall *c) { set_str(c->self, "name", c->args[0].l ? S(c->args[0].l) : ""); }
+static void ZE_init_copy(tl_jcall *c)
+{
+    jobj *s = c->args[0].l;
+    static const char *flds[] = { "name", "comment" };
+    for (int i = 0; i < 2; i++)
+        tl_jni_set_field(c->self, flds[i], "Ljava/lang/String;", tl_jni_get_field(s, flds[i], "Ljava/lang/String;"));
+    static const char *lf[] = { "size", "csize", "crc", "time" };
+    for (int i = 0; i < 4; i++)
+        tl_jni_set_field(c->self, lf[i], "J", vj(get_lng(s, lf[i])));
+    set_int(c->self, "method", get_int(s, "method"));
+}
+static void ZE_getName(tl_jcall *c)          { c->ret = tl_jni_get_field(c->self, "name", "Ljava/lang/String;"); }
+static void ZE_getSize(tl_jcall *c)          { c->ret = vj(get_lng(c->self, "size")); }
+static void ZE_getCompressedSize(tl_jcall *c){ c->ret = vj(get_lng(c->self, "csize")); }
+static void ZE_getCrc(tl_jcall *c)           { c->ret = vj(get_lng(c->self, "crc")); }
+static void ZE_getTime(tl_jcall *c)          { c->ret = vj(get_lng(c->self, "time") ? get_lng(c->self, "time") : -1); }
+static void ZE_getMethod(tl_jcall *c)        { c->ret = vi(get_int(c->self, "method")); }
+static void ZE_getComment(tl_jcall *c)       { c->ret = tl_jni_get_field(c->self, "comment", "Ljava/lang/String;"); }
+static void ZE_setSize(tl_jcall *c)          { set_long(c->self, "size", c->args[0].j); }
+static void ZE_setCompressedSize(tl_jcall *c){ set_long(c->self, "csize", c->args[0].j); }
+static void ZE_setCrc(tl_jcall *c)           { set_long(c->self, "crc", c->args[0].j); }
+static void ZE_setTime(tl_jcall *c)          { set_long(c->self, "time", c->args[0].j); }
+static void ZE_setMethod(tl_jcall *c)        { set_int(c->self, "method", c->args[0].i); }
+static void ZE_setComment(tl_jcall *c)       { if (c->args[0].l) tl_jni_set_field(c->self, "comment", "Ljava/lang/String;", c->args[0]); }
+static void ZE_isDirectory(tl_jcall *c)
+{
+    jobj *n = tl_jni_get_field(c->self, "name", "Ljava/lang/String;").l;
+    const char *s = n ? S(n) : "";
+    c->ret = vz(s[0] && s[strlen(s) - 1] == '/');
+}
+static void ZE_toString(tl_jcall *c) { ZE_getName(c); }
+static void ZE_hashCode(tl_jcall *c)
+{
+    jobj *n = tl_jni_get_field(c->self, "name", "Ljava/lang/String;").l;
+    c->ret = n ? tl_jni_call(n, "hashCode", "()I", NULL) : vi(0);
+}
+static jobj *ze_of(const tl_zip_entry *e)
+{
+    jobj *z = make("java/util/zip/ZipEntry");
+    set_str(z, "name", e->name);
+    set_long(z, "size", (int64_t)e->usize);
+    set_long(z, "csize", (int64_t)e->csize);
+    set_int(z, "method", e->method);
+    set_long(z, "crc", -1);
+    set_long(z, "time", -1);
+    return z;
+}
+
+/* ZipFile over tl_zip: the central directory in the mapping. */
+static void ZF_open(tl_jcall *c, const char *path)
+{
+    tl_zip *z = calloc(1, sizeof(*z));
+    char err[200] = "";
+    if (!path || !tl_zip_open(z, path, err, sizeof(err))) {
+        free(z);
+        tl_jni_throw("java/util/zip/ZipException", err[0] ? err : (path ? path : "null"));
+        return;
+    }
+    c->self->native = z;
+    set_str(c->self, "name", path);
+}
+static void ZF_init_file(tl_jcall *c) { ZF_open(c, c->args[0].l ? file_path(c->args[0].l) : NULL); }
+static void ZF_init_path(tl_jcall *c) { ZF_open(c, c->args[0].l ? S(c->args[0].l) : NULL); }
+static void ZF_getEntry(tl_jcall *c)
+{
+    tl_zip *z = c->self->native;
+    const char *name = c->args[0].l ? S(c->args[0].l) : "";
+    const tl_zip_entry *e = z ? tl_zip_find(z, name) : NULL;
+    if (!e && z && name[0] != '/') { /* the JDK matches "x/" for directory lookups too */
+        char d[1200]; snprintf(d, sizeof(d), "%s/", name);
+        e = tl_zip_find(z, d);
+    }
+    if (!e) { c->ret = vl(NULL); return; }
+    jobj *ze = ze_of(e);
+    set_int(ze, "_idx", (int)(e - z->entries));
+    c->ret = vl(ze);
+}
+static void ZF_entries(tl_jcall *c)
+{
+    tl_zip *z = c->self->native;
+    jobj *l = make("java/util/ArrayList");
+    if (z) for (size_t i = 0; i < z->count; i++) {
+        jobj *ze = ze_of(&z->entries[i]);
+        set_int(ze, "_idx", (int)i);
+        vec_push(vec_of(l), ze);
+    }
+    jvalue it = tl_jni_call(l, "iterator", "()Ljava/util/Iterator;", NULL);
+    jobj *en = make("java/util/Collections$1");
+    tl_jni_set_field(en, "it", "Ljava/util/Iterator;", it);
+    c->ret = vl(en);
+}
+static void ZF_size(tl_jcall *c) { tl_zip *z = c->self->native; c->ret = vi(z ? (int)z->count : 0); }
+static void ZF_getName(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "name", "Ljava/lang/String;"); }
+static void ZF_close(tl_jcall *c)
+{
+    tl_zip *z = c->self->native;
+    if (z) { tl_zip_close(z); free(z); c->self->native = NULL; }
+}
+/* getInputStream(entry): the entry's bytes inflated into a ByteArrayInputStream. */
+static void ZF_getInputStream(tl_jcall *c)
+{
+    tl_zip *z = c->self->native;
+    jobj *e = c->args[0].l;
+    if (!z || !e) { c->ret = vl(NULL); return; }
+    int idx = get_int(e, "_idx");
+    const tl_zip_entry *te = NULL;
+    if (idx >= 0 && (size_t)idx < z->count) te = &z->entries[idx];
+    if (!te) {
+        jobj *n = tl_jni_get_field(e, "name", "Ljava/lang/String;").l;
+        te = n ? tl_zip_find(z, S(n)) : NULL;
+    }
+    if (!te) { tl_jni_throw("java/util/zip/ZipException", "entry not found"); return; }
+    const uint8_t *d = NULL; size_t n = 0; bool owned = false;
+    char err[200] = "";
+    if (!tl_zip_data(z, te, (size_t)512 << 20, &d, &n, &owned, err, sizeof(err))) {
+        tl_jni_throw("java/util/zip/ZipException", err[0] ? err : "inflate failed"); return;
+    }
+    jobj *s = make("java/io/ByteArrayInputStream");
+    jobj *arr = tl_jni_new_prim_array('B', (uint32_t)n);
+    memcpy(arr->arr.data, d, n);
+    if (owned) free((void *)d);
+    jvalue a = { .l = arr };
+    tl_jni_call(s, "<init>", "([B)V", &a);
+    c->ret = vl(s);
+}
+
+/* ZipInputStream: the stream's whole content parsed once (central directory at the end), entries
+   served in order. Reading one entry at a time behaves the same to the caller. */
+typedef struct { tl_zip z; int cur; uint8_t *data; size_t n, pos; } zis;
+static void ZIS_open(tl_jcall *c, const char *path)
+{
+    zis *st = calloc(1, sizeof(*st));
+    char err[200] = "";
+    if (!path || !tl_zip_open(&st->z, path, err, sizeof(err))) {
+        free(st);
+        tl_jni_throw("java/io/IOException", err[0] ? err : "not a zip");
+        return;
+    }
+    st->cur = -1;
+    c->self->native = st;
+}
+static void ZIS_init_stream(tl_jcall *c)
+{
+    /* The stream arg may be a FileInputStream (native fdis) or any other; pull its bytes whole. */
+    jobj *in = c->args[0].l;
+    tl_jni_set_field(c->self, "in", "Ljava/io/InputStream;", c->args[0]);
+    fdis *f = in ? in->native : NULL;
+    if (f && f->fd >= 0) {
+        struct stat st;
+        off_t at = lseek(f->fd, 0, SEEK_CUR);
+        lseek(f->fd, 0, SEEK_SET);
+        if (fstat(f->fd, &st) == 0 && st.st_size > 0) {
+            zis *zs = calloc(1, sizeof(*zs));
+            /* tl_zip wants a path; feed it the file through a tmp copy only if it isn't mappable —
+               tl_zip_open maps a path, so spool to a tmp file. */
+            char tmp[1100]; snprintf(tmp, sizeof(tmp), "%s/.zis%ld.tmp", getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp", (long)f->fd);
+            int out = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            uint8_t buf[65536]; ssize_t r;
+            while ((r = read(f->fd, buf, sizeof(buf))) > 0 && out >= 0) {
+                ssize_t w = write(out, buf, (size_t)r);
+                if (w != r) { r = -1; break; }
+            }
+            if (out >= 0) close(out);
+            lseek(f->fd, at, SEEK_SET);
+            if (r >= 0 && tl_zip_open(&zs->z, tmp, NULL, 0)) {
+                zs->cur = -1;
+                c->self->native = zs;
+                unlink(tmp);
+                return;
+            }
+            free(zs);
+            unlink(tmp);
+        }
+        lseek(f->fd, at, SEEK_SET);
+    }
+    /* Non-file stream: an empty zip — getNextEntry reports none. */
+    c->self->native = calloc(1, sizeof(zis));
+}
+static void ZIS_init_path(tl_jcall *c) { ZIS_open(c, S(c->args[0].l)); }
+static void ZIS_init_file(tl_jcall *c) { ZIS_open(c, file_path(c->args[0].l)); }
+/* The current entry's bytes, inflated once and buffered for the reads. */
+static bool zis_load(zis *st)
+{
+    if (st->data) return true;
+    const uint8_t *d = NULL; bool owned = false;
+    if (!tl_zip_data(&st->z, &st->z.entries[st->cur], (size_t)512 << 20, &d, &st->n, &owned, NULL, 0)) return false;
+    st->data = malloc(st->n ? st->n : 1);
+    if (st->n) memcpy(st->data, d, st->n);
+    if (owned) free((void *)d);
+    st->pos = 0;
+    return true;
+}
+static void ZIS_getNextEntry(tl_jcall *c)
+{
+    zis *st = c->self->native;
+    if (!st) { c->ret = vl(NULL); return; }
+    if (st->data) { free(st->data); st->data = NULL; st->n = st->pos = 0; }
+    st->cur++;
+    if (st->cur < 0 || (size_t)st->cur >= st->z.count) { st->cur = -2; c->ret = vl(NULL); return; }
+    jobj *e = ze_of(&st->z.entries[st->cur]);
+    set_int(e, "_idx", st->cur);
+    c->ret = vl(e);
+}
+static void ZIS_read0(tl_jcall *c)
+{
+    zis *st = c->self->native;
+    if (!st || st->cur < 0 || !zis_load(st) || st->pos >= st->n) { c->ret = vi(-1); return; }
+    c->ret = vi(st->data[st->pos++]);
+}
+static void ZIS_read_range(tl_jcall *c)
+{
+    zis *st = c->self->native;
+    jobj *arr = c->args[0].l;
+    int off = c->args[1].i, len = c->args[2].i;
+    if (!st || st->cur < 0 || !arr || !zis_load(st) || st->pos >= st->n) { c->ret = vi(-1); return; }
+    int n = (int)(st->n - st->pos); if (n > len) n = len;
+    if (off < 0 || (size_t)(off + n) > arr->arr.len) n = (int)arr->arr.len - off;
+    if (n <= 0) { c->ret = vi(-1); return; }
+    memcpy((uint8_t *)arr->arr.data + off, st->data + st->pos, (size_t)n);
+    st->pos += n;
+    c->ret = vi(n);
+}
+static void ZIS_closeEntry(tl_jcall *c)
+{
+    zis *st = c->self->native;
+    if (st) { free(st->data); st->data = NULL; st->n = st->pos = 0; }
+}
+static void ZIS_close(tl_jcall *c)
+{
+    zis *st = c->self->native;
+    if (!st) return;
+    free(st->data);
+    tl_zip_close(&st->z);
+    free(st);
+    c->self->native = NULL;
+}
+static void ZIS_available(tl_jcall *c)
+{
+    zis *st = c->self->native;
+    c->ret = vi(st && st->cur >= 0 ? 1 : 0);
+}
+
+/* CRC32 / Adler32 over zlib. */
+static void CRC_init(tl_jcall *c) { (void)c; }
+static void CRC_update0(tl_jcall *c)
+{
+    uLong v = (uLong)get_lng(c->self, "crc_v");
+    set_long(c->self, "crc_v", (int64_t)crc32(v, (const Bytef *)&c->args[0].i, 1));
+}
+static void CRC_update_arr(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    uLong v = (uLong)get_lng(c->self, "crc_v");
+    set_long(c->self, "crc_v", (int64_t)crc32(v, a ? a->arr.data : NULL, a ? (uInt)a->arr.len : 0));
+}
+static void CRC_update_range(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    int off = c->args[1].i, len = c->args[2].i;
+    uLong v = (uLong)get_lng(c->self, "crc_v");
+    if (a && off >= 0 && len > 0 && (size_t)(off + len) <= a->arr.len)
+        v = crc32(v, (const Bytef *)a->arr.data + off, (uInt)len);
+    set_long(c->self, "crc_v", (int64_t)v);
+}
+static void CRC_getValue(tl_jcall *c) { c->ret = vj(get_lng(c->self, "crc_v") & 0xffffffffLL); }
+static void CRC_reset(tl_jcall *c) { set_long(c->self, "crc_v", 0); }
+static void ADL_update0(tl_jcall *c)
+{
+    uLong v = (uLong)get_lng(c->self, "adl_v");
+    if (!v) v = 1;
+    uint8_t b = (uint8_t)c->args[0].i;
+    set_long(c->self, "adl_v", (int64_t)adler32(v, &b, 1));
+}
+static void ADL_update_range(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    int off = c->args[1].i, len = c->args[2].i;
+    uLong v = (uLong)get_lng(c->self, "adl_v");
+    if (!v) v = 1;
+    if (a && off >= 0 && len > 0 && (size_t)(off + len) <= a->arr.len)
+        v = adler32(v, (const Bytef *)a->arr.data + off, (uInt)len);
+    set_long(c->self, "adl_v", (int64_t)v);
+}
+static void ADL_getValue(tl_jcall *c) { long v = get_lng(c->self, "adl_v"); c->ret = vj((v ? v : 1) & 0xffffffffLL); }
+static void ADL_reset(tl_jcall *c) { set_long(c->self, "adl_v", 1); }
+
+/* CheckedInputStream/CheckedOutputStream: the stream plus a running checksum. */
+static void CKIS_init(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "in", "Ljava/io/InputStream;", c->args[0]);
+    tl_jni_set_field(c->self, "cksum", "Ljava/util/zip/Checksum;", c->args[1]);
+}
+static jobj *ck_of(jobj *o) { return tl_jni_get_field(o, "cksum", "Ljava/util/zip/Checksum;").l; }
+static void ck_feed(jobj *o, const uint8_t *d, int n)
+{
+    jobj *ck = ck_of(o);
+    if (!ck || !d || n <= 0) return;
+    jobj *arr = tl_jni_new_prim_array('B', (uint32_t)n);
+    memcpy(arr->arr.data, d, (size_t)n);
+    jvalue a[3] = { { .l = arr }, { .i = 0 }, { .i = n } };
+    tl_jni_call(ck, "update", "([BII)V", a);
+}
+static void CKIS_read0(tl_jcall *c)
+{
+    jobj *in = tl_jni_get_field(c->self, "in", "Ljava/io/InputStream;").l;
+    int r = in ? tl_jni_call(in, "read", "()I", NULL).i : -1;
+    if (r >= 0) { uint8_t b = (uint8_t)r; ck_feed(c->self, &b, 1); }
+    c->ret = vi(r);
+}
+static void CKIS_read_range(tl_jcall *c)
+{
+    jobj *in = tl_jni_get_field(c->self, "in", "Ljava/io/InputStream;").l;
+    if (!in) { c->ret = vi(-1); return; }
+    int r = tl_jni_call(in, "read", "([BII)I", (jvalue *)c->args).i;
+    if (r > 0 && c->args[0].l) ck_feed(c->self, (uint8_t *)c->args[0].l->arr.data + c->args[1].i, r);
+    c->ret = vi(r);
+}
+static void CKIS_skip(tl_jcall *c)
+{
+    jobj *in = tl_jni_get_field(c->self, "in", "Ljava/io/InputStream;").l;
+    c->ret = in ? tl_jni_call(in, "skip", "(J)J", (jvalue *)c->args) : vj(0);
+}
+static void CKIS_close(tl_jcall *c)
+{
+    jobj *in = tl_jni_get_field(c->self, "in", "Ljava/io/InputStream;").l;
+    if (in) tl_jni_call(in, "close", "()V", NULL);
+}
+static void CKIS_getChecksum(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "cksum", "Ljava/util/zip/Checksum;"); }
+static void CKOS_init(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "out", "Ljava/io/OutputStream;", c->args[0]);
+    tl_jni_set_field(c->self, "cksum", "Ljava/util/zip/Checksum;", c->args[1]);
+}
+static void CKOS_write0(tl_jcall *c)
+{
+    jobj *o = tl_jni_get_field(c->self, "out", "Ljava/io/OutputStream;").l;
+    if (!o) return;
+    tl_jni_call(o, "write", "(I)V", (jvalue *)c->args);
+    uint8_t b = (uint8_t)c->args[0].i;
+    ck_feed(c->self, &b, 1);
+}
+static void CKOS_write_range(tl_jcall *c)
+{
+    jobj *o = tl_jni_get_field(c->self, "out", "Ljava/io/OutputStream;").l;
+    if (!o) return;
+    tl_jni_call(o, "write", "([BII)V", (jvalue *)c->args);
+    if (c->args[0].l) ck_feed(c->self, (uint8_t *)c->args[0].l->arr.data + c->args[1].i, c->args[2].i);
+}
+static void CKOS_close(tl_jcall *c)
+{
+    jobj *o = tl_jni_get_field(c->self, "out", "Ljava/io/OutputStream;").l;
+    if (o) tl_jni_call(o, "close", "()V", NULL);
+}
+static void CKOS_flush(tl_jcall *c)
+{
+    jobj *o = tl_jni_get_field(c->self, "out", "Ljava/io/OutputStream;").l;
+    if (o) tl_jni_call(o, "flush", "()V", NULL);
+}
+
+/* ZipOutputStream: real zip writer — local headers stream out now, the central directory accumulates
+   and goes out on finish(). */
+typedef struct zoe { char *name; uint32_t crc; uint32_t csize, usize; uint16_t method; uint32_t lho; struct zoe *next; } zoe;
+typedef struct {
+    jobj *out; sbuf *cd; zoe *entries; int n; bool done;
+    uint8_t *cbuf; size_t ccap, clen; uint32_t crc; bool open_e;
+    z_stream zs; bool zs_on; int method;
+    uint32_t lh_off; long written;
+} zos;
+static void zos_w(tl_jcall *c, zos *s, const void *d, size_t n)
+{
+    jobj *o = tl_jni_get_field(c->self, "out", "Ljava/io/OutputStream;").l;
+    if (!o) return;
+    jobj *arr = tl_jni_new_prim_array('B', (uint32_t)n);
+    memcpy(arr->arr.data, d, n);
+    jvalue a[3] = { { .l = arr }, { .i = 0 }, { .i = (int)n } };
+    tl_jni_call(o, "write", "([BII)V", a);
+    s->written += n;
+}
+static void zos_w32(tl_jcall *c, zos *s, uint32_t v) { uint8_t b[4] = { v & 255, (v >> 8) & 255, (v >> 16) & 255, (v >> 24) & 255 }; zos_w(c, s, b, 4); }
+static void zos_w16(tl_jcall *c, zos *s, uint16_t v) { uint8_t b[2] = { v & 255, (v >> 8) & 255 }; zos_w(c, s, b, 2); }
+static void cd32(sbuf *cd, uint32_t v) { uint8_t b[4] = { v & 255, (v >> 8) & 255, (v >> 16) & 255, (v >> 24) & 255 }; sb_add_n(cd, (const char *)b, 4); }
+static void cd16(sbuf *cd, uint16_t v) { uint8_t b[2] = { v & 255, (v >> 8) & 255 }; sb_add_n(cd, (const char *)b, 2); }
+static void ZOS_init(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "out", "Ljava/io/OutputStream;", c->args[0]);
+    zos *s = calloc(1, sizeof(*s));
+    s->cd = calloc(1, sizeof(sbuf));
+    s->method = 8;
+    c->self->native = s;
+}
+static void ZOS_putNextEntry(tl_jcall *c)
+{
+    zos *s = c->self->native;
+    jobj *e = c->args[0].l;
+    if (!s || !e) return;
+    if (s->open_e) { /* an open entry is closed first, like the JDK does */
+        tl_jni_call(c->self, "closeEntry", "()V", NULL);
+    }
+    jobj *n = tl_jni_get_field(e, "name", "Ljava/lang/String;").l;
+    const char *name = n ? S(n) : "?";
+    int method = get_int(e, "method");
+    s->method = method ? method : 8;
+    s->open_e = true;
+    s->clen = 0; s->crc = 0;
+    s->lh_off = (uint32_t)s->written;
+    zoe *en = calloc(1, sizeof(*en));
+    en->name = strdup(name);
+    en->method = (uint16_t)s->method;
+    en->lho = s->lh_off;
+    en->next = s->entries; s->entries = en; s->n++;
+    /* local file header */
+    zos_w32(c, s, 0x04034b50);
+    zos_w16(c, s, 20); zos_w16(c, s, 0x0808); /* UTF-8 names + data descriptor follows the data */
+    zos_w16(c, s, (uint16_t)s->method);
+    zos_w16(c, s, 0); zos_w16(c, s, 0);        /* time/date */
+    zos_w32(c, s, 0); zos_w32(c, s, 0); zos_w32(c, s, 0); /* crc + sizes arrive in the descriptor */
+    zos_w16(c, s, (uint16_t)strlen(name)); zos_w16(c, s, 0);
+    zos_w(c, s, name, strlen(name));
+}
+static void ZOS_write_range(tl_jcall *c)
+{
+    zos *s = c->self->native;
+    jobj *a = c->args[0].l;
+    int off = c->args[1].i, len = c->args[2].i;
+    if (!s || !s->open_e || !a) return;
+    const uint8_t *d = (const uint8_t *)a->arr.data + off;
+    s->crc = (uint32_t)crc32(s->crc, d, (uInt)len);
+    s->entries->usize += len;
+    if (s->method == 0) { zos_w(c, s, d, (size_t)len); s->entries->csize += len; return; }
+    if (!s->zs_on) {
+        memset(&s->zs, 0, sizeof(s->zs));
+        deflateInit2(&s->zs, Z_DEFAULT_COMPRESSION, Z_DEFLATED, -MAX_WBITS, 8, Z_DEFAULT_STRATEGY);
+        s->zs_on = true;
+    }
+    uint8_t ob[65536];
+    s->zs.next_in = (Bytef *)d; s->zs.avail_in = (uInt)len;
+    while (s->zs.avail_in) {
+        s->zs.next_out = ob; s->zs.avail_out = sizeof(ob);
+        deflate(&s->zs, Z_NO_FLUSH);
+        size_t have = sizeof(ob) - s->zs.avail_out;
+        if (have) { zos_w(c, s, ob, have); s->entries->csize += (uint32_t)have; }
+        if (s->zs.avail_out) break;
+    }
+}
+static void ZOS_write0(tl_jcall *c)
+{
+    uint8_t b = (uint8_t)c->args[0].i;
+    zos *s = c->self->native;
+    if (!s) return;
+    jobj *arr = tl_jni_new_prim_array('B', 1);
+    ((uint8_t *)arr->arr.data)[0] = b;
+    jvalue a[3] = { { .l = arr }, { .i = 0 }, { .i = 1 } };
+    tl_jcall t = { .self = c->self, .args = a };
+    ZOS_write_range(&t);
+}
+static void ZOS_closeEntry(tl_jcall *c)
+{
+    zos *s = c->self->native;
+    if (!s || !s->open_e) return;
+    s->open_e = false;
+    if (s->zs_on) {
+        uint8_t ob[65536];
+        for (;;) {
+            s->zs.next_out = ob; s->zs.avail_out = sizeof(ob);
+            int r = deflate(&s->zs, Z_FINISH);
+            size_t have = sizeof(ob) - s->zs.avail_out;
+            if (have) { zos_w(c, s, ob, have); s->entries->csize += (uint32_t)have; }
+            if (r == Z_STREAM_END || !have) break;
+        }
+        deflateEnd(&s->zs);
+        s->zs_on = false;
+    }
+    /* data descriptor: the local header left crc/sizes zero and flagged them deferred */
+    zoe *e = s->entries;
+    e->crc = s->crc;
+    zos_w32(c, s, 0x08074b50); zos_w32(c, s, e->crc); zos_w32(c, s, e->csize); zos_w32(c, s, e->usize);
+    /* central directory record */
+    cd32(s->cd, 0x02014b50); cd16(s->cd, 20); cd16(s->cd, 20);
+    cd16(s->cd, 0x0800); cd16(s->cd, e->method);
+    cd16(s->cd, 0); cd16(s->cd, 0);
+    cd32(s->cd, e->crc); cd32(s->cd, e->csize); cd32(s->cd, e->usize);
+    cd16(s->cd, (uint16_t)strlen(e->name)); cd16(s->cd, 0); cd16(s->cd, 0);
+XX
+}
+static void ZOS_finish(tl_jcall *c)
+{
+    zos *s = c->self->native;
+    if (!s || s->done) return;
+    if (s->open_e) ZOS_closeEntry(c);
+    s->done = true;
+    uint32_t cd_off = (uint32_t)s->written;
+    if (s->cd->p && s->cd->n) zos_w(c, s, s->cd->p, s->cd->n);
+    uint32_t cd_len = (uint32_t)(s->written - cd_off);
+    zos_w32(c, s, 0x06054b50);
+    zos_w16(c, s, 0); zos_w16(c, s, 0);
+    zos_w16(c, s, (uint16_t)s->n); zos_w16(c, s, (uint16_t)s->n);
+    zos_w32(c, s, cd_len); zos_w32(c, s, cd_off);
+    zos_w16(c, s, 0);
+}
+static void ZOS_close(tl_jcall *c)
+{
+    zos *s = c->self->native;
+    if (!s) return;
+    ZOS_finish(c);
+    jobj *o = tl_jni_get_field(c->self, "out", "Ljava/io/OutputStream;").l;
+    if (o) tl_jni_call(o, "close", "()V", NULL);
+    while (s->entries) { zoe *n = s->entries->next; free(s->entries->name); free(s->entries); s->entries = n; }
+    if (s->cd) { free(s->cd->p); free(s->cd); }
+    free(s);
+    c->self->native = NULL;
+}
+static void ZOS_flush(tl_jcall *c)
+{
+    jobj *o = tl_jni_get_field(c->self, "out", "Ljava/io/OutputStream;").l;
+    if (o) tl_jni_call(o, "flush", "()V", NULL);
+}
+static void ZOS_setMethod(tl_jcall *c) { zos *s = c->self->native; if (s) s->method = c->args[0].i; }
+static void ZOS_setLevel(tl_jcall *c) { (void)c; }
+
+/* FileChannel over the stream's host descriptor. The fd is shared with the stream, so seeking the
+   channel moves the stream's position like a real channel does. */
+static int ch_fd(const jobj *o) { return (int)get_lng(o, "fd"); }
+static void CH_size(tl_jcall *c)
+{
+    struct stat st;
+    c->ret = vj(ch_fd(c->self) >= 0 && fstat(ch_fd(c->self), &st) == 0 ? (int64_t)st.st_size : 0);
+}
+static void CH_position(tl_jcall *c)
+{
+    c->ret = vj(ch_fd(c->self) >= 0 ? (int64_t)lseek(ch_fd(c->self), 0, SEEK_CUR) : 0);
+}
+static void CH_position_set(tl_jcall *c)
+{
+    if (ch_fd(c->self) >= 0) lseek(ch_fd(c->self), c->args[0].j, SEEK_SET);
+    c->ret = vl(c->self);
+}
+static void CH_read(tl_jcall *c)
+{
+    jobj *b = c->args[0].l;
+    int fd = ch_fd(c->self);
+    if (!b || fd < 0) { c->ret = vi(-1); return; }
+    int p = bb_pos(b), n = bb_lim(b) - p;
+    if (n <= 0) { c->ret = vi(0); return; }
+    ssize_t r = read(fd, bb_addr(b) + p, (size_t)n);
+    if (r > 0) { set_int(b, "pos", p + (int)r); c->ret = vi((int)r); }
+    else c->ret = vi(-1);
+}
+static void CH_write(tl_jcall *c)
+{
+    jobj *b = c->args[0].l;
+    int fd = ch_fd(c->self);
+    if (!b || fd < 0) { c->ret = vi(0); return; }
+    int p = bb_pos(b), n = bb_lim(b) - p;
+    if (n <= 0) { c->ret = vi(0); return; }
+    ssize_t w = write(fd, bb_addr(b) + p, (size_t)n);
+    if (w > 0) set_int(b, "pos", p + (int)w);
+    c->ret = vi(w > 0 ? (int)w : 0);
+}
+static void CH_truncate(tl_jcall *c)
+{
+    if (ch_fd(c->self) >= 0) ftruncate(ch_fd(c->self), c->args[0].j);
+    c->ret = vl(c->self);
+}
+static void CH_force(tl_jcall *c) { if (ch_fd(c->self) >= 0) fsync(ch_fd(c->self)); }
+static void CH_close(tl_jcall *c)
+{
+    int fd = ch_fd(c->self);
+    if (fd >= 0) { close(fd); set_long(c->self, "fd", -1); }
+}
+static void CH_isOpen(tl_jcall *c) { c->ret = vz(ch_fd(c->self) >= 0); }
+/* transferTo(position, count, target): the fast path writes straight into another FileChannel's fd;
+   anything else goes through the target's write(ByteBuffer) so DVM channels work too. */
+static void CH_transferTo(tl_jcall *c)
+{
+    int fd = ch_fd(c->self);
+    long pos = c->args[0].j, cnt = c->args[1].j;
+    jobj *dst = c->args[2].l;
+    if (fd < 0 || !dst || cnt <= 0) { c->ret = vj(0); return; }
+    uint8_t *buf = malloc(65536);
+    long saved = lseek(fd, 0, SEEK_CUR), sent = 0;
+    lseek(fd, pos, SEEK_SET);
+    int dfd = ch_fd(dst);
+    while (sent < cnt) {
+        size_t want = (size_t)(cnt - sent > 65536 ? 65536 : cnt - sent);
+        ssize_t r = read(fd, buf, want);
+        if (r <= 0) break;
+        if (dfd >= 0) {
+            ssize_t w = write(dfd, buf, (size_t)r);
+            if (w <= 0) break;
+            sent += w;
+        } else {
+            jobj *bb = new_bb(buf, (int)r, false);
+            jvalue wa = { .l = bb };
+            int w = tl_jni_call(dst, "write", "(Ljava/nio/ByteBuffer;)I", &wa).i;
+            if (w <= 0) break;
+            sent += w;
+        }
+        if ((size_t)r < want) break;
+    }
+    lseek(fd, saved, SEEK_SET);
+    free(buf);
+    c->ret = vj(sent);
+}
+static void CH_transferFrom(tl_jcall *c)
+{
+    jobj *src = c->args[0].l;
+    long pos = c->args[1].j, cnt = c->args[2].j;
+    int fd = ch_fd(c->self);
+    if (fd < 0 || !src || cnt <= 0) { c->ret = vj(0); return; }
+    uint8_t *buf = malloc(65536);
+    long saved = lseek(fd, 0, SEEK_CUR), got = 0;
+    lseek(fd, pos, SEEK_SET);
+    int sfd = ch_fd(src);
+    while (got < cnt) {
+        size_t want = (size_t)(cnt - got > 65536 ? 65536 : cnt - got), r = 0;
+        if (sfd >= 0) {
+            ssize_t rr = read(sfd, buf, want);
+            if (rr <= 0) break;
+            r = (size_t)rr;
+        } else {
+            jobj *bb = new_bb(buf, (int)want, false);
+            set_int(bb, "pos", 0); set_int(bb, "lim", (int)want);
+            jvalue ra = { .l = bb };
+            int rr = tl_jni_call(src, "read", "(Ljava/nio/ByteBuffer;)I", &ra).i;
+            if (rr <= 0) break;
+            r = (size_t)rr;
+        }
+        ssize_t w = write(fd, buf, r);
+        if (w <= 0) break;
+        got += w;
+        if ((size_t)w < r) break;
+    }
+    lseek(fd, saved, SEEK_SET);
+    free(buf);
+    c->ret = vj(got);
+}
+
 static void B64_encode(tl_jcall *c)
 {
     jobj *a = c->args[0].l;
     if (!a) { c->ret = vl(NULL); return; }
     size_t n;
     char *e = b64enc(a->arr.data, a->arr.len, c->args[1].i, &n);
+    jobj *r = tl_jni_new_prim_array('B', (uint32_t)n);
+    memcpy(r->arr.data, e, n);
+    free(e);
+    c->ret = vl(r);
+}
+static void B64_encode3(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    int off = c->args[1].i, len = c->args[2].i;
+    if (!a || off < 0 || len < 0 || (size_t)(off + len) > a->arr.len) { c->ret = vl(NULL); return; }
+    size_t n;
+    char *e = b64enc(a->arr.data + off, len, c->args[3].i, &n);
     jobj *r = tl_jni_new_prim_array('B', (uint32_t)n);
     memcpy(r->arr.data, e, n);
     free(e);
@@ -5507,6 +6175,14 @@ static void B64_encodeToString(tl_jcall *c)
     char *e = b64enc(a->arr.data, a->arr.len, c->args[1].i, NULL);
     c->ret = vl(STR(e)); free(e);
 }
+static void B64_ets3(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    int off = c->args[1].i, len = c->args[2].i;
+    if (!a || off < 0 || len < 0 || (size_t)(off + len) > a->arr.len) { c->ret = vl(NULL); return; }
+    char *e = b64enc(a->arr.data + off, len, c->args[3].i, NULL);
+    c->ret = vl(STR(e)); free(e);
+}
 static void B64_decode(tl_jcall *c)
 {
     size_t n;
@@ -5516,6 +6192,17 @@ static void B64_decode(tl_jcall *c)
     else if (c->args[0].l)
         d = b64dec(c->args[0].l->arr.data, c->args[0].l->arr.len, &n);
     else { c->ret = vl(NULL); return; }
+    jobj *r = tl_jni_new_prim_array('B', (uint32_t)n);
+    memcpy(r->arr.data, d, n); free(d);
+    c->ret = vl(r);
+}
+static void B64_decode3(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    int off = c->args[1].i, len = c->args[2].i;
+    if (!a || off < 0 || len < 0 || (size_t)(off + len) > a->arr.len) { c->ret = vl(NULL); return; }
+    size_t n;
+    uint8_t *d = b64dec(a->arr.data + off, len, &n);
     jobj *r = tl_jni_new_prim_array('B', (uint32_t)n);
     memcpy(r->arr.data, d, n); free(d);
     c->ret = vl(r);
@@ -16990,6 +17677,85 @@ static const tl_jhle k_more_hle[] = {
     M("java/io/FileInputStream", "markSupported", NULL, FIS_markSupported),
     M("java/io/FileInputStream", "getFD", NULL, FIS_getFD),
     M("java/io/FileInputStream", "getChannel", NULL, FIS_getChannel),
+    M("java/io/FileOutputStream", "getChannel", NULL, FOS_getChannel),
+    M("java/nio/channels/FileChannel", "size", NULL, CH_size),
+    M("java/nio/channels/FileChannel", "position", "()J", CH_position),
+    M("java/nio/channels/FileChannel", "position", "(J)Ljava/nio/channels/FileChannel;", CH_position_set),
+    M("java/nio/channels/FileChannel", "read", "(Ljava/nio/ByteBuffer;)I", CH_read),
+    M("java/nio/channels/FileChannel", "write", "(Ljava/nio/ByteBuffer;)I", CH_write),
+    M("java/nio/channels/FileChannel", "truncate", "(J)Ljava/nio/channels/FileChannel;", CH_truncate),
+    M("java/nio/channels/FileChannel", "force", NULL, CH_force),
+    M("java/nio/channels/FileChannel", "close", NULL, CH_close),
+    M("java/nio/channels/FileChannel", "isOpen", NULL, CH_isOpen),
+    M("java/nio/channels/FileChannel", "transferTo", "(JJLjava/nio/channels/WritableByteChannel;)J", CH_transferTo),
+    M("java/nio/channels/FileChannel", "transferFrom", "(Ljava/nio/channels/ReadableByteChannel;JJ)J", CH_transferFrom),
+    M("java/util/zip/ZipEntry", "<init>", "(Ljava/lang/String;)V", ZE_init),
+    M("java/util/zip/ZipEntry", "<init>", "(Ljava/util/zip/ZipEntry;)V", ZE_init_copy),
+    M("java/util/zip/ZipEntry", "getName", NULL, ZE_getName),
+    M("java/util/zip/ZipEntry", "getSize", NULL, ZE_getSize),
+    M("java/util/zip/ZipEntry", "getCompressedSize", NULL, ZE_getCompressedSize),
+    M("java/util/zip/ZipEntry", "getCrc", NULL, ZE_getCrc),
+    M("java/util/zip/ZipEntry", "getTime", NULL, ZE_getTime),
+    M("java/util/zip/ZipEntry", "getMethod", NULL, ZE_getMethod),
+    M("java/util/zip/ZipEntry", "getComment", NULL, ZE_getComment),
+    M("java/util/zip/ZipEntry", "setSize", NULL, ZE_setSize),
+    M("java/util/zip/ZipEntry", "setCompressedSize", NULL, ZE_setCompressedSize),
+    M("java/util/zip/ZipEntry", "setCrc", NULL, ZE_setCrc),
+    M("java/util/zip/ZipEntry", "setTime", NULL, ZE_setTime),
+    M("java/util/zip/ZipEntry", "setMethod", NULL, ZE_setMethod),
+    M("java/util/zip/ZipEntry", "setComment", NULL, ZE_setComment),
+    M("java/util/zip/ZipEntry", "isDirectory", NULL, ZE_isDirectory),
+    M("java/util/zip/ZipEntry", "toString", NULL, ZE_toString),
+    M("java/util/zip/ZipEntry", "hashCode", NULL, ZE_hashCode),
+    M("java/util/zip/ZipFile", "<init>", "(Ljava/io/File;)V", ZF_init_file),
+    M("java/util/zip/ZipFile", "<init>", "(Ljava/lang/String;)V", ZF_init_path),
+    M("java/util/zip/ZipFile", "getEntry", NULL, ZF_getEntry),
+    M("java/util/zip/ZipFile", "entries", NULL, ZF_entries),
+    M("java/util/zip/ZipFile", "size", NULL, ZF_size),
+    M("java/util/zip/ZipFile", "getName", NULL, ZF_getName),
+    M("java/util/zip/ZipFile", "close", NULL, ZF_close),
+    M("java/util/zip/ZipFile", "getInputStream", NULL, ZF_getInputStream),
+    M("java/util/zip/ZipInputStream", "<init>", "(Ljava/io/InputStream;)V", ZIS_init_stream),
+    M("java/util/zip/ZipInputStream", "<init>", "(Ljava/lang/String;)V", ZIS_init_path),
+    M("java/util/zip/ZipInputStream", "getNextEntry", NULL, ZIS_getNextEntry),
+    M("java/util/zip/ZipInputStream", "read", "()I", ZIS_read0),
+    M("java/util/zip/ZipInputStream", "read", "([BII)I", ZIS_read_range),
+    M("java/util/zip/ZipInputStream", "closeEntry", NULL, ZIS_closeEntry),
+    M("java/util/zip/ZipInputStream", "close", NULL, ZIS_close),
+    M("java/util/zip/ZipInputStream", "available", NULL, ZIS_available),
+    M("java/util/zip/CRC32", "<init>", NULL, CRC_init),
+    M("java/util/zip/CRC32", "update", "(I)V", CRC_update0),
+    M("java/util/zip/CRC32", "update", "([B)V", CRC_update_arr),
+    M("java/util/zip/CRC32", "update", "([BII)V", CRC_update_range),
+    M("java/util/zip/CRC32", "getValue", NULL, CRC_getValue),
+    M("java/util/zip/CRC32", "reset", NULL, CRC_reset),
+    M("java/util/zip/Adler32", "<init>", NULL, CRC_init),
+    M("java/util/zip/Adler32", "update", "(I)V", ADL_update0),
+    M("java/util/zip/Adler32", "update", "([BII)V", ADL_update_range),
+    M("java/util/zip/Adler32", "getValue", NULL, ADL_getValue),
+    M("java/util/zip/Adler32", "reset", NULL, ADL_reset),
+    M("java/util/zip/CheckedInputStream", "<init>", "(Ljava/io/InputStream;Ljava/util/zip/Checksum;)V", CKIS_init),
+    M("java/util/zip/CheckedInputStream", "read", "()I", CKIS_read0),
+    M("java/util/zip/CheckedInputStream", "read", "([BII)I", CKIS_read_range),
+    M("java/util/zip/CheckedInputStream", "skip", NULL, CKIS_skip),
+    M("java/util/zip/CheckedInputStream", "close", NULL, CKIS_close),
+    M("java/util/zip/CheckedInputStream", "getChecksum", NULL, CKIS_getChecksum),
+    M("java/util/zip/CheckedOutputStream", "<init>", "(Ljava/io/OutputStream;Ljava/util/zip/Checksum;)V", CKOS_init),
+    M("java/util/zip/CheckedOutputStream", "write", "(I)V", CKOS_write0),
+    M("java/util/zip/CheckedOutputStream", "write", "([BII)V", CKOS_write_range),
+    M("java/util/zip/CheckedOutputStream", "close", NULL, CKOS_close),
+    M("java/util/zip/CheckedOutputStream", "flush", NULL, CKOS_flush),
+    M("java/util/zip/CheckedOutputStream", "getChecksum", NULL, CKIS_getChecksum),
+    M("java/util/zip/ZipOutputStream", "<init>", "(Ljava/io/OutputStream;)V", ZOS_init),
+    M("java/util/zip/ZipOutputStream", "putNextEntry", NULL, ZOS_putNextEntry),
+    M("java/util/zip/ZipOutputStream", "write", "(I)V", ZOS_write0),
+    M("java/util/zip/ZipOutputStream", "write", "([BII)V", ZOS_write_range),
+    M("java/util/zip/ZipOutputStream", "closeEntry", NULL, ZOS_closeEntry),
+    M("java/util/zip/ZipOutputStream", "finish", NULL, ZOS_finish),
+    M("java/util/zip/ZipOutputStream", "close", NULL, ZOS_close),
+    M("java/util/zip/ZipOutputStream", "flush", NULL, ZOS_flush),
+    M("java/util/zip/ZipOutputStream", "setMethod", NULL, ZOS_setMethod),
+    M("java/util/zip/ZipOutputStream", "setLevel", NULL, ZOS_setLevel),
     M("java/io/FileDescriptor", "sync", NULL, FD_sync),
     M("java/io/FileDescriptor", "valid", NULL, FD_valid),
     M("java/io/ByteArrayInputStream", "<init>", "(Ljava/lang/Object;)V", BAIS_init),
@@ -17551,9 +18317,14 @@ static const tl_jhle k_more_hle[] = {
     M("android/util/Log", "wtf", "(Ljava/lang/Object;Ljava/lang/Object;)I", Log_wtf),
     M("android/util/Log", "println", "(ILjava/lang/Object;Ljava/lang/Object;)I", Log_println),
     M("android/util/Log", "isLoggable", "(II)Z", Log_isLoggable),
-    M("android/util/Base64", "encode", "(Ljava/lang/Object;I)Ljava/lang/Object;", B64_encode),
-    M("android/util/Base64", "encodeToString", "(Ljava/lang/Object;I)Ljava/lang/Object;", B64_encodeToString),
-    M("android/util/Base64", "decode", "([Ljava/lang/Object;)Ljava/lang/Object;", B64_decode),
+    M("android/util/Base64", "encode", "([BI)[B", B64_encode),
+    M("android/util/Base64", "encode", "([BIII)[B", B64_encode3),
+    M("android/util/Base64", "encodeToString", "([BI)Ljava/lang/String;", B64_encodeToString),
+    M("android/util/Base64", "encodeToString", "([BIII)Ljava/lang/String;", B64_ets3),
+    M("android/util/Base64", "decode", "([B)[B", B64_decode),
+    M("android/util/Base64", "decode", "([BI)[B", B64_decode),
+    M("android/util/Base64", "decode", "(Ljava/lang/String;I)[B", B64_decode),
+    M("android/util/Base64", "decode", "([BIII)[B", B64_decode3),
     M("android/text/TextUtils", "isEmpty", "(Ljava/lang/Object;)Z", TU_isEmpty),
     M("android/text/TextUtils", "equals", "(Ljava/lang/Object;Ljava/lang/Object;)Z", TU_equals),
     M("android/text/TextUtils", "join", "(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;", TU_join),
@@ -20430,6 +21201,19 @@ static const struct { const char *name, *super; } k_more_classes[] = {
     { "java/nio/ByteBuffer", "java/lang/Object" },
     { "java/nio/HeapByteBuffer", "java/nio/ByteBuffer" },
     { "java/nio/DirectByteBuffer", "java/nio/ByteBuffer" },
+    { "java/nio/channels/FileChannel", "java/lang/Object" },
+    { "java/nio/channels/ReadableByteChannel", "java/lang/Object" },
+    { "java/nio/channels/WritableByteChannel", "java/lang/Object" },
+    { "java/util/zip/ZipEntry", "java/lang/Object" },
+    { "java/util/zip/ZipFile", "java/lang/Object" },
+    { "java/util/zip/ZipInputStream", "java/io/InputStream" },
+    { "java/util/zip/ZipOutputStream", "java/io/OutputStream" },
+    { "java/util/zip/CRC32", "java/lang/Object" },
+    { "java/util/zip/Adler32", "java/lang/Object" },
+    { "java/util/zip/Checksum", "java/lang/Object" },
+    { "java/util/zip/CheckedInputStream", "java/io/InputStream" },
+    { "java/util/zip/CheckedOutputStream", "java/io/OutputStream" },
+    { "java/util/zip/ZipException", "java/io/IOException" },
     { "java/nio/MappedByteBuffer", "java/nio/ByteBuffer" },
     { "java/nio/ByteOrder", "java/lang/Object" },
     { "java/nio/FloatBuffer", "java/lang/Object" },
