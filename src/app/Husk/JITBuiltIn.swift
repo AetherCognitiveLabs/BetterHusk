@@ -49,7 +49,8 @@ enum HuskBuiltInJIT {
             return "Built-in JIT needs iOS 26 or later. Use StikDebug instead."
         }
         if JITBootstrap.isInsideLiveContainer {
-            return "Built-in JIT is unavailable inside LiveContainer. Use StikDebug instead."
+            return "Built-in JIT cannot start inside LiveContainer. Enable JIT for BetterHusk in "
+                 + "LiveContainer's app settings, or attach StikDebug to the shared process."
         }
         return nil
 #endif

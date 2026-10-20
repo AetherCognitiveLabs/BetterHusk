@@ -152,8 +152,10 @@ enum JITBootstrap {
             // the container is debugged, not that this process can execute memory it wrote. The one probe that tells
             // is cached for this foreground pass, so a view asking repeatedly does not keep trapping; coming back to
             // the foreground clears it, since that is when a JIT just switched on in LiveContainer's settings shows up.
+            // mapJITWorks is part of the verdict: prewarm() can fail where QEMU's own MAP_JIT buffer would run --
+            // start() allows exactly that combination, so ready must say the same thing.
             if let answer = lcReadyAnswer { return answer }
-            let answer = prewarm()
+            let answer = prewarm() || mapJITWorks
             lcReadyAnswer = answer
             return answer
         }
