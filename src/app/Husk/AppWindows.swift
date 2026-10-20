@@ -177,7 +177,7 @@ private struct AppWindow: View {
         } else if let apk = app.apks.first {
             TLWindowScreen(apk: apk, extraApks: Array(app.apks.dropFirst()), dataDir: app.nativeDataDir,
                            engine: app.screenEngine, portrait: portrait, scale: settings.resolution.scale,
-                           vulkan: settings.vulkan(for: app.screenEngine))
+                           vulkan: settings.vulkan(for: app.screenEngine), diagnostics: settings.diagnostics)
                 .overlay {
                     if model.frames == 0 {
                         VStack(spacing: 10) {
@@ -327,10 +327,12 @@ struct TLWindowScreen: UIViewRepresentable {
     let scale: CGFloat
     /// The game's Graphics setting's answer for its engine (#149): whether guest code can open libvulkan.so.
     var vulkan = false
+    /// The game's Diagnostics setting: a Java-runtime game logs its touch routes and view tree (#139).
+    var diagnostics = false
 
     func makeUIView(context: Context) -> TLWindowHost {
         TLWindowHost(game: TLUnityScreen.view(apk: apk, extraApks: extraApks, dataDir: dataDir, engine: engine,
-                                              portrait: portrait, scale: scale, vulkan: vulkan))
+                                              portrait: portrait, scale: scale, vulkan: vulkan, diagnostics: diagnostics))
     }
     func updateUIView(_ view: TLWindowHost, context: Context) { view.setNeedsLayout() }
 }

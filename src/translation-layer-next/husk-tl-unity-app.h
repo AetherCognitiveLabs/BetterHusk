@@ -56,6 +56,8 @@ bool husk_godot_launch(const char *apk, const char *data_dir, void *metal_layer,
 bool husk_gta_launch(const char *apk, const char *data_dir, void *metal_layer, int width, int height,
                      const char *angle_dylib, const char *ca_bundle);
 void husk_ue4_set_vulkan(const char *dylib);
+/* The Java runtime writes every touch's dispatch and a regular view-tree dump into the run log (a game's Diagnostics). */
+void husk_unity_set_diag(int on);
 
 /* Flutter apps (libflutter.so): the engine and the app's Dart run natively; Impeller draws through ANGLE. */
 bool husk_flutter_launch(const char *apk, const char *data_dir, void *metal_layer, int width, int height,

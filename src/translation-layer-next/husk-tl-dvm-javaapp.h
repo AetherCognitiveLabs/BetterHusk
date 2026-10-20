@@ -36,10 +36,12 @@ typedef struct tl_javaapp_config {
     void (*pick_documents)(const char *mime_types, int multiple);
     int insets[4];                   /* left, top, right, bottom: the screen's notch and home indicator, in pixels */
     bool night_mode;                 /* the phone is in dark mode: the app's configuration says UI_MODE_NIGHT_YES */
+    bool diag;                       /* the game's Diagnostics setting: touch routes and the view tree go to the run log */
 } tl_javaapp_config;
 
 bool tl_javaapp_manifest(const char *apk, char *pkg, size_t pn, char *activity, size_t an, char *application, size_t apn);
 bool tl_javaapp_start(const tl_javaapp_config *cfg);
+void tl_javaapp_set_diag(int on);                             /* per-game Diagnostics: touch routes and the view tree go to the log */
 void tl_javaapp_touch(int phase, int id, float x, float y);    /* surface pixels; phase 0 down, 1 move, 2 up, 3 cancel */
 void tl_javaapp_key(int android_keycode, bool down);
 void tl_javaapp_back(void);

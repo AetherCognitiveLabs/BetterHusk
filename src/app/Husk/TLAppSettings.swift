@@ -153,6 +153,9 @@ struct TLAppSettings: Codable, Equatable {
     var engine: Engine = .auto
     /// Forced graphics API; automatic offers Vulkan where the runtime already supports it.
     var renderer: Renderer = .auto
+    /// Diagnostics: Java-runtime games log each touch's route through the windows and dump the view tree every few
+    /// seconds. The output lands in the game's run log, which the Technical Details screen already shares (#139).
+    var diagnostics = false
 
     /// Whether guest code can open libvulkan.so for this run, given the engine it will run on: forced by Graphics either
     /// way; automatic offers it on the drivers that can draw with it, and the rest keep their OpenGL ES answer.
@@ -182,6 +185,7 @@ struct TLAppSettings: Codable, Equatable {
         window = try c.decodeIfPresent(WindowMode.self, forKey: .window) ?? .auto
         engine = try c.decodeIfPresent(Engine.self, forKey: .engine) ?? .auto
         renderer = try c.decodeIfPresent(Renderer.self, forKey: .renderer) ?? .auto
+        diagnostics = try c.decodeIfPresent(Bool.self, forKey: .diagnostics) ?? false
     }
 
     private static func url(_ id: String) -> URL {
@@ -277,6 +281,12 @@ struct TLAppSettingsView: View {
                 Text("Engine")
             } footer: {
                 Text("BetterHusk detects \(app.label) as \(app.report?.nativeEngineName ?? "an unknown engine"). Pick another only when detection is wrong — a setup or launcher screen can look like a different engine than the game itself, and a wrong driver usually crashes. Graphics decides whether the game is told Vulkan exists here: OpenGL ES hides it, for games that prefer it but then crash. Applies the next time the game starts.")
+            }
+
+            Section {
+                Toggle("Diagnostics", isOn: $settings.diagnostics)
+            } footer: {
+                Text("For a game that runs in Husk's own Java runtime: every touch writes the window it went to and the view that answered, and the view tree is printed every few seconds — all into the run log, which Technical Details can share. Leave it off while playing normally; the writes cost a little speed.")
             }
 
             Section {

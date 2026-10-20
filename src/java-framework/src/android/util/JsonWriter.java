@@ -97,7 +97,7 @@ public final class JsonWriter implements Closeable {
             case '\n': out.write("\\n"); break;
             case '\r': out.write("\\r"); break;
             case '\f': out.write("\\f"); break;
-            case ' ': case ' ': out.write(String.format("\\u%04x", (int) c)); break;
+            case '\u2028': case '\u2029': out.write(String.format("\\u%04x", (int) c)); break;
             default:
                 if (c <= 0x1F) out.write(String.format("\\u%04x", (int) c));
                 else out.write(c);

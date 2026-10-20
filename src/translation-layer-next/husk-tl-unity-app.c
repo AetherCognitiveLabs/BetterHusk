@@ -74,6 +74,7 @@ static struct {
     int nextra;
     void *layer;
     int width, height;
+    int diag;                            /* log input dispatch and the view tree into the run log (a game's Diagnostics) */
 } A;
 
 /* -------------------------------------------------------------- crash report */
@@ -366,6 +367,7 @@ static void *launch_thread(void *arg)
                 .get_clipboard = g_java_host.get_clipboard, .share = g_java_host.share, .set_orientation = g_java_host.orientation,
                 .pick_documents = g_java_host.pick_documents,
                 .insets = { g_java_insets[0], g_java_insets[1], g_java_insets[2], g_java_insets[3] }, .night_mode = g_java_night,
+                .diag = A.diag != 0,
             };
             ok = tl_javaapp_start(&cfg);
         }
@@ -567,6 +569,7 @@ void husk_native_set_system_files(const char *cacerts_dir, const char *fonts_roo
 }
 /* Where MoltenVK is: Unreal's Vulkan renderer runs on it. Before the launch call. */
 void husk_ue4_set_vulkan(const char *dylib) { snprintf(A.vulkan, sizeof(A.vulkan), "%s", dylib ? dylib : ""); }
+void husk_unity_set_diag(int on) { A.diag = on != 0; }
 void tl_set_shared_storage(const char *dir);
 void husk_native_set_shared_storage(const char *dir) { tl_set_shared_storage(dir); }
 

@@ -156,7 +156,8 @@ public final class ViewRoot implements ViewParent {
         drawAll(roots);
         for (ViewRoot r : roots) if (!r.mRemoved) r.mObserver.dispatchOnDraw();
     }
-    private static Boolean sDump;
+    /** Diagnostics (a game's own setting): dump the view tree every few seconds. Set by husk-unity before a launch, or TL_VIEW_DUMP. */
+    public static boolean sViewDump = System.getenv("TL_VIEW_DUMP") != null;
     private long mLastDump;
     /** TL_VIEW_DUMP: the window's views, with their frames, to the log (every 3 s while it lays out). */
     private static void dump(View v, int depth) {
@@ -240,14 +241,13 @@ public final class ViewRoot implements ViewParent {
             mView.layout(0, 0, w, h);
         } finally { mInLayout = false; }
         mObserver.dispatchOnGlobalLayout();
-        if (sDump == null) sDump = System.getenv("TL_VIEW_DUMP") != null;
-        if (sDump) {
+        if (sViewDump) {
             long now = android.os.SystemClock.uptimeMillis();
             if (now - mLastDump > 3000) { mLastDump = now; dump(mView, 0); }
             if (!mDumpTimer) {                  /* and again every 4 s, laid out again or not: a window that never relayouts shows why */
                 mDumpTimer = true;
                 final Runnable[] again = new Runnable[1];
-                again[0] = () -> { if (mRemoved) return; android.util.Log.d("ViewDump", "---- " + mView.getClass().getName() + " (timer; layout requested " + mView.isLayoutRequested() + ")"); dump(mView, 0); mainHandler().postDelayed(again[0], 4000); };
+                again[0] = () -> { if (mRemoved || !sViewDump) return; android.util.Log.d("ViewDump", "---- " + mView.getClass().getName() + " (timer; layout requested " + mView.isLayoutRequested() + ")"); dump(mView, 0); mainHandler().postDelayed(again[0], 4000); };
                 mainHandler().postDelayed(again[0], 4000);
             }
         }
@@ -325,7 +325,7 @@ public final class ViewRoot implements ViewParent {
         MotionEvent l = MotionEvent.obtain(e);
         l.offsetLocation(-r.mX, -r.mY);
         boolean h = r.mView.dispatchTouchEvent(l);
-        if (TOUCH_LOG && am != MotionEvent.ACTION_MOVE)
+        if (sTouchLog && am != MotionEvent.ACTION_MOVE)
             android.util.Log.d("Touch", MotionEvent.actionToString(am) + " " + l.getX() + "," + l.getY() + " -> window " + r.mView.getClass().getName() + " at " + r.mX + "," + r.mY + " " + r.mW + "x" + r.mH + ": " + (h ? "handled" : "not handled") + ", under it " + deepest(r.mView, l.getX(), l.getY()));
         if (am == MotionEvent.ACTION_UP || am == MotionEvent.ACTION_CANCEL) sTouchTarget = null;
         return h;
@@ -356,7 +356,8 @@ public final class ViewRoot implements ViewParent {
         }
         return null;
     }
-    private static final boolean TOUCH_LOG = System.getenv("TL_TOUCH_LOG") != null;
+    /** Diagnostics: each touch says which window took it and the view under the finger, in the run log. */
+    public static boolean sTouchLog = System.getenv("TL_TOUCH_LOG") != null;
     private static String deepest(View v, float x, float y) {
         String path = v.getClass().getSimpleName();
         while (v instanceof android.view.ViewGroup) {

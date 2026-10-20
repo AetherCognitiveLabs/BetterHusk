@@ -1124,6 +1124,7 @@ static void *app_main(void *arg)
     void tl_thread_altstack(void); tl_thread_altstack();
     (void)arg;
     pthread_setname_np("main");
+    if (A.cfg.diag) tl_javaapp_set_diag(1);   /* on this thread the runtime is up: the class answers */
     jvalue a[2] = { L(dvm_new_string_utf8(A.activity)), L(A.application[0] ? dvm_new_string_utf8(A.application) : NULL) };
     jvalue r;
     if (!tl_dvm_call_static("husk/AppRunner", "run", "(Ljava/lang/String;Ljava/lang/String;)V", a, &r)) {
@@ -1179,6 +1180,15 @@ bool tl_javaapp_start(const tl_javaapp_config *cfg)
     pthread_attr_t at; pthread_attr_init(&at); pthread_attr_setstacksize(&at, 256u << 20);
     pthread_t t;
     return pthread_create(&t, &at, app_main, NULL) == 0;
+}
+
+/* The game's Diagnostics setting: the Java side then logs each touch's route through the windows and dumps the view
+ * tree every few seconds, into the run log a user can share. */
+void tl_javaapp_set_diag(int on)
+{
+    jvalue v; v.j = 0; v.z = on != 0;
+    tl_jni_set_static("husk/ViewRoot", "sTouchLog", "Z", v);
+    tl_jni_set_static("husk/ViewRoot", "sViewDump", "Z", v);
 }
 
 void tl_javaapp_touch(int phase, int id, float x, float y)

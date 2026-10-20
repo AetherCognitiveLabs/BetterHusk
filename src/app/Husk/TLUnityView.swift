@@ -52,6 +52,8 @@ final class TLUnityUIView: UIView, UIKeyInput {
     /// Whether libvulkan.so answers for the guest: MoltenVK is named to the runtime when it does (the game's Graphics
     /// setting -- #149). A game that can draw with both picks Vulkan when the library exists, OpenGL ES when it does not.
     private let vulkan: Bool
+    /// The game's Diagnostics setting: a Java-runtime game logs each touch's route and dumps its view tree (#139).
+    private let diagnostics: Bool
     /// In a floating window rather than full screen: no notch or home indicator to keep clear of.
     var windowed = false
     /// Where the corner statistics go when this view does not draw them itself (a landscape game has its own bar).
@@ -67,13 +69,14 @@ final class TLUnityUIView: UIView, UIKeyInput {
     /// Called when three fingers tap at once: the way back to the interface while it is hidden.
     var onThreeFingerTap: (() -> Void)?
 
-    init(apk: String, extraApks: [String] = [], dataDir: String, engine: TLNativeEngine, portrait: Bool = false, scale: CGFloat = 2, vulkan: Bool = false) {
+    init(apk: String, extraApks: [String] = [], dataDir: String, engine: TLNativeEngine, portrait: Bool = false, scale: CGFloat = 2, vulkan: Bool = false, diagnostics: Bool = false) {
         self.apk = apk
         self.portrait = portrait
         self.dataDir = dataDir
         self.engine = engine
         self.extraApks = extraApks
         self.vulkan = vulkan
+        self.diagnostics = diagnostics
         super.init(frame: .zero)
         backgroundColor = .black
         isMultipleTouchEnabled = true
@@ -289,6 +292,8 @@ final class TLUnityUIView: UIView, UIKeyInput {
         // Whether guest code can open libvulkan.so this run -- the Graphics setting's answer (#149). MoltenVK is bundled
         // either way; naming it is what makes Vulkan visible to the game.
         if vulkan, let fw = Bundle.main.privateFrameworksPath { husk_ue4_set_vulkan(fw + "/MoltenVK.framework/MoltenVK") }
+        // The game's Diagnostics setting: a Java-runtime launch then logs each touch's route and dumps the view tree.
+        husk_unity_set_diag(diagnostics ? 1 : 0)
         switch engine {
         case .sdl:
             // The notch and the rounded corners, in the surface's pixels: the game keeps its controls out of them.
@@ -685,6 +690,8 @@ struct TLUnityScreen: UIViewRepresentable {
     var scale: CGFloat = 2
     /// Whether guest code can open libvulkan.so this run -- the game's Graphics setting (#149).
     var vulkan = false
+    /// The game's Diagnostics setting: Java-runtime games log their touch routes and view tree (#139).
+    var diagnostics = false
     var onStats: ((String) -> Void)? = nil
     var onThreeFingerTap: (() -> Void)? = nil
     /// One view per game for the life of the process. The engine's GPU surface belongs to this view's layer and an
@@ -692,9 +699,9 @@ struct TLUnityScreen: UIViewRepresentable {
     private static var shared: [String: TLUnityUIView] = [:]
 
     /// The game's one view, made the first time it is asked for.
-    static func view(apk: String, extraApks: [String], dataDir: String, engine: TLNativeEngine, portrait: Bool, scale: CGFloat, vulkan: Bool = false) -> TLUnityUIView {
+    static func view(apk: String, extraApks: [String], dataDir: String, engine: TLNativeEngine, portrait: Bool, scale: CGFloat, vulkan: Bool = false, diagnostics: Bool = false) -> TLUnityUIView {
         if let view = shared[apk] { return view }
-        let view = TLUnityUIView(apk: apk, extraApks: extraApks, dataDir: dataDir, engine: engine, portrait: portrait, scale: scale, vulkan: vulkan)
+        let view = TLUnityUIView(apk: apk, extraApks: extraApks, dataDir: dataDir, engine: engine, portrait: portrait, scale: scale, vulkan: vulkan, diagnostics: diagnostics)
         shared[apk] = view
         return view
     }
@@ -705,7 +712,7 @@ struct TLUnityScreen: UIViewRepresentable {
             view.transform = .identity
             view.onStats = onStats; view.onThreeFingerTap = onThreeFingerTap; return view
         }
-        let view = TLUnityUIView(apk: apk, extraApks: extraApks, dataDir: dataDir, engine: engine, portrait: portrait, scale: scale, vulkan: vulkan)
+        let view = TLUnityUIView(apk: apk, extraApks: extraApks, dataDir: dataDir, engine: engine, portrait: portrait, scale: scale, vulkan: vulkan, diagnostics: diagnostics)
         view.onStats = onStats
         view.onThreeFingerTap = onThreeFingerTap
         Self.shared[apk] = view
@@ -852,7 +859,7 @@ struct TLCocosAttemptView: View {
                     // The game always has the whole screen: it is told its size once, as it starts, so nothing may take space from it.
                     // The bar and the log are drawn over it instead, and hiding them shows everything underneath.
                     TLUnityScreen(apk: apk, extraApks: Array(app.apks.dropFirst()), dataDir: dataDir, engine: engine, portrait: portrait,
-                                  scale: settings.resolution.scale, vulkan: vulkan, onStats: { stats = $0 }, onThreeFingerTap: { toggleInterface() })
+                                  scale: settings.resolution.scale, vulkan: vulkan, diagnostics: settings.diagnostics, onStats: { stats = $0 }, onThreeFingerTap: { toggleInterface() })
                         .background(Color.black)
                     .overlay {
                         // A game whose menus answer only a controller: with none paired, one on the glass. Hiding the bar leaves
