@@ -57,6 +57,7 @@ static void set_str(jobj *o, const char *f, const char *v) { tl_jni_set_field(o,
 static void set_int(jobj *o, const char *f, int v) { tl_jni_set_field(o, f, "I", vi(v)); }
 static void set_bool(jobj *o, const char *f, int v) { tl_jni_set_field(o, f, "Z", vz(v)); }
 static void set_float(jobj *o, const char *f, float v) { tl_jni_set_field(o, f, "F", vf(v)); }
+static int get_int(jobj *o, const char *f) { return o ? tl_jni_get_field(o, f, "I").i : 0; }
 /* growable char buffer for the prefs file codec */
 typedef struct { char *p; size_t n, cap; } sbuf;
 static void sbp_putc(sbuf *b, char ch)
@@ -240,6 +241,95 @@ static void Context_deleteDatabase(tl_jcall *c) { char p[1000]; db_path(p, sizeo
 static void Context_databaseList(tl_jcall *c) { char p[800]; snprintf(p, sizeof(p), "%s/databases", H.data); c->ret = vl(dir_names(p)); }
 static void Context_getOpPackageName(tl_jcall *c) { c->ret = vl(STR(H.pkg)); }
 static void Context_createPackageContext(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+
+/* ------------------------------- android.app.Activity -------------------- */
+/* Lifecycle + bookkeeping answers native code reads back. "finished" is a
+ * field so isFinishing/isDestroyed reflect a finish() the app itself did. */
+static void Activity_finish(tl_jcall *c)          { tl_jni_set_field(c->self, "finished", "Z", vz(1)); }
+static void Activity_isDestroyed(tl_jcall *c)     { c->ret = vz(get_int(c->self, "finished")); }
+static void Activity_getLocalClassName(tl_jcall *c)
+{
+    const char *n = tl_jni_class_name(c->self);
+    const char *dot = n ? strrchr(n, '/') : NULL;
+    c->ret = vl(STR(dot ? dot + 1 : (n ? n : "Activity")));
+}
+static void Activity_getComponentName(tl_jcall *c)
+{
+    const char *n = tl_jni_class_name(c->self);
+    jobj *cn = make("android/content/ComponentName");
+    set_str(cn, "mPackage", H.pkg);
+    set_str(cn, "mClass", n ? n : "android/app/Activity");
+    c->ret = vl(cn);
+}
+static void Activity_moveTaskToBack(tl_jcall *c)  { c->ret = vz(1); }
+static void Activity_setResult(tl_jcall *c)
+{
+    tl_jni_set_field(c->self, "resultCode", "I", c->args[0]);
+    if (c->nargs > 1) tl_jni_set_field(c->self, "resultData", "Landroid/content/Intent;", c->args[1]);
+}
+static void Activity_getTitle(tl_jcall *c)        { c->ret = vl(STR(H.pkg)); }
+static void Activity_getCallingPackage(tl_jcall *c)  { c->ret = vl(NULL); }
+static void Activity_getCallingActivity(tl_jcall *c) { c->ret = vl(NULL); }
+static void Activity_getLayoutInflater(tl_jcall *c)  { c->ret = vl(make("android/view/LayoutInflater")); }
+static void Activity_getMenuInflater(tl_jcall *c)    { c->ret = vl(make("android/view/MenuInflater")); }
+static void Activity_findViewById(tl_jcall *c)       { c->ret = vl(make("android/view/View")); }
+
+/* -------------------------------- android.content.IntentFilter ----------- */
+/* Actions/categories live in ArrayList fields so add/has/count stay real. */
+static jobj *if_list(jobj *f, const char *field)
+{
+    jobj *l = tl_jni_get_field(f, field, "Ljava/util/ArrayList;").l;
+    if (!l) { l = make("java/util/ArrayList"); tl_jni_set_field(f, field, "Ljava/util/ArrayList;", vl(l)); }
+    return l;
+}
+static void IF_init(tl_jcall *c)      { if_list(c->self, "actions"); if_list(c->self, "categories"); }
+static void IF_init_action(tl_jcall *c)
+{
+    IF_init(c);
+    if (c->args[0].l) { jvalue a[1] = { c->args[0] }; tl_jni_call(if_list(c->self, "actions"), "add", "(Ljava/lang/Object;)Z", a); }
+}
+static void IF_init_mime(tl_jcall *c) { IF_init(c); tl_jni_set_field(c->self, "type", "Ljava/lang/String;", c->args[1]); }
+static void IF_addAction(tl_jcall *c)
+{
+    if (c->args[0].l) { jvalue a[1] = { c->args[0] }; tl_jni_call(if_list(c->self, "actions"), "add", "(Ljava/lang/Object;)Z", a); }
+}
+static void IF_addCategory(tl_jcall *c)
+{
+    if (c->args[0].l) { jvalue a[1] = { c->args[0] }; tl_jni_call(if_list(c->self, "categories"), "add", "(Ljava/lang/Object;)Z", a); }
+}
+static void IF_hasAction(tl_jcall *c)
+{
+    jvalue a[1] = { c->args[0] };
+    c->ret = tl_jni_call(if_list(c->self, "actions"), "contains", "(Ljava/lang/Object;)Z", a);
+}
+static void IF_matchAction(tl_jcall *c) { IF_hasAction(c); }
+static void IF_hasCategory(tl_jcall *c)
+{
+    jvalue a[1] = { c->args[0] };
+    c->ret = tl_jni_call(if_list(c->self, "categories"), "contains", "(Ljava/lang/Object;)Z", a);
+}
+static void IF_countActions(tl_jcall *c)   { c->ret = tl_jni_call(if_list(c->self, "actions"), "size", "()I", NULL); }
+static void IF_countCategories(tl_jcall *c){ c->ret = tl_jni_call(if_list(c->self, "categories"), "size", "()I", NULL); }
+static void IF_getAction(tl_jcall *c)
+{
+    jvalue a[1] = { c->args[0] };
+    c->ret = tl_jni_call(if_list(c->self, "actions"), "get", "(I)Ljava/lang/Object;", a);
+}
+static void IF_matchCategories(tl_jcall *c)
+{
+    /* Returns the categories the filter requires that the intent lacks (null =
+     * match). A null intent set only matches an empty filter set. */
+    jobj *cats = if_list(c->self, "categories");
+    if (!c->args[0].l) {
+        c->ret = tl_jni_call(cats, "isEmpty", "()Z", NULL).z ? vl(NULL) : vl(cats);
+        return;
+    }
+    jvalue r = tl_jni_call(c->args[0].l, "containsAll", "(Ljava/util/Collection;)Z", &(jvalue){ .j = 0, .l = cats });
+    c->ret = r.z ? vl(NULL) : vl(cats);
+}
+static void IF_addDataType(tl_jcall *c) { tl_jni_set_field(c->self, "type", "Ljava/lang/String;", c->args[0]); }
+static void IF_addDataScheme(tl_jcall *c) { tl_jni_set_field(c->self, "scheme", "Ljava/lang/String;", c->args[0]); }
+
 static void Context_checkCallingOrSelfPermission(tl_jcall *c) { c->ret = vi(0); }   /* PERMISSION_GRANTED */
 static void Context_checkSelfPermission(tl_jcall *c) { c->ret = vi(0); }
 
@@ -287,8 +377,7 @@ static void Activity_getWindow(tl_jcall *c) { c->ret = vl(H.window); }
 static void Activity_getWindowManager(tl_jcall *c) { c->ret = vl(H.wm); }
 static void Activity_getRequestedOrientation(tl_jcall *c) { c->ret = vi(-1); }
 static void Activity_getIntent(tl_jcall *c) { c->ret = vl(make("android/content/Intent")); }
-static void Activity_isFinishing(tl_jcall *c) { c->ret = vz(0); }
-static void Activity_getComponentName(tl_jcall *c) { c->ret = vl(make("android/content/ComponentName")); }
+static void Activity_isFinishing(tl_jcall *c) { c->ret = vz(get_int(c->self, "finished")); }
 
 /* ---------------------------------------------------- Resources, metrics */
 
@@ -1339,6 +1428,8 @@ static const struct { const char *name, *super; } k_classes[] = {
     { "org/fmod/FMODAudioDevice", "java/lang/Object" }, { "android/app/AlertDialog$Builder", "java/lang/Object" }, { "android/app/Dialog", "java/lang/Object" }, { "android/app/AlertDialog", "android/app/Dialog" },
     { "android/content/SharedPreferences$Editor", "java/lang/Object" }, { "java/util/Iterator", "java/lang/Object" },
     { "android/preference/PreferenceManager", "java/lang/Object" },
+    { "android/content/IntentFilter", "java/lang/Object" }, { "android/content/ComponentName", "java/lang/Object" },
+    { "android/view/LayoutInflater", "java/lang/Object" }, { "android/view/MenuInflater", "java/lang/Object" },
 };
 
 /*
@@ -1459,6 +1550,42 @@ static const tl_jhle k_hle[] = {
     M("android/app/Activity", "getRequestedOrientation", "()I", Activity_getRequestedOrientation),
     M("android/app/Activity", "getIntent", "()Landroid/content/Intent;", Activity_getIntent),
     M("android/app/Activity", "isFinishing", "()Z", Activity_isFinishing),
+    M("android/app/Activity", "finish", "()V", Activity_finish),
+    M("android/app/Activity", "isDestroyed", "()Z", Activity_isDestroyed),
+    M("android/app/Activity", "getLocalClassName", "()Ljava/lang/String;", Activity_getLocalClassName),
+    M("android/app/Activity", "getComponentName", "()Landroid/content/ComponentName;", Activity_getComponentName),
+    M("android/app/Activity", "recreate", "()V", Context_noop),
+    M("android/app/Activity", "moveTaskToBack", "(Z)Z", Activity_moveTaskToBack),
+    M("android/app/Activity", "setResult", "(I)V", Activity_setResult),
+    M("android/app/Activity", "setResult", "(ILandroid/content/Intent;)V", Activity_setResult),
+    M("android/app/Activity", "getTitle", "()Ljava/lang/CharSequence;", Activity_getTitle),
+    M("android/app/Activity", "setTitle", "(Ljava/lang/CharSequence;)V", Context_noop),
+    M("android/app/Activity", "setTitle", "(I)V", Context_noop),
+    M("android/app/Activity", "startActivityForResult", "(Landroid/content/Intent;I)V", Context_startActivity),
+    M("android/app/Activity", "onBackPressed", "()V", Context_noop),
+    M("android/app/Activity", "setVolumeControlStream", "(I)V", Context_noop),
+    M("android/app/Activity", "overridePendingTransition", "(II)V", Context_noop),
+    M("android/app/Activity", "getCallingPackage", "()Ljava/lang/String;", Activity_getCallingPackage),
+    M("android/app/Activity", "getCallingActivity", "()Landroid/content/ComponentName;", Activity_getCallingActivity),
+    M("android/app/Activity", "getLayoutInflater", "()Landroid/view/LayoutInflater;", Activity_getLayoutInflater),
+    M("android/app/Activity", "getMenuInflater", "()Landroid/view/MenuInflater;", Activity_getMenuInflater),
+    M("android/app/Activity", "findViewById", "(I)Landroid/view/View;", Activity_findViewById),
+    M("android/app/Activity", "setContentView", "(I)V", Context_noop),
+    M("android/app/Activity", "setContentView", "(Landroid/view/View;)V", Context_noop),
+    M("android/content/IntentFilter", "<init>", "()V", IF_init),
+    M("android/content/IntentFilter", "<init>", "(Ljava/lang/String;)V", IF_init_action),
+    M("android/content/IntentFilter", "<init>", "(Ljava/lang/String;Ljava/lang/String;)V", IF_init_mime),
+    M("android/content/IntentFilter", "addAction", "(Ljava/lang/String;)V", IF_addAction),
+    M("android/content/IntentFilter", "addCategory", "(Ljava/lang/String;)V", IF_addCategory),
+    M("android/content/IntentFilter", "hasAction", "(Ljava/lang/String;)Z", IF_hasAction),
+    M("android/content/IntentFilter", "matchAction", "(Ljava/lang/String;)Z", IF_matchAction),
+    M("android/content/IntentFilter", "hasCategory", "(Ljava/lang/String;)Z", IF_hasCategory),
+    M("android/content/IntentFilter", "matchCategories", "(Ljava/util/Set;)Ljava/util/Set;", IF_matchCategories),
+    M("android/content/IntentFilter", "countActions", "()I", IF_countActions),
+    M("android/content/IntentFilter", "countCategories", "()I", IF_countCategories),
+    M("android/content/IntentFilter", "getAction", "(I)Ljava/lang/String;", IF_getAction),
+    M("android/content/IntentFilter", "addDataType", "(Ljava/lang/String;)V", IF_addDataType),
+    M("android/content/IntentFilter", "addDataScheme", "(Ljava/lang/String;)V", IF_addDataScheme),
     M("android/content/res/Resources", "getAssets", "()Landroid/content/res/AssetManager;", Resources_getAssets),
     M("android/content/res/Resources", "getConfiguration", "()Landroid/content/res/Configuration;", Resources_getConfiguration),
     M("android/content/res/Resources", "getDisplayMetrics", "()Landroid/util/DisplayMetrics;", Resources_getDisplayMetrics),
