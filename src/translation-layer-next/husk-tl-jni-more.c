@@ -65,7 +65,7 @@ void  dvm_monitor_wait(jobj *o, int64_t ms, int32_t ns);
 void  dvm_monitor_notify(jobj *o, bool all);
 
 /* ---- provided by husk-tl-more.m (host bridges) ---- */
-int   tl_more_has_uikit;
+extern int tl_more_has_uikit;
 void  tl_more_haptic(int style);
 void  tl_more_vibrate(int64_t ms);
 void  tl_more_clipboard_set(const char *text);
