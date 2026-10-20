@@ -9982,6 +9982,16 @@
         }
       }
     },
+    "LiveContainer owns JIT here. Tap for options.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此处的 JIT 由 LiveContainer 管理。点击查看选项。"
+          }
+        }
+      }
+    },
     "JIT is on. Games and Android can start.": {
       "localizations": {
         "zh-Hans": {
