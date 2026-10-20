@@ -33,14 +33,7 @@
 #include <sys/ucontext.h>   /* not <ucontext.h>: that one #errors without _XOPEN_SOURCE */
 #include <unistd.h>
 #include <fcntl.h>
-#include <sys/proc_info.h>  /* struct proc_bsdinfo, PROC_PIDTBSDINFO */
-#if __has_include(<libproc.h>)
-#include <libproc.h>        /* proc_pidinfo: who is tracing us, which csops alone cannot say */
-#else
-/* The iPhoneOS SDK ships sys/proc_info.h but not libproc.h; libsystem still
- * exports the call, so declare it ourselves. */
-int proc_pidinfo(int pid, int flavor, uint64_t arg, void *buffer, int buffersize);
-#endif
+#include <sys/sysctl.h>     /* kinfo_proc: P_TRACED says a tracer holds us, e_ppid names it */
 
 /*
  * Provide pipe2 for iOS systems where libc does not export it.
@@ -524,9 +517,19 @@ HUSK_EXPORT bool husk_ios_jit_prewarm(size_t bytes)
  * the process stopped on the brk a second time. */
 static pid_t husk_tracer_pid(void)
 {
-    struct proc_bsdinfo pbi;
-    if (proc_pidinfo(getpid(), PROC_PIDTBSDINFO, 0, &pbi, sizeof(pbi)) != sizeof(pbi)) return -1;
-    return (pid_t)pbi.pbi_tpid;
+    /* P_TRACED marks an active ptrace attach, and the kernel reparents the
+     * traced process to the tracer, so e_ppid is the tracer's own pid --
+     * 0 when nobody holds us, -1 when sysctl itself fails (treated as
+     * "nobody", matching the fail-open intent of this check). */
+    struct kinfo_proc info;
+    size_t len = sizeof(info);
+    int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid() };
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"   /* KERN_PROC_PID is "deprecated" in the SDK but the only public tracer lookup */
+    if (sysctl(mib, 4, &info, &len, NULL, 0) != 0 || len < sizeof(info)) return -1;
+#pragma clang diagnostic pop
+    if (!(info.kp_proc.p_flag & P_TRACED)) return 0;
+    return (pid_t)info.kp_eproc.e_ppid;
 }
 
 /*
@@ -538,7 +541,7 @@ static pid_t husk_tracer_pid(void)
  * a stop that is never answered, and the process freezes with a log that ends
  * mid-sentence: TrollStore's enable-jit holds the process ~100 ms and services
  * nothing, and a container app's debugger may hold it for the whole run.
- * CS_DEBUGGED cannot tell those apart -- proc_pidinfo's pbi_tpid can: it is a
+ * CS_DEBUGGED cannot tell those apart -- the tracer pid from sysctl can: it is a
  * real attach, not a flag.
  */
 static bool husk_may_fault_now(void)
