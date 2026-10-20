@@ -11782,6 +11782,311 @@ static void MP_getVideoHeight(tl_jcall *c) { c->ret = vi(0); }
 static void MP_setDisplay(tl_jcall *c) { (void)c; }
 static void MP_setSurface(tl_jcall *c) { (void)c; }
 
+/* android.media.MediaFormat — a string-keyed map of boxed values */
+static void MF_init(tl_jcall *c) { map_of(c->self); }
+static void MF_setInt(tl_jcall *c)     { map_put(map_of(c->self), c->args[0].l, box_int(c->args[1].i)); }
+static void MF_setLong(tl_jcall *c)    { map_put(map_of(c->self), c->args[0].l, box_long(c->args[1].j)); }
+static void MF_setFloat(tl_jcall *c)   { map_put(map_of(c->self), c->args[0].l, box_float(c->args[1].f)); }
+static void MF_setString(tl_jcall *c)  { map_put(map_of(c->self), c->args[0].l, c->args[1].l); }
+static void MF_setBB(tl_jcall *c)      { map_put(map_of(c->self), c->args[0].l, c->args[1].l); }
+static void MF_removeKey(tl_jcall *c)  { map_remove(map_of(c->self), c->args[0].l); }
+static void MF_containsKey(tl_jcall *c){ c->ret = vz(map_find(map_of(c->self), c->args[0].l) >= 0); }
+static int fmt_unbox_i(jobj *v, int def)
+{
+    if (!v) return def;
+    if (v->kind == TL_K_STRING) { bool ok; int64_t x = parse_ll(S(v), 10, &ok); if (ok) return (int)x; }
+    int x = get_int(v, "value"); return x ? x : def;
+}
+static int64_t fmt_unbox_j(jobj *v, int64_t def)
+{
+    if (!v) return def;
+    if (v->kind == TL_K_STRING) { bool ok; int64_t x = parse_ll(S(v), 10, &ok); if (ok) return x; }
+    int64_t x = get_lng(v, "value"); return x ? x : def;
+}
+static float fmt_unbox_f(jobj *v, float def)
+{
+    if (!v) return def;
+    float x = get_flt(v, "value"); return x != 0 ? x : def;
+}
+static void MF_getInt(tl_jcall *c)   { c->ret = vi(fmt_unbox_i(map_get(map_of(c->self), c->args[0].l), 0)); }
+static void MF_getIntD(tl_jcall *c)  { c->ret = vi(fmt_unbox_i(map_get(map_of(c->self), c->args[0].l), c->args[1].i)); }
+static void MF_getLong(tl_jcall *c)  { c->ret = vj(fmt_unbox_j(map_get(map_of(c->self), c->args[0].l), 0)); }
+static void MF_getLongD(tl_jcall *c) { c->ret = vj(fmt_unbox_j(map_get(map_of(c->self), c->args[0].l), c->args[1].j)); }
+static void MF_getFloat(tl_jcall *c) { c->ret = vf(fmt_unbox_f(map_get(map_of(c->self), c->args[0].l), 0)); }
+static void MF_getFloatD(tl_jcall *c){ c->ret = vf(fmt_unbox_f(map_get(map_of(c->self), c->args[0].l), c->args[1].f)); }
+static void MF_getString(tl_jcall *c)
+{
+    jobj *v = map_get(map_of(c->self), c->args[0].l);
+    c->ret = vl(v && v->kind == TL_K_STRING ? v : NULL);
+}
+static void MF_getBB(tl_jcall *c)    { c->ret = vl(map_get(map_of(c->self), c->args[0].l)); }
+static void MF_size(tl_jcall *c)     { c->ret = vi(map_of(c->self)->n); }
+static void MF_createVideo(tl_jcall *c)
+{
+    jobj *f = make("android/media/MediaFormat"); map_of(f);
+    map_put(map_of(f), STR("mime"), c->args[0].l);
+    map_put(map_of(f), STR("width"), box_int(c->args[1].i));
+    map_put(map_of(f), STR("height"), box_int(c->args[2].i));
+    c->ret = vl(f);
+}
+static void MF_createAudio(tl_jcall *c)
+{
+    jobj *f = make("android/media/MediaFormat"); map_of(f);
+    map_put(map_of(f), STR("mime"), c->args[0].l);
+    map_put(map_of(f), STR("sample-rate"), box_int(c->args[1].i));
+    map_put(map_of(f), STR("channel-count"), box_int(c->args[2].i));
+    c->ret = vl(f);
+}
+static void MF_toString(tl_jcall *c)
+{
+    jmap *m = map_of(c->self);
+    sbuf b = {0}; sb_putc(&b, '{');
+    for (int i = 0; i < m->n; i++) {
+        if (i) sb_add(&b, ", ");
+        sb_add(&b, S(m->k[i])); sb_putc(&b, '=');
+        jobj *v = m->v[i];
+        if (!v) sb_add(&b, "null");
+        else if (v->kind == TL_K_STRING) sb_add(&b, S(v));
+        else { char t[40]; snprintf(t, 40, "%lld", (long long)fmt_unbox_j(v, get_int(v, "value"))); sb_add(&b, t); }
+    }
+    sb_putc(&b, '}');
+    c->ret = vl(STR(b.p)); free(b.p);
+}
+
+/* android.media.MediaCodec — real decode through the VideoToolbox/AudioConverter
+ * engine in husk-tl-dvm-media.c. Buffers are fixed pools of ByteBuffers; input
+ * is copied on queueInputBuffer so every slot is reusable immediately. */
+intptr_t tl_mc_open(const char *mime);
+int tl_mc_supported_mime(const char *mime);
+int tl_mc_configure(intptr_t h, int w, int hgt, int rate, int ch,
+                    const uint8_t *c0, size_t n0, const uint8_t *c1, size_t n1, const uint8_t *c2, size_t n2);
+void tl_mc_feed(intptr_t h, const uint8_t *d, size_t n, int64_t pts, int flags);
+intptr_t tl_mc_next_frame(intptr_t h, int64_t *pts, int *w, int *hgt);
+uint8_t *tl_mc_next_pcm(intptr_t h, int *len, int64_t *pts, int *rate, int *ch);
+int tl_mc_frame_pixels(intptr_t fh, uint8_t *dst, int w, int hgt, int stride);
+void tl_mc_free_frame(intptr_t fh);
+void tl_mc_flush(intptr_t h);
+void tl_mc_close(intptr_t h);
+int tl_mc_dims(intptr_t h, int *w, int *hgt);
+
+#define MC_NBUFS 6
+typedef struct mcodec {
+    intptr_t h;
+    jobj *in[MC_NBUFS]; uint8_t *in_mem[MC_NBUFS];
+    jobj *out[MC_NBUFS]; uint8_t *out_mem[MC_NBUFS]; size_t out_cap[MC_NBUFS];
+    bool started, is_video;
+    int in_next, out_fill[MC_NBUFS];       /* out_fill: bytes in each out slot, -1 = frame handle */
+    intptr_t out_frame[MC_NBUFS];          /* frame handle when out_fill<0 */
+    int out_take;
+} mcodec;
+static mcodec *mcd_of(jobj *o)
+{
+    if (!o->native) o->native = calloc(1, sizeof(mcodec));
+    return o->native;
+}
+static void mc_ensure_bufs(mcodec *m, jobj *self)
+{
+    for (int i = 0; i < MC_NBUFS; i++) {
+        if (!m->in[i]) { m->in_mem[i] = malloc(1 << 20); m->in[i] = tl_jni_ref(new_bb(m->in_mem[i], 1 << 20, true)); }
+        if (!m->out[i]) { m->out_cap[i] = 4 << 20; m->out_mem[i] = malloc(m->out_cap[i]); m->out[i] = tl_jni_ref(new_bb(m->out_mem[i], (int64_t)m->out_cap[i], true)); }
+    }
+}
+static void MC_createDecoder(tl_jcall *c)
+{
+    const char *mime = S(c->args[0].l);
+    if (!tl_mc_supported_mime(mime)) { tl_jni_throw("java/io/IOException", "unsupported mime"); return; }
+    jobj *o = make("android/media/MediaCodec");
+    mcodec *m = mcd_of(o);
+    m->h = tl_mc_open(mime);
+    m->is_video = !strncasecmp(mime, "video/", 6);
+    set_str(o, "mime", mime);
+    c->ret = vl(o);
+}
+static void MC_createByCodecName(tl_jcall *c)
+{
+    const char *n = S(c->args[0].l);
+    const char *mime = strcasestr(n, "video") ? "video/avc" : "audio/mp4a-latm";
+    jvalue a = { .l = (void *)STR(mime) };
+    tl_jcall t = *c; t.args = &a;
+    MC_createDecoder(&t); c->ret = t.ret;
+}
+static void MC_configure(tl_jcall *c)
+{
+    mcodec *m = mcd_of(c->self);
+    jobj *fmt = c->args[0].l;
+    if (!m->h) { tl_jni_throw("java/lang/IllegalStateException", "codec released"); return; }
+    int w = fmt_unbox_i(map_get(map_of(fmt), STR("width")), 0);
+    int hgt = fmt_unbox_i(map_get(map_of(fmt), STR("height")), 0);
+    int rate = fmt_unbox_i(map_get(map_of(fmt), STR("sample-rate")), 0);
+    int ch = fmt_unbox_i(map_get(map_of(fmt), STR("channel-count")), 0);
+    const uint8_t *cd[3] = {0}; size_t cn[3] = {0};
+    uint8_t *cstore[3] = {0};
+    for (int i = 0; i < 3; i++) {
+        char key[8]; snprintf(key, 8, "csd-%d", i);
+        jobj *bb = map_get(map_of(fmt), STR(key));
+        if (bb) {
+            uint8_t *addr = (uint8_t *)(uintptr_t)get_lng(bb, "addr");
+            int pos = get_int(bb, "pos"), lim = get_int(bb, "lim");
+            if (addr && lim > pos) {
+                size_t n = (size_t)(lim - pos);
+                cstore[i] = malloc(n); memcpy(cstore[i], addr + pos, n);
+                cd[i] = cstore[i]; cn[i] = n;
+            }
+        }
+    }
+    tl_mc_configure(m->h, w, hgt, rate, ch, cd[0], cn[0], cd[1], cn[1], cd[2], cn[2]);
+    for (int i = 0; i < 3; i++) free(cstore[i]);
+    mc_ensure_bufs(m, c->self);
+}
+static void MC_start(tl_jcall *c) { mcd_of(c->self)->started = true; }
+static void MC_getInputBuffers(tl_jcall *c)
+{
+    mcodec *m = mcd_of(c->self);
+    jobj *arr = tl_jni_new_obj_array(C("java/nio/ByteBuffer"), MC_NBUFS);
+    for (int i = 0; i < MC_NBUFS; i++) arr->oarr.v[i] = m->in[i];
+    c->ret = vl(arr);
+}
+static void MC_getOutputBuffers(tl_jcall *c)
+{
+    mcodec *m = mcd_of(c->self);
+    jobj *arr = tl_jni_new_obj_array(C("java/nio/ByteBuffer"), MC_NBUFS);
+    for (int i = 0; i < MC_NBUFS; i++) arr->oarr.v[i] = m->out[i];
+    c->ret = vl(arr);
+}
+static void MC_getInputBuffer(tl_jcall *c)
+{
+    mcodec *m = mcd_of(c->self); int i = c->args[0].i;
+    c->ret = vl(i >= 0 && i < MC_NBUFS ? m->in[i] : NULL);
+}
+static void MC_getOutputBuffer(tl_jcall *c)
+{
+    mcodec *m = mcd_of(c->self); int i = c->args[0].i;
+    if (i < 0 || i >= MC_NBUFS) { c->ret = vl(NULL); return; }
+    jobj *b = m->out[i];
+    if (b) { set_int(b, "pos", 0); set_int(b, "lim", m->out_fill[i] > 0 ? m->out_fill[i] : 0); }
+    c->ret = vl(b);
+}
+static void MC_dequeueInput(tl_jcall *c)
+{
+    mcodec *m = mcd_of(c->self);
+    if (!m->started) { c->ret = vi(-1); return; }
+    c->ret = vi(m->in_next++ % MC_NBUFS);
+}
+static void MC_queueInput(tl_jcall *c)
+{
+    mcodec *m = mcd_of(c->self);
+    int idx = c->args[0].i, off = c->args[1].i, sz = c->args[2].i;
+    int64_t pts = c->args[3].j; int flags = c->args[4].i;
+    if (!m->h || idx < 0 || idx >= MC_NBUFS || sz < 0) return;
+    if (sz > (1 << 20) - off) sz = (1 << 20) - off;
+    tl_mc_feed(m->h, m->in_mem[idx] + off, (size_t)sz, pts, flags);
+}
+static void MC_dequeueOutput(tl_jcall *c)
+{
+    mcodec *m = mcd_of(c->self);
+    if (!m->h || !m->started) { c->ret = vi(-1); return; }
+    int idx = m->out_take++ % MC_NBUFS;
+    jobj *info = c->args[0].l;
+    if (m->is_video) {
+        int64_t pts = 0; int w = 0, hgt = 0;
+        intptr_t fh = tl_mc_next_frame(m->h, &pts, &w, &hgt);
+        if (!fh) { c->ret = vi(-1); return; }
+        size_t need = (size_t)w * hgt * 4;
+        if (need > m->out_cap[idx]) {
+            m->out_cap[idx] = need;
+            m->out_mem[idx] = realloc(m->out_mem[idx], need);
+            set_long(m->out[idx], "addr", (int64_t)(uintptr_t)m->out_mem[idx]);
+            set_long(m->out[idx], "cap", (int64_t)need);
+        }
+        tl_mc_frame_pixels(fh, m->out_mem[idx], w, hgt, w * 4);
+        m->out_frame[idx] = fh;
+        m->out_fill[idx] = -(int)need - 1;   /* frame-marked */
+        if (info) {
+            set_int(info, "offset", 0); set_int(info, "size", (int)need);
+            set_long(info, "presentationTimeUs", pts); set_int(info, "flags", 0);
+        }
+        set_int(m->out[idx], "pos", 0); set_int(m->out[idx], "lim", (int)need);
+        c->ret = vi(idx); return;
+    }
+    int len = 0, rate = 0, ch = 0; int64_t pts = 0;
+    uint8_t *pcm = tl_mc_next_pcm(m->h, &len, &pts, &rate, &ch);
+    if (!pcm) { c->ret = vi(-1); return; }
+    if ((size_t)len > m->out_cap[idx]) len = (int)m->out_cap[idx];
+    memcpy(m->out_mem[idx], pcm, (size_t)len); free(pcm);
+    m->out_fill[idx] = len; m->out_frame[idx] = 0;
+    if (info) {
+        set_int(info, "offset", 0); set_int(info, "size", len);
+        set_long(info, "presentationTimeUs", pts); set_int(info, "flags", 0);
+    }
+    set_int(m->out[idx], "pos", 0); set_int(m->out[idx], "lim", len);
+    c->ret = vi(idx);
+}
+static void MC_releaseOutput(tl_jcall *c)
+{
+    mcodec *m = mcd_of(c->self);
+    int idx = c->args[0].i;
+    if (idx < 0 || idx >= MC_NBUFS) return;
+    if (m->out_frame[idx]) { tl_mc_free_frame(m->out_frame[idx]); m->out_frame[idx] = 0; }
+    m->out_fill[idx] = 0;
+}
+static void MC_flush(tl_jcall *c)   { mcodec *m = mcd_of(c->self); if (m->h) tl_mc_flush(m->h); memset(m->out_fill, 0, sizeof(m->out_fill)); memset(m->out_frame, 0, sizeof(m->out_frame)); }
+static void MC_stop(tl_jcall *c)    { mcd_of(c->self)->started = false; }
+static void MC_release(tl_jcall *c)
+{
+    mcodec *m = mcd_of(c->self);
+    if (m->h) { tl_mc_close(m->h); m->h = 0; }
+    for (int i = 0; i < MC_NBUFS; i++) {
+        free(m->in_mem[i]); m->in_mem[i] = NULL; m->in[i] = NULL;
+        free(m->out_mem[i]); m->out_mem[i] = NULL; m->out[i] = NULL;
+    }
+    m->started = false;
+}
+static void MC_getOutputFormat(tl_jcall *c)
+{
+    mcodec *m = mcd_of(c->self);
+    jobj *f = make("android/media/MediaFormat"); map_of(f);
+    jobj *mime = tl_jni_get_field(c->self, "mime", "Ljava/lang/String;").l;
+    if (mime) map_put(map_of(f), STR("mime"), mime);
+    if (m->is_video) {
+        int w = 0, hgt = 0; tl_mc_dims(m->h, &w, &hgt);
+        map_put(map_of(f), STR("width"), box_int(w));
+        map_put(map_of(f), STR("height"), box_int(hgt));
+    }
+    c->ret = vl(f);
+}
+static void MC_getName(tl_jcall *c)
+{
+    jobj *mime = tl_jni_get_field(c->self, "mime", "Ljava/lang/String;").l;
+    c->ret = vl(STR(mime && strncasecmp(S(mime), "video", 5) == 0 ? "husk.video.decoder" : "husk.audio.decoder"));
+}
+static void BufferInfo_init(tl_jcall *c) { (void)c; }
+static void BufferInfo_set(tl_jcall *c)
+{
+    set_int(c->self, "offset", c->args[0].i); set_int(c->self, "size", c->args[1].i);
+    set_long(c->self, "presentationTimeUs", c->args[2].j); set_int(c->self, "flags", c->args[3].i);
+}
+static void MCL_getDecoderCount(tl_jcall *c) { (void)c; c->ret = vi(2); }
+static void MCL_getDecoderInfoAt(tl_jcall *c)
+{
+    jobj *i = make("android/media/MediaCodecInfo");
+    set_str(i, "name", c->args[0].i ? "husk.audio.decoder" : "husk.video.decoder");
+    set_bool(i, "encoder", false);
+    c->ret = vl(i);
+}
+static void MCL_findDecoderForFormat(tl_jcall *c)
+{
+    jobj *mime = c->args[0].l ? map_get(map_of(c->args[0].l), STR("mime")) : NULL;
+    c->ret = vl(mime && tl_mc_supported_mime(S(mime)) ? STR("husk.decoder") : NULL);
+}
+static void MCI_getName(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "name", "Ljava/lang/String;"); }
+static void MCI_isEncoder(tl_jcall *c) { c->ret = vz(false); }
+static void MCI_getSupportedTypes(tl_jcall *c)
+{
+    jobj *arr = tl_jni_new_obj_array(C("java/lang/String"), 2);
+    arr->oarr.v[0] = STR("video/avc"); arr->oarr.v[1] = STR("audio/mp4a-latm");
+    c->ret = vl(arr);
+}
+
 /* SoundPool */
 static void SP2_init(tl_jcall *c) { (void)c; }
 static void SP2Builder_build(tl_jcall *c) { c->ret = vl(make("android/media/SoundPool")); }
@@ -20417,6 +20722,52 @@ static const tl_jhle k_more_hle[] = {
     M("android/media/MediaPlayer", "pause", NULL, MP_pause),
     M("android/media/MediaPlayer", "stop", NULL, MP_stop),
     M("android/media/MediaPlayer", "release", NULL, MP_release),
+    M("android/media/MediaFormat", "<init>", "()V", MF_init),
+    M("android/media/MediaFormat", "setInteger", "(Ljava/lang/String;I)V", MF_setInt),
+    M("android/media/MediaFormat", "setLong", "(Ljava/lang/String;J)V", MF_setLong),
+    M("android/media/MediaFormat", "setFloat", "(Ljava/lang/String;F)V", MF_setFloat),
+    M("android/media/MediaFormat", "setString", "(Ljava/lang/String;Ljava/lang/String;)V", MF_setString),
+    M("android/media/MediaFormat", "setByteBuffer", "(Ljava/lang/String;Ljava/nio/ByteBuffer;)V", MF_setBB),
+    M("android/media/MediaFormat", "removeKey", "(Ljava/lang/String;)V", MF_removeKey),
+    M("android/media/MediaFormat", "containsKey", "(Ljava/lang/String;)Z", MF_containsKey),
+    M("android/media/MediaFormat", "getInteger", "(Ljava/lang/String;)I", MF_getInt),
+    M("android/media/MediaFormat", "getInteger", "(Ljava/lang/String;I)I", MF_getIntD),
+    M("android/media/MediaFormat", "getLong", "(Ljava/lang/String;)J", MF_getLong),
+    M("android/media/MediaFormat", "getLong", "(Ljava/lang/String;J)J", MF_getLongD),
+    M("android/media/MediaFormat", "getFloat", "(Ljava/lang/String;)F", MF_getFloat),
+    M("android/media/MediaFormat", "getFloat", "(Ljava/lang/String;F)F", MF_getFloatD),
+    M("android/media/MediaFormat", "getString", "(Ljava/lang/String;)Ljava/lang/String;", MF_getString),
+    M("android/media/MediaFormat", "getByteBuffer", "(Ljava/lang/String;)Ljava/nio/ByteBuffer;", MF_getBB),
+    M("android/media/MediaFormat", "size", NULL, MF_size),
+    M("android/media/MediaFormat", "createVideoFormat", "(Ljava/lang/String;II)Landroid/media/MediaFormat;", MF_createVideo),
+    M("android/media/MediaFormat", "createAudioFormat", "(Ljava/lang/String;II)Landroid/media/MediaFormat;", MF_createAudio),
+    M("android/media/MediaFormat", "toString", NULL, MF_toString),
+    M("android/media/MediaCodec", "createDecoderByType", "(Ljava/lang/String;)Landroid/media/MediaCodec;", MC_createDecoder),
+    M("android/media/MediaCodec", "createByCodecName", "(Ljava/lang/String;)Landroid/media/MediaCodec;", MC_createByCodecName),
+    M("android/media/MediaCodec", "configure", "(Landroid/media/MediaFormat;Landroid/view/Surface;Landroid/media/MediaCrypto;I)V", MC_configure),
+    M("android/media/MediaCodec", "configure", "(Landroid/media/MediaFormat;Landroid/view/Surface;ILandroid/media/MediaDescrambler;)V", MC_configure),
+    M("android/media/MediaCodec", "start", NULL, MC_start),
+    M("android/media/MediaCodec", "stop", NULL, MC_stop),
+    M("android/media/MediaCodec", "release", NULL, MC_release),
+    M("android/media/MediaCodec", "flush", NULL, MC_flush),
+    M("android/media/MediaCodec", "getInputBuffers", NULL, MC_getInputBuffers),
+    M("android/media/MediaCodec", "getOutputBuffers", NULL, MC_getOutputBuffers),
+    M("android/media/MediaCodec", "getInputBuffer", "(I)Ljava/nio/ByteBuffer;", MC_getInputBuffer),
+    M("android/media/MediaCodec", "getOutputBuffer", "(I)Ljava/nio/ByteBuffer;", MC_getOutputBuffer),
+    M("android/media/MediaCodec", "dequeueInputBuffer", "(J)I", MC_dequeueInput),
+    M("android/media/MediaCodec", "queueInputBuffer", "(IIIJI)V", MC_queueInput),
+    M("android/media/MediaCodec", "dequeueOutputBuffer", "(Landroid/media/MediaCodec$BufferInfo;J)I", MC_dequeueOutput),
+    M("android/media/MediaCodec", "releaseOutputBuffer", "(IZ)V", MC_releaseOutput),
+    M("android/media/MediaCodec", "getOutputFormat", NULL, MC_getOutputFormat),
+    M("android/media/MediaCodec", "getName", NULL, MC_getName),
+    M("android/media/MediaCodec$BufferInfo", "<init>", "()V", BufferInfo_init),
+    M("android/media/MediaCodec$BufferInfo", "set", "(IIJI)V", BufferInfo_set),
+    M("android/media/MediaCodecList", "getCodecCount", NULL, MCL_getDecoderCount),
+    M("android/media/MediaCodecList", "getCodecInfoAt", "(I)Landroid/media/MediaCodecInfo;", MCL_getDecoderInfoAt),
+    M("android/media/MediaCodecList", "findDecoderForFormat", "(Landroid/media/MediaFormat;)Ljava/lang/String;", MCL_findDecoderForFormat),
+    M("android/media/MediaCodecInfo", "getName", NULL, MCI_getName),
+    M("android/media/MediaCodecInfo", "isEncoder", NULL, MCI_isEncoder),
+    M("android/media/MediaCodecInfo", "getSupportedTypes", NULL, MCI_getSupportedTypes),
     M("android/media/MediaPlayer", "reset", NULL, MP_reset),
     M("android/media/MediaPlayer", "seekTo", "(I)V", MP_seekTo),
     M("android/media/MediaPlayer", "getCurrentPosition", NULL, MP_getCurrentPosition),

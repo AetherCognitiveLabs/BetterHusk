@@ -485,3 +485,135 @@ dvm_native_fn tl_media_native(const char *name, const char *sig)
     for (int i = 0; k_media[i].name; i++) if (!strcmp(k_media[i].name, name) && !strcmp(k_media[i].sig, sig)) return k_media[i].fn;
     return NULL;
 }
+
+/* ---- C API for the JNI-side android.media.MediaCodec ---- */
+
+int tl_mc_supported_mime(const char *mime)
+{
+    int k = kind_of(mime);
+    if (k == K_HEVC) {
+        if (__builtin_available(macOS 10.13, iOS 11.0, *)) return VTIsHardwareDecodeSupported(kCMVideoCodecType_HEVC) ? 1 : 0;
+        return 0;
+    }
+    return k == K_AVC || k == K_AAC || k == K_MP3;
+}
+
+intptr_t tl_mc_open(const char *mime)
+{
+    int k = kind_of(mime);
+    if (!k) return 0;
+    codec *c = calloc(1, sizeof(*c));
+    c->kind = k; c->trace = trace_on();
+    pthread_mutex_init(&c->lock, NULL);
+    c->ready_tail = &c->ready; c->pcm_tail = &c->pcms;
+    return (intptr_t)c;
+}
+
+int tl_mc_configure(intptr_t h, int w, int hgt, int rate, int ch,
+                    const uint8_t *csd0, size_t n0, const uint8_t *csd1, size_t n1, const uint8_t *csd2, size_t n2)
+{
+    codec *c = (codec *)h;
+    if (!c) return 0;
+    if (c->kind == K_AVC || c->kind == K_HEVC) {
+        c->width = w; c->height = hgt;
+        const uint8_t *csd[3] = { csd0, csd1, csd2 }; size_t ns[3] = { n0, n1, n2 };
+        for (int i = 0; i < 3; i++)
+            if (csd[i] && ns[i]) { nal_walk wk = { c, NULL, 0, 0 }; each_nal(csd[i], ns[i], take_nal, &wk); free(wk.out); }
+        if (c->params_changed) { c->params_changed = false; session_make(c); }
+        return 1;
+    }
+    return audio_open(c, csd0, n0, rate, ch) ? 1 : 0;
+}
+
+void tl_mc_feed(intptr_t h, const uint8_t *d, size_t n, int64_t pts, int flags)
+{
+    codec *c = (codec *)h;
+    if (!c) return;
+    if (c->kind == K_AVC || c->kind == K_HEVC) video_decode(c, d, n, pts, flags);
+    else if (flags & 2) audio_open(c, d, n, c->rate, c->channels);
+    else audio_decode(c, d, n, pts);
+}
+
+intptr_t tl_mc_next_frame(intptr_t h, int64_t *pts, int *w, int *hgt)
+{
+    codec *c = (codec *)h;
+    if (!c) return 0;
+    pthread_mutex_lock(&c->lock);
+    frame *f = c->ready;
+    if (f) { c->ready = f->next; if (!c->ready) c->ready_tail = &c->ready; }
+    pthread_mutex_unlock(&c->lock);
+    if (!f) return 0;
+    CGRect r = CVImageBufferGetCleanRect(f->pb);
+    int vw = (int)r.size.width, vh = (int)r.size.height;
+    if (vw <= 0 || vh <= 0) { vw = (int)CVPixelBufferGetWidth(f->pb); vh = (int)CVPixelBufferGetHeight(f->pb); }
+    if (pts) *pts = f->pts; if (w) *w = vw; if (hgt) *hgt = vh;
+    return (intptr_t)f;
+}
+
+uint8_t *tl_mc_next_pcm(intptr_t h, int *len, int64_t *pts, int *rate, int *ch)
+{
+    codec *c = (codec *)h;
+    if (!c) return NULL;
+    pthread_mutex_lock(&c->lock);
+    pcm *p = c->pcms;
+    if (p) { c->pcms = p->next; if (!c->pcms) c->pcm_tail = &c->pcms; }
+    pthread_mutex_unlock(&c->lock);
+    if (!p) return NULL;
+    if (len) *len = p->len; if (pts) *pts = p->pts; if (rate) *rate = c->rate; if (ch) *ch = c->channels;
+    uint8_t *d = p->data; free(p);
+    return d;
+}
+
+int tl_mc_frame_pixels(intptr_t fh, uint8_t *dst, int w, int hgt, int stride)
+{
+    frame *f = (frame *)fh;
+    if (!f || !dst) return 0;
+    CVPixelBufferLockBaseAddress(f->pb, kCVPixelBufferLock_ReadOnly);
+    uint8_t *base = CVPixelBufferGetBaseAddress(f->pb);
+    size_t bstride = CVPixelBufferGetBytesPerRow(f->pb);
+    CGRect r = CVImageBufferGetCleanRect(f->pb);
+    size_t x0 = (size_t)r.origin.x, y0 = (size_t)r.origin.y;
+    if (w > (int)(CVPixelBufferGetWidth(f->pb) - x0)) w = (int)(CVPixelBufferGetWidth(f->pb) - x0);
+    if (hgt > (int)(CVPixelBufferGetHeight(f->pb) - y0)) hgt = (int)(CVPixelBufferGetHeight(f->pb) - y0);
+    int ok = 0;
+    if (base) {
+        vImage_Buffer s = { base + y0 * bstride + x0 * 4, (vImagePixelCount)hgt, (vImagePixelCount)w, bstride },
+                      d = { dst, (vImagePixelCount)hgt, (vImagePixelCount)w, (size_t)stride };
+        const uint8_t map[4] = { 2, 1, 0, 3 };
+        ok = vImagePermuteChannels_ARGB8888(&s, &d, map, kvImageNoFlags) == kvImageNoError;
+    }
+    CVPixelBufferUnlockBaseAddress(f->pb, kCVPixelBufferLock_ReadOnly);
+    return ok;
+}
+
+void tl_mc_free_frame(intptr_t fh) { frame *f = (frame *)fh; if (f) { CVPixelBufferRelease(f->pb); free(f); } }
+
+void tl_mc_flush(intptr_t h)
+{
+    codec *c = (codec *)h;
+    if (!c) return;
+    if (c->vt) { VTDecompressionSessionFinishDelayedFrames(c->vt); VTDecompressionSessionWaitForAsynchronousFrames(c->vt); }
+    if (c->conv) AudioConverterReset(c->conv);
+    drop_outputs(c);
+}
+
+void tl_mc_close(intptr_t h)
+{
+    codec *c = (codec *)h;
+    if (!c) return;
+    session_drop(c);
+    drop_outputs(c);
+    if (c->fmt) CFRelease(c->fmt);
+    if (c->conv) AudioConverterDispose(c->conv);
+    free(c->vps.d); free(c->sps.d); free(c->pps.d);
+    pthread_mutex_destroy(&c->lock);
+    free(c);
+}
+
+int tl_mc_dims(intptr_t h, int *w, int *hgt)
+{
+    codec *c = (codec *)h;
+    if (!c) return 0;
+    if (w) *w = c->width; if (hgt) *hgt = c->height;
+    return 1;
+}
