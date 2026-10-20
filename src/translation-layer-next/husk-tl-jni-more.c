@@ -1885,6 +1885,161 @@ static void Map_of1(tl_jcall *c)
     map_put(map_of(m), c->args[0].l, c->args[1].l);
     c->ret = vl(m);
 }
+
+/* android/util/LruCache: jmap plus a recency order list; put() evicts the
+ * least-recently-touched key once the configured capacity is exceeded. */
+typedef struct { jmap map; jvec order; int max; } lru_t;
+static lru_t *lru_of(jobj *o) { if (!o->native) { o->native = calloc(1, sizeof(lru_t)); ((lru_t *)o->native)->max = 16; } return o->native; }
+static void lru_touch(lru_t *l, jobj *k)
+{
+    for (int i = 0; i < l->order.n; i++)
+        if (l->order.v[i] == k) { memmove(&l->order.v[i], &l->order.v[i + 1], (size_t)(l->order.n - i - 1) * sizeof(jobj *)); l->order.v[l->order.n - 1] = k; return; }
+    vec_push(&l->order, k);
+}
+static void LruCache_init(tl_jcall *c)
+{
+    lru_t *l = lru_of(c->self);
+    if (c->args) l->max = c->args[0].i > 0 ? c->args[0].i : 16;
+    set_int(c->self, "maxSize", l->max);
+}
+static void LruCache_put(tl_jcall *c)
+{
+    lru_t *l = lru_of(c->self);
+    jobj *k = c->args[0].l, *v = c->args[1].l;
+    jobj *old = map_get(&l->map, k);
+    map_put(&l->map, k, v);
+    lru_touch(l, k);
+    while (l->map.n > l->max && l->order.n > 0) {
+        jobj *oldk = l->order.v[0];
+        memmove(&l->order.v[0], &l->order.v[1], (size_t)(l->order.n - 1) * sizeof(jobj *));
+        l->order.n--;
+        map_remove(&l->map, oldk);
+    }
+    c->ret = vl(old);
+}
+static void LruCache_get(tl_jcall *c)
+{
+    lru_t *l = lru_of(c->self);
+    jobj *v = map_get(&l->map, c->args[0].l);
+    if (v) lru_touch(l, c->args[0].l);
+    c->ret = vl(v);
+}
+static void LruCache_remove(tl_jcall *c)
+{
+    lru_t *l = lru_of(c->self);
+    jobj *v = map_get(&l->map, c->args[0].l);
+    map_remove(&l->map, c->args[0].l);
+    for (int i = 0; i < l->order.n; i++)
+        if (l->order.v[i] == c->args[0].l) { memmove(&l->order.v[i], &l->order.v[i + 1], (size_t)(l->order.n - i - 1) * sizeof(jobj *)); l->order.n--; break; }
+    c->ret = vl(v);
+}
+static void LruCache_size(tl_jcall *c)   { c->ret = vi(lru_of(c->self)->map.n); }
+static void LruCache_evictAll(tl_jcall *c) { lru_t *l = lru_of(c->self); memset(&l->map, 0, sizeof(jmap)); l->order.n = 0; }
+static void LruCache_snapshot(tl_jcall *c)
+{
+    jobj *m = make("java/util/LinkedHashMap");
+    lru_t *l = lru_of(c->self);
+    for (int i = 0; i < l->map.n; i++) map_put(map_of(m), l->map.k[i], l->map.v[i]);
+    c->ret = vl(m);
+}
+
+/* android/util/ArrayMap: jmap is insertion-ordered already, so the index-
+ * based API is a thin view over it. */
+static void AM_init(tl_jcall *c) { map_of(c->self); if (c->args) { int cap = c->args[0].i; (void)cap; } }
+static void AM_keyAt(tl_jcall *c)   { jmap *m = map_of(c->self); int i = c->args[0].i; c->ret = vl(i >= 0 && i < m->n ? m->k[i] : NULL); }
+static void AM_valueAt(tl_jcall *c) { jmap *m = map_of(c->self); int i = c->args[0].i; c->ret = vl(i >= 0 && i < m->n ? m->v[i] : NULL); }
+static void AM_setValueAt(tl_jcall *c)
+{
+    jmap *m = map_of(c->self); int i = c->args[0].i;
+    jobj *old = NULL;
+    if (i >= 0 && i < m->n) { old = m->v[i]; m->v[i] = tl_jni_ref(c->args[1].l); }
+    c->ret = vl(old);
+}
+static void AM_indexOfKey(tl_jcall *c)   { c->ret = vi(map_find(map_of(c->self), c->args[0].l)); }
+static void AM_containsKey(tl_jcall *c)  { c->ret = vz(map_find(map_of(c->self), c->args[0].l) >= 0); }
+static void AM_removeAt(tl_jcall *c)
+{
+    jmap *m = map_of(c->self); int i = c->args[0].i;
+    jobj *old = NULL;
+    if (i >= 0 && i < m->n) {
+        old = m->v[i];
+        memmove(&m->k[i], &m->k[i + 1], (size_t)(m->n - i - 1) * sizeof(jobj *));
+        memmove(&m->v[i], &m->v[i + 1], (size_t)(m->n - i - 1) * sizeof(jobj *));
+        m->n--;
+    }
+    c->ret = vl(old);
+}
+static void AM_put(tl_jcall *c)
+{
+    jmap *m = map_of(c->self);
+    jobj *old = map_get(m, c->args[0].l);
+    map_put(m, c->args[0].l, c->args[1].l);
+    c->ret = vl(old);
+}
+static void AM_remove(tl_jcall *c)
+{
+    jmap *m = map_of(c->self);
+    jobj *old = map_get(m, c->args[0].l);
+    map_remove(m, c->args[0].l);
+    c->ret = vl(old);
+}
+static void AM_get(tl_jcall *c)    { c->ret = vl(map_get(map_of(c->self), c->args[0].l)); }
+static void AM_size(tl_jcall *c)   { c->ret = vi(map_of(c->self)->n); }
+static void AM_clear(tl_jcall *c)  { map_of(c->self)->n = 0; }
+static void AM_isEmpty(tl_jcall *c){ c->ret = vz(map_of(c->self)->n == 0); }
+static void AM_putAll(tl_jcall *c)
+{
+    jmap *m = map_of(c->self), *o = c->args[0].l ? map_of(c->args[0].l) : NULL;
+    if (o) for (int i = 0; i < o->n; i++) map_put(m, o->k[i], o->v[i]);
+}
+
+/* android/util/Pair: first/second fields + structural equality. */
+static void Pair_init(tl_jcall *c)
+{
+    set_obj(c->self, "first", "Ljava/lang/Object;", c->args[0].l);
+    set_obj(c->self, "second", "Ljava/lang/Object;", c->args[1].l);
+}
+static void Pair_create(tl_jcall *c)
+{
+    jobj *p = make("android/util/Pair");
+    set_obj(p, "first", "Ljava/lang/Object;", c->args[0].l);
+    set_obj(p, "second", "Ljava/lang/Object;", c->args[1].l);
+    c->ret = vl(p);
+}
+static bool pair_field_eq(jobj *a, jobj *b)
+{
+    if (a == b) return true;
+    if (!a || !b) return false;
+    jvalue r = tl_jni_call(a, "equals", "(Ljava/lang/Object;)Z", &(jvalue){ .l = b });
+    return r.z;
+}
+static void Pair_equals(tl_jcall *c)
+{
+    jobj *o = c->args[0].l;
+    if (!o) { c->ret = vz(false); return; }
+    jobj *af = tl_jni_get_field(c->self, "first", "Ljava/lang/Object;").l;
+    jobj *as = tl_jni_get_field(c->self, "second", "Ljava/lang/Object;").l;
+    jobj *bf = tl_jni_get_field(o, "first", "Ljava/lang/Object;").l;
+    jobj *bs = tl_jni_get_field(o, "second", "Ljava/lang/Object;").l;
+    c->ret = vz(pair_field_eq(af, bf) && pair_field_eq(as, bs));
+}
+static void Pair_hashCode(tl_jcall *c)
+{
+    jobj *f = tl_jni_get_field(c->self, "first", "Ljava/lang/Object;").l;
+    jobj *s = tl_jni_get_field(c->self, "second", "Ljava/lang/Object;").l;
+    int hf = f ? tl_jni_call(f, "hashCode", "()I", NULL).i : 0;
+    int hs = s ? tl_jni_call(s, "hashCode", "()I", NULL).i : 0;
+    c->ret = vi(hf ^ (hs + 0x9e3779b9 + (hf << 6) + (hf >> 2)));
+}
+static void Pair_toString(tl_jcall *c)
+{
+    jobj *f = tl_jni_get_field(c->self, "first", "Ljava/lang/Object;").l;
+    jobj *s = tl_jni_get_field(c->self, "second", "Ljava/lang/Object;").l;
+    jobj *fs = f ? tl_jni_call(f, "toString", "()Ljava/lang/String;", NULL).l : NULL;
+    jobj *ss = s ? tl_jni_call(s, "toString", "()Ljava/lang/String;", NULL).l : NULL;
+    sbuf b = {0}; sb_add(&b, "Pair{"); sb_add(&b, fs ? S(fs) : "null"); sb_add(&b, " "); sb_add(&b, ss ? S(ss) : "null"); sb_add(&b, "}");
+    c->ret = vl(STR(b.p)); free(b.p);
+}
 static void Map_computeIfAbsent(tl_jcall *c)
 {
     jmap *m = map_of(c->self);
@@ -8533,7 +8688,7 @@ static void Matrix_toString(tl_jcall *c)
     float *f = mat_of(c->self);
     sbuf b = {0}; sb_add(&b, "Matrix(");
     for (int i = 0; i < 9; i++) { char t[32]; snprintf(t, 32, "%s%g", i ? ", " : "", (double)f[i]); sb_add(&b, t); }
-    sb_putc(&b, 41);
+    sb_add(&b, ")");
     c->ret = vl(STR(b.p)); free(b.p);
 }
 static void Matrix_equals(tl_jcall *c)
@@ -18630,6 +18785,36 @@ static const tl_jhle k_more_hle[] = {
     M("android/util/SparseArray", "setValueAt", "(Ljava/lang/Object;Ljava/lang/Object;)V", SA_setValueAt),
     M("android/util/SparseIntArray", "setValueAt", "(Ljava/lang/Object;Ljava/lang/Object;)V", SA_setValueAt),
     M("android/util/SparseBooleanArray", "setValueAt", "(Ljava/lang/Object;Ljava/lang/Object;)V", SA_setValueAt),
+    M("android/util/LruCache", "<init>", "()V", LruCache_init),
+    M("android/util/LruCache", "<init>", "(I)V", LruCache_init),
+    M("android/util/LruCache", "put", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", LruCache_put),
+    M("android/util/LruCache", "get", "(Ljava/lang/Object;)Ljava/lang/Object;", LruCache_get),
+    M("android/util/LruCache", "remove", "(Ljava/lang/Object;)Ljava/lang/Object;", LruCache_remove),
+    M("android/util/LruCache", "size", NULL, LruCache_size),
+    M("android/util/LruCache", "evictAll", NULL, LruCache_evictAll),
+    M("android/util/LruCache", "snapshot", NULL, LruCache_snapshot),
+    M("android/util/LruCache", "maxSize", NULL, LruCache_size),
+    M("android/util/LruCache", "putCount", NULL, LruCache_size),
+    M("android/util/ArrayMap", "<init>", "()V", AM_init),
+    M("android/util/ArrayMap", "<init>", "(I)V", AM_init),
+    M("android/util/ArrayMap", "get", "(Ljava/lang/Object;)Ljava/lang/Object;", AM_get),
+    M("android/util/ArrayMap", "put", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", AM_put),
+    M("android/util/ArrayMap", "remove", "(Ljava/lang/Object;)Ljava/lang/Object;", AM_remove),
+    M("android/util/ArrayMap", "removeAt", "(I)Ljava/lang/Object;", AM_removeAt),
+    M("android/util/ArrayMap", "keyAt", "(I)Ljava/lang/Object;", AM_keyAt),
+    M("android/util/ArrayMap", "valueAt", "(I)Ljava/lang/Object;", AM_valueAt),
+    M("android/util/ArrayMap", "setValueAt", "(ILjava/lang/Object;)Ljava/lang/Object;", AM_setValueAt),
+    M("android/util/ArrayMap", "indexOfKey", "(Ljava/lang/Object;)I", AM_indexOfKey),
+    M("android/util/ArrayMap", "containsKey", "(Ljava/lang/Object;)Z", AM_containsKey),
+    M("android/util/ArrayMap", "size", NULL, AM_size),
+    M("android/util/ArrayMap", "isEmpty", NULL, AM_isEmpty),
+    M("android/util/ArrayMap", "clear", NULL, AM_clear),
+    M("android/util/ArrayMap", "putAll", "(Ljava/lang/Object;)V", AM_putAll),
+    M("android/util/Pair", "<init>", "(Ljava/lang/Object;Ljava/lang/Object;)V", Pair_init),
+    M("android/util/Pair", "create", "(Ljava/lang/Object;Ljava/lang/Object;)Landroid/util/Pair;", Pair_create),
+    M("android/util/Pair", "equals", "(Ljava/lang/Object;)Z", Pair_equals),
+    M("android/util/Pair", "hashCode", "()I", Pair_hashCode),
+    M("android/util/Pair", "toString", "()Ljava/lang/String;", Pair_toString),
     M("android/os/Bundle", "get", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Bundle_get),
     M("android/os/BaseBundle", "get", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", Bundle_get),
     M("android/os/Bundle", "get", "(Ljava/lang/Object;)Ljava/lang/Object;", Bundle_get_null),
