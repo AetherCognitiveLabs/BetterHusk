@@ -72,16 +72,19 @@ jobs:
       - name: Stage the verified PS4 runtime module
         run: |
           set -euo pipefail
-          upstream_ipa="$RUNNER_TEMP/Husk-upstream-3.0.ipa"
-          release_sha256=112a1ddbb3143ae25e80c18c5b195b6dfa5067d66cbf99d2188fc03f4ab0f61d
+          # libhuskps4.dylib is the one binary we cannot build in CI -- its
+          # sources (Bachata-S4 branch husk, husk-fex branch husk-fex) are not
+          # public. The bytes staged here are hash-identical to the module
+          # shipped in Husk 3.0 (that IPA's SHA-256 is recorded for audit:
+          # 112a1ddbb3143ae25e80c18c5b195b6dfa5067d66cbf99d2188fc03f4ab0f61d),
+          # mirrored onto BetterHusk's own release so the build no longer
+          # depends on the upstream release staying up.
           ps4_sha256=dfdf728bfba56ac045d177d4be398df0c73361c299a114fd34a4ba96e2a0699e
-          curl -fL --retry 3 --retry-delay 5 \
-            https://github.com/Leviidev/Husk/releases/download/3.0/Husk.ipa \
-            -o "$upstream_ipa"
-          printf '%s  %s\n' "$release_sha256" "$upstream_ipa" | shasum -a 256 -c -
           mkdir -p build/ios-arm64/lib
           ps4="$PWD/build/ios-arm64/lib/libhuskps4.dylib"
-          unzip -p "$upstream_ipa" Payload/Husk.app/Frameworks/libhuskps4.dylib > "$ps4"
+          curl -fL --retry 3 --retry-delay 5 \
+            https://github.com/AetherCognitiveLabs/BetterHusk/releases/download/lineage-v2/libhuskps4.dylib \
+            -o "$ps4"
           actual_ps4_sha256="$(shasum -a 256 "$ps4" | awk '{print $1}')"
           test "$actual_ps4_sha256" = "$ps4_sha256"
           test "$(lipo -archs "$ps4")" = arm64
@@ -90,7 +93,7 @@ jobs:
             echo "PS4 module still references BreakpointJIT" >&2
             exit 1
           fi
-          echo "Verified and staged the official Husk 3.0 PS4 module"
+          echo "Verified and staged the pinned PS4 module"
 
       - name: Build BetterHusk IPA
         run: ./scripts/ci_build.sh "$PWD/build/BetterHusk.ipa"

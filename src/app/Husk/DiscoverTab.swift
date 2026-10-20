@@ -141,7 +141,12 @@ struct DiscoverView: View {
 
             if isInstalled {
                 Button("Open") {
-                    let intent = "am start -n \(app.bundleIdentifier)/\(app.bundleIdentifier).MainActivity"
+                    // The identifier came from a remote repo index: it reaches a
+                    // shell inside the guest, so only a real package name may go.
+                    let pkg = app.bundleIdentifier
+                    let safe = pkg.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "." || $0 == "_") }
+                    guard safe else { return }
+                    let intent = "am start -n \(pkg)/\(pkg).MainActivity"
                     _ = try? GuestBridge.shared.shell(intent, timeout: 5)
                 }
                 .buttonStyle(.bordered)

@@ -16,8 +16,8 @@ set -euo pipefail
 
 SRC="${1:?usage: publish_snapshot.sh <vdb.qcow2> <version>}"
 VER="${2:?usage: publish_snapshot.sh <vdb.qcow2> <version>}"
-REPO="Leviidev/Husk"
-RELEASE=387759263          # the single "Dependencies" release, tag lineage-v2
+REPO="AetherCognitiveLabs/BetterHusk"
+RELEASE=417934352          # BetterHusk"s own guest-dependencies release, tag lineage-v2
 PART_MB=1042               # keeps each piece comfortably under the limit
 
 # The token git already has. The remote is plain HTTPS with credential.helper =

@@ -15,8 +15,8 @@ set -euo pipefail
 
 IMG="${1:?usage: publish_image.sh <image.qcow2> <version>}"
 VER="${2:?usage: publish_image.sh <image.qcow2> <version>}"
-REPO="Leviidev/Husk"
-RELEASE=387759263
+REPO="AetherCognitiveLabs/BetterHusk"
+RELEASE=417934352
 TAG="lineage-v2"
 
 TOKEN="$(printf 'protocol=https\nhost=github.com\n\n' | git credential fill \

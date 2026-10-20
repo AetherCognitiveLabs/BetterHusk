@@ -3,7 +3,7 @@
 set -euo pipefail
 
 HUSK_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-REPOSITORY="Leviidev/Husk"
+REPOSITORY="AetherCognitiveLabs/BetterHusk"
 RELEASE_TAG="lineage-v2"
 GUEST_VERSION="$(sed -n 's/^[[:space:]]*static let imageVersion = "\([^"]*\)"/\1/p' "$HUSK_ROOT/src/app/Husk/GuestImage.swift" | head -1)"
 [ -n "$GUEST_VERSION" ] || { echo "could not read the Lineage image version from GuestImage.swift" >&2; exit 1; }

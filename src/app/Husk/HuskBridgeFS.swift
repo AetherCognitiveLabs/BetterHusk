@@ -1494,7 +1494,7 @@ final class AndroidHost: ObservableObject {
                     // media database is what Android's file pickers read.
                     _ = try? GuestBridge.shared.shell(
                         "am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE "
-                      + "-d file://\(remote)", timeout: 60)
+                      + "-d \(Self.quote("file://\(remote)"))", timeout: 60)
                     HuskLog.log("bridge", "sent \(name) to Download")
                     sent += 1
                 } catch {
