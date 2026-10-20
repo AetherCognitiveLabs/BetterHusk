@@ -14,7 +14,7 @@ import SwiftUI
 final class ShowcaseStore: ObservableObject {
     static let shared = ShowcaseStore()
 
-    static let base = URL(string: "https://raw.githubusercontent.com/Leviidev/Husk/main/showcase/")!
+    static let base = URL(string: "https://raw.githubusercontent.com/AetherCognitiveLabs/BetterHusk/main/showcase/")!
 
     /// Packages with pictures that changed upstream, waiting for a yes.
     @Published private(set) var updates: [String] = []

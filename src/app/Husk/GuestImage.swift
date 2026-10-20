@@ -88,7 +88,7 @@ final class GuestImage: ObservableObject {
     static let snapshotPartCount = 2
     static var snapshotPartURLs: [URL] {
         (0..<snapshotPartCount).map { i in
-            URL(string: "https://github.com/Leviidev/Husk/releases/download/"
+            URL(string: GuestManifest.releaseBase
                       + "\(dependenciesTag)/vdb-snapshot-\(imageVersion).qcow2.gz."
                       + String(format: "%02d", i))!
         }
@@ -105,7 +105,7 @@ final class GuestImage: ObservableObject {
     static let snapshotYres = 800
 
     static var imageURL: URL {
-        URL(string: "https://github.com/Leviidev/Husk/releases/download/"
+        URL(string: GuestManifest.releaseBase
                   + "\(dependenciesTag)/vda-\(imageVersion).qcow2")!
     }
 
@@ -423,7 +423,7 @@ final class GuestImage: ObservableObject {
         // Our seeds and snapshots are self-contained; a backing file entry is
         // never legitimate and means the image points at bytes that are not here.
         guard be64(8) == 0 else {
-            return "userdata image has a backing file, which Husk never ships"
+            return "userdata image has a backing file, which BetterHusk never ships"
         }
         let virtualSize = be64(32)
         guard virtualSize >= 1 << 30 else {

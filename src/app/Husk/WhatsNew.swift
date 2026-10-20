@@ -15,7 +15,7 @@ enum WhatsNew {
     /// The version whose notes these are. A build of the same version shows nothing again.
     static let version = "3.0.0"
     static let items: [Item] = [
-        Item(symbol: "gamecontroller.fill", title: "A new Husk",
+        Item(symbol: "gamecontroller.fill", title: "A new BetterHusk",
              detail: "A console-style home: your games on a shelf, the one you pick fills the screen with its artwork, and Play is one tap away. Android and PS4 games side by side, a new library, in light or dark as Settings › Appearance says."),
         Item(symbol: "playstation.logo", title: "PS4 games",
              detail: "Add a PS4 game with the + button, as a fake package (.pkg), a folder of them, or an extracted game folder, and play it from your library. Updates install beside their game, shaders are kept between launches, and games that ask for a name bring up the keyboard."),
@@ -28,11 +28,11 @@ enum WhatsNew {
         Item(symbol: "textformat", title: "Chinese, Japanese and Korean",
              detail: "Download the fonts in Settings › Fonts, and games stop showing empty boxes."),
         Item(symbol: "bolt.fill", title: "JIT on its own",
-             detail: "TrollStore installs turn JIT on at launch, and Husk says on screen when something can't start without it."),
+             detail: "TrollStore installs turn JIT on at launch, and BetterHusk says on screen when something can't start without it."),
         Item(symbol: "iphone", title: "iOS 15",
-             detail: "Husk now runs on iOS 15.5 and later (PS4 games need iOS 17.4)."),
+             detail: "BetterHusk now runs on iOS 15.5 and later (PS4 games need iOS 17.4)."),
         Item(symbol: "wrench.and.screwdriver.fill", title: "Fixes",
-             detail: "Android no longer crashes after its download, the full Android emulator moved into Settings with a warning, closing Husk from the app switcher isn't reported as a crash, and much more."),
+             detail: "Android no longer crashes after its download, the full Android emulator moved into Settings with a warning, closing BetterHusk from the app switcher isn't reported as a crash, and much more."),
     ]
 
     private static let seenKey = "husk.whatsNew.seen"
@@ -56,7 +56,7 @@ struct WhatsNewSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 26) {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("What's New in Husk \(WhatsNew.version)").font(.largeTitle.weight(.bold))
+                        Text("What's New in BetterHusk \(WhatsNew.version)").font(.largeTitle.weight(.bold))
                         Text("A new look, PS4 games, and hundreds more Android games.").foregroundStyle(.secondary)
                     }
                     .padding(.top, 36)
@@ -102,7 +102,7 @@ final class AppUpdates: ObservableObject {
 
     @Published var available: Release?
 
-    private static let api = URL(string: "https://api.github.com/repos/Leviidev/Husk/releases/latest")!
+    private static let api = URL(string: "https://api.github.com/repos/AetherCognitiveLabs/BetterHusk/releases/latest")!
     private static let checkedKey = "husk.updates.checked", dismissedKey = "husk.updates.dismissed"
 
     static var current: String { Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0" }
@@ -112,7 +112,7 @@ final class AppUpdates: ObservableObject {
         if Date().timeIntervalSince1970 - d.double(forKey: Self.checkedKey) < 12 * 3600 { return }
         var req = URLRequest(url: Self.api)
         req.timeoutInterval = 20
-        req.setValue("Husk", forHTTPHeaderField: "User-Agent")
+        req.setValue("BetterHusk", forHTTPHeaderField: "User-Agent")
         guard let (data, response) = try? await URLSession.shared.data(for: req),
               (response as? HTTPURLResponse)?.statusCode == 200,
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],

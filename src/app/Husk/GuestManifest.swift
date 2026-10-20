@@ -56,8 +56,13 @@ struct GuestManifest: Codable, Equatable {
     let image: Image
     let snapshot: Snapshot
 
-    static let manifestURL = URL(string: "https://github.com/Leviidev/Husk/releases/"
-                                       + "download/\(GuestImage.dependenciesTag)/manifest.json")!
+    /// Where the guest image, its snapshot and the manifest live. The fork keeps its own copy of the
+    /// release -- identical bytes, verified by the same digests -- so a vanished upstream cannot leave
+    /// a BetterHusk install without Android.
+    static let releaseBase = "https://github.com/AetherCognitiveLabs/BetterHusk/releases/download/"
+
+    static let manifestURL = URL(string: releaseBase
+                                       + "\(GuestImage.dependenciesTag)/manifest.json")!
 
     /// Fetch the manifest, or nil if it cannot be had.
     ///
@@ -93,8 +98,7 @@ struct GuestManifest: Codable, Equatable {
     }
 
     func url(for file: String) -> URL {
-        URL(string: "https://github.com/Leviidev/Husk/releases/download/"
-                  + "\(GuestImage.dependenciesTag)/\(file)")!
+        URL(string: Self.releaseBase + "\(GuestImage.dependenciesTag)/\(file)")!
     }
 
     var partURLs: [URL] { snapshot.parts.map { url(for: $0) } }
