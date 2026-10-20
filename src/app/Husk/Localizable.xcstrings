@@ -1608,16 +1608,6 @@
         }
       }
     },
-    "Built-in JIT is unavailable inside LiveContainer. Use StikDebug instead.": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "内置 JIT 在 LiveContainer 内不可用。请改用 StikDebug。"
-          }
-        }
-      }
-    },
     "Built-in JIT needs iOS 26 or later. Use StikDebug instead.": {
       "localizations": {
         "zh-Hans": {
@@ -9958,6 +9948,206 @@
           "stringUnit": {
             "state": "translated",
             "value": "BetterHusk 检测到 %@ 是 %@。仅在检测错误时才更改——游戏的设置或启动器界面可能使用与实际游戏不同的引擎，而错误的驱动通常会崩溃。“图形”决定是否告知游戏此设备支持 Vulkan：选择 OpenGL ES 会隐藏 Vulkan，适用于那些优先选择 Vulkan 但随后崩溃的游戏。下次启动游戏时生效。"
+          }
+        }
+      }
+    },
+    "Recommended": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "推荐"
+          }
+        }
+      }
+    },
+    "LiveContainer — JIT is on": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "LiveContainer — JIT 已开启"
+          }
+        }
+      }
+    },
+    "LiveContainer detected": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "检测到 LiveContainer"
+          }
+        }
+      }
+    },
+    "JIT is on. Games and Android can start.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "JIT 已开启。游戏和 Android 可以启动了。"
+          }
+        }
+      }
+    },
+    "Attach with StikDebug": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用 StikDebug 附加"
+          }
+        }
+      }
+    },
+    "How to Get JIT": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "如何启用 JIT"
+          }
+        }
+      }
+    },
+    "LiveContainer": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "LiveContainer"
+          }
+        }
+      }
+    },
+    "BetterHusk is running inside LiveContainer. JIT comes the way LiveContainer gives it to apps — its own launch options or an attached debugger.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "BetterHusk 正在 LiveContainer 中运行。JIT 由 LiveContainer 提供给应用的方式决定——它自己的启动选项或附加的调试器。"
+          }
+        }
+      }
+    },
+    "BetterHusk is running inside LiveContainer. Both share one process, so JIT for one is JIT for the other -- it just has to be switched on from outside, the way LiveContainer does it.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "BetterHusk 正在 LiveContainer 中运行。两者共享同一进程，因此为一方开启的 JIT 对另一方同样有效——只是需要按 LiveContainer 的方式从外部开启。"
+          }
+        }
+      }
+    },
+    "In **LiveContainer**, open BetterHusk's settings and turn on **JIT** for it (or launch it with JIT).": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 **LiveContainer** 中打开 BetterHusk 的设置并为其开启 **JIT**（或以 JIT 方式启动）。"
+          }
+        }
+      }
+    },
+    "Or attach **StikDebug** -- it marks the process LiveContainer and BetterHusk share.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "或者附加 **StikDebug**——它会标记 LiveContainer 和 BetterHusk 共享的进程。"
+          }
+        }
+      }
+    },
+    "Come back here. This page notices on its own.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "回到这里。本页面会自动检测到变化。"
+          }
+        }
+      }
+    },
+    "BetterHusk is running inside LiveContainer, so its JIT is LiveContainer's: enable JIT for BetterHusk in LiveContainer's app settings, or attach StikDebug to the process both share.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "BetterHusk 正在 LiveContainer 中运行，因此它的 JIT 就是 LiveContainer 的 JIT：请在 LiveContainer 的应用设置中为 BetterHusk 开启 JIT，或将 StikDebug 附加到两者共享的进程。"
+          }
+        }
+      }
+    },
+    "BetterHusk is running inside LiveContainer: turn JIT on for it in LiveContainer's app settings": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "BetterHusk 正在 LiveContainer 中运行：请在 LiveContainer 的应用设置中为它开启 JIT"
+          }
+        }
+      }
+    },
+    ", or attach StikDebug to the process they share.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "，或将 StikDebug 附加到它们共享的进程。"
+          }
+        }
+      }
+    },
+    "Built-in JIT cannot start inside LiveContainer. Enable JIT for BetterHusk in LiveContainer's app settings, or attach StikDebug to the shared process.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "内置 JIT 无法在 LiveContainer 内启动。请在 LiveContainer 的应用设置中为 BetterHusk 开启 JIT，或将 StikDebug 附加到共享进程。"
+          }
+        }
+      }
+    },
+    "Android can't start while a console game is loaded": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "加载主机游戏时无法启动 Android"
+          }
+        }
+      }
+    },
+    "%@ holds the JIT region. Close and reopen BetterHusk, then start Android first.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 占用了 JIT 内存区域。请关闭并重新打开 BetterHusk，然后先启动 Android。"
+          }
+        }
+      }
+    },
+    "Android stopped during startup": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Android 在启动过程中停止了"
+          }
+        }
+      }
+    },
+    "The emulator ended before the guest finished booting. The log (Settings › Technical details) has the last lines.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "模拟器在客户系统完成启动前已结束。最后几行信息在日志中（设置 › 技术详情）。"
           }
         }
       }
