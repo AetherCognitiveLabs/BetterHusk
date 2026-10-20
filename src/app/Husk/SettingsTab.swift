@@ -574,6 +574,8 @@ struct JITSettings: View {
                           value: JITBootstrap.isTrollStoreInstalled ? "installed" : "not found", mono: false)
                 DetailRow(label: "Installed with TrollStore",
                           value: JITBootstrap.isInstalledWithTrollStore ? "yes" : "no", mono: false)
+                DetailRow(label: "LiveContainer",
+                          value: JITBootstrap.isInsideLiveContainer ? "hosting BetterHusk" : "no", mono: false)
                 DetailRow(label: "Jailbreak",
                           value: JITBootstrap.debuggedAtLaunch ? "JIT allowed for apps"
                                : JITBootstrap.isJailbroken ? "found" : "not found", mono: false)
@@ -625,16 +627,26 @@ struct JITSettings: View {
                     Text(why.l10n).font(.caption).foregroundStyle(.orange)
                 }
                 if !JITBootstrap.ready {
-                    Button {
-                        jit.enable()
-                    } label: {
-                        Label("Enable JIT with \(jit.resolvedMethod.title)", systemImage: "bolt.fill")
-                    }
-                    .disabled(jit.busy)
-                    Button {
-                        _ = JITBootstrap.requestTrollStoreAttach()
-                    } label: {
-                        Label("Enable JIT with TrollStore", systemImage: "sparkles")
+                    if JITBootstrap.isInsideLiveContainer {
+                        // Inside LiveContainer none of the attach buttons apply -- the switch lives in the
+                        // container's own settings, which the walkthrough explains.
+                        Button {
+                            jit.showSetup = true
+                        } label: {
+                            Label("How to enable JIT in LiveContainer", systemImage: "shippingbox")
+                        }
+                    } else {
+                        Button {
+                            jit.enable()
+                        } label: {
+                            Label("Enable JIT with \(jit.resolvedMethod.title)", systemImage: "bolt.fill")
+                        }
+                        .disabled(jit.busy)
+                        Button {
+                            _ = JITBootstrap.requestTrollStoreAttach()
+                        } label: {
+                            Label("Enable JIT with TrollStore", systemImage: "sparkles")
+                        }
                     }
                 }
             } header: {
@@ -658,7 +670,8 @@ struct JITSettings: View {
                 Text(HuskBuiltInJIT.isAvailable
                      ? "Each time Husk opens without JIT, it asks the built-in StikJIT to turn it on, so games are ready "
                        + "without a tap. Needs StikJIT set up once (paired) first."
-                     : "Needs the built-in StikJIT, which is available on iOS 26 and later.")
+                     : (HuskBuiltInJIT.unavailableReason
+                        ?? "Needs the built-in StikJIT, which is available on iOS 26 and later."))
             }
 
             Section {

@@ -359,6 +359,9 @@ struct OnboardingView: View {
     /// What the JIT page says is already in place, if anything.
     private var jitState: String? {
         if JITBootstrap.ready { return "JIT is on." }
+        // Inside LiveContainer nothing here is "in place" until JIT is actually on -- the container's own
+        // switch is what the setup page explains, so the button keeps reading "Set Up JIT".
+        if JITBootstrap.isInsideLiveContainer { return nil }
         if jit.method == .stikDebug { return "Husk will use StikDebug." }
         if jit.method == .trollStore { return "Husk will use TrollStore." }
         switch jit.pairingSource {
@@ -371,13 +374,17 @@ struct OnboardingView: View {
     private var jitPage: some View {
         VStack(spacing: 18) {
             header("bolt.fill", "Turn On JIT",
-                   "Games need JIT, which iOS only grants to an attached debugger. StikJIT is built into Husk and turns it on from "
-                 + "inside the app, with no computer. StikDebug and TrollStore work too.")
+                   JITBootstrap.isInsideLiveContainer
+                   ? "Games need JIT, which iOS only grants to an attached debugger. BetterHusk runs inside LiveContainer, "
+                     + "so JIT is LiveContainer's to give -- its own launch options, or an attached debugger."
+                   : "Games need JIT, which iOS only grants to an attached debugger. StikJIT is built into Husk and turns it on from "
+                     + "inside the app, with no computer. StikDebug and TrollStore work too.")
             if let state = jitState {
-                Label(state.l10n, systemImage: "checkmark.circle.fill")
-                    .font(.callout.weight(.medium)).foregroundStyle(.green)
+                Label(state.l10n, systemImage: JITBootstrap.ready ? "checkmark.circle.fill" : "shippingbox")
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(JITBootstrap.ready ? .green : Theme.textDim)
             }
-            Button(jitState == nil ? "Set Up StikJIT Now" : "Change JIT Setup") { settingUpJIT = true }
+            Button(jitState == nil ? (JITBootstrap.isInsideLiveContainer ? "Set Up JIT" : "Set Up StikJIT Now") : "Change JIT Setup") { settingUpJIT = true }
                 .font(.body.weight(.semibold))
                 .foregroundStyle(Theme.accent)
             Text("You can skip this: Husk asks again when a game needs it, and it is in Settings › JIT & Sideload.")

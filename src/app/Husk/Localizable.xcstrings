@@ -10151,6 +10151,66 @@
           }
         }
       }
+    },
+    "Set Up JIT": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设置 JIT"
+          }
+        }
+      }
+    },
+    "Set Up StikJIT Now": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "立即设置 StikJIT"
+          }
+        }
+      }
+    },
+    "Change JIT Setup": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "更改 JIT 设置"
+          }
+        }
+      }
+    },
+    "How to enable JIT in LiveContainer": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "如何在 LiveContainer 中启用 JIT"
+          }
+        }
+      }
+    },
+    "hosting BetterHusk": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在托管 BetterHusk"
+          }
+        }
+      }
+    },
+    "Games need JIT, which iOS only grants to an attached debugger. BetterHusk runs inside LiveContainer, so JIT is LiveContainer's to give -- its own launch options, or an attached debugger.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "游戏需要 JIT，而 iOS 只将其授予附加了调试器的进程。BetterHusk 在 LiveContainer 中运行，因此 JIT 由 LiveContainer 提供——它自己的启动选项，或一个附加的调试器。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"
