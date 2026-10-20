@@ -10430,11 +10430,21 @@ static void WakeLock_acquire(tl_jcall *c) { tl_more_idle_timer(1); set_bool(c->s
 static void WakeLock_acquireTo(tl_jcall *c) { WakeLock_acquire(c); }
 static void WakeLock_release(tl_jcall *c) { tl_more_idle_timer(0); set_bool(c->self, "held", false); }
 static void WakeLock_isHeld(tl_jcall *c) { c->ret = vz(get_int(c->self, "held")); }
-static void PM_newWakeLock(tl_jcall *c)
+static void PM_newWakeLock(tl_jcall *c)   /* (int flags, String tag) */
 {
     jobj *w = make("android/os/PowerManager$WakeLock");
     set_int(w, "flags", c->args[0].i);
+    if (c->args[1].l) set_str(w, "tag", S(c->args[1].l));
+    set_bool(w, "refCounted", true);
     c->ret = vl(w);
+}
+static void WakeLock_setReferenceCounted(tl_jcall *c) { set_bool(c->self, "refCounted", c->args[0].z); }
+static void WakeLock_setWorkSource(tl_jcall *c)       { (void)c; }
+static void WakeLock_toString(tl_jcall *c)
+{
+    const char *t = tl_jni_get_field(c->self, "tag", "Ljava/lang/String;").l ? S(tl_jni_get_field(c->self, "tag", "Ljava/lang/String;").l) : "";
+    sbuf b = { 0 }; sb_add(&b, "WakeLock{ tag="); sb_add(&b, t); sb_add(&b, " held="); sb_add(&b, get_int(c->self, "held") ? "true" : "false"); sb_add(&b, " }");
+    c->ret = vl(b.p ? STR(b.p) : STR("WakeLock{}")); free(b.p);
 }
 static void PM_isInteractive(tl_jcall *c) { c->ret = vz(true); }
 static void PM_isScreenOn(tl_jcall *c) { c->ret = vz(true); }
@@ -10443,6 +10453,21 @@ static void PM_isIgnoringBatteryOptimizations(tl_jcall *c) { c->ret = vz(true); 
 
 static void Batt_level(tl_jcall *c) { c->ret = vi(tl_more_battery_pct()); }
 static void Batt_status(tl_jcall *c) { c->ret = vi(tl_more_battery_state()); }
+
+/* ---- InputMethodManager: the soft keyboard ----
+ * The host installs tl_cocos_keyboard_hook; showSoftInput /
+ * hideSoftInputFromWindow are the generic Android entry points every
+ * text field, login screen and chat box goes through. */
+extern void (*tl_cocos_keyboard_hook)(int action);
+static bool g_ime_shown;
+static void IMM_showSoftInput(tl_jcall *c) { g_ime_shown = true;  if (tl_cocos_keyboard_hook) tl_cocos_keyboard_hook(1); c->ret = vz(1); }
+static void IMM_hideSoftInput(tl_jcall *c) { g_ime_shown = false; if (tl_cocos_keyboard_hook) tl_cocos_keyboard_hook(2); c->ret = vz(1); }
+static void IMM_toggle(tl_jcall *c)        { g_ime_shown = !g_ime_shown; if (tl_cocos_keyboard_hook) tl_cocos_keyboard_hook(g_ime_shown ? 1 : 2); }
+static void IMM_isActive(tl_jcall *c)      { c->ret = vz(g_ime_shown); }
+static void IMM_isFullscreen(tl_jcall *c)  { c->ret = vz(0); }
+static void IMM_restartInput(tl_jcall *c)  { (void)c; }
+static void IMM_showStatusIcon(tl_jcall *c){ (void)c; }
+static void IMM_updateSelection(tl_jcall *c){ (void)c; }
 
 /* MediaPlayer: id in native; sources resolved where Java handed us one */
 static int mp_of(jobj *o)
@@ -18616,7 +18641,22 @@ static const tl_jhle k_more_hle[] = {
     M("android/os/PowerManager$WakeLock", "acquire", NULL, WakeLock_acquire),
     M("android/os/PowerManager$WakeLock", "release", NULL, WakeLock_release),
     M("android/os/PowerManager$WakeLock", "isHeld", NULL, WakeLock_isHeld),
-    M("android/os/PowerManager", "newWakeLock", "(I)Ljava/lang/Object;", PM_newWakeLock),
+    M("android/os/PowerManager$WakeLock", "setReferenceCounted", "(Z)V", WakeLock_setReferenceCounted),
+    M("android/os/PowerManager$WakeLock", "setWorkSource", "(Ljava/lang/Object;)V", WakeLock_setWorkSource),
+    M("android/os/PowerManager$WakeLock", "toString", "()Ljava/lang/String;", WakeLock_toString),
+    M("android/view/inputmethod/InputMethodManager", "showSoftInput", "(Ljava/lang/Object;I)Z", IMM_showSoftInput),
+    M("android/view/inputmethod/InputMethodManager", "showSoftInput", "(Ljava/lang/Object;ILjava/lang/Object;)Z", IMM_showSoftInput),
+    M("android/view/inputmethod/InputMethodManager", "hideSoftInputFromWindow", "(Ljava/lang/Object;I)Z", IMM_hideSoftInput),
+    M("android/view/inputmethod/InputMethodManager", "hideSoftInputFromWindow", "(Ljava/lang/Object;ILjava/lang/Object;)Z", IMM_hideSoftInput),
+    M("android/view/inputmethod/InputMethodManager", "toggleSoftInput", "(II)V", IMM_toggle),
+    M("android/view/inputmethod/InputMethodManager", "toggleSoftInputFromWindow", "(Ljava/lang/Object;II)V", IMM_toggle),
+    M("android/view/inputmethod/InputMethodManager", "isActive", "()Z", IMM_isActive),
+    M("android/view/inputmethod/InputMethodManager", "isActive", "(Ljava/lang/Object;)Z", IMM_isActive),
+    M("android/view/inputmethod/InputMethodManager", "isFullscreenMode", "()Z", IMM_isFullscreen),
+    M("android/view/inputmethod/InputMethodManager", "restartInput", "(Ljava/lang/Object;)V", IMM_restartInput),
+    M("android/view/inputmethod/InputMethodManager", "showStatusIcon", "(Ljava/lang/Object;Ljava/lang/String;I)V", IMM_showStatusIcon),
+    M("android/view/inputmethod/InputMethodManager", "updateSelection", "(Ljava/lang/Object;IIII)V", IMM_updateSelection),
+    M("android/os/PowerManager", "newWakeLock", "(ILjava/lang/Object;)Ljava/lang/Object;", PM_newWakeLock),
     M("android/os/PowerManager", "isInteractive", NULL, PM_isInteractive),
     M("android/os/PowerManager", "isScreenOn", NULL, PM_isScreenOn),
     M("android/os/PowerManager", "isPowerSaveMode", NULL, PM_isPowerSaveMode),
@@ -19964,6 +20004,7 @@ static const struct { const char *name, *super; } k_more_classes[] = {
     { "android/app/Activity", "android/view/ContextThemeWrapper" },
     { "android/os/PowerManager$WakeLock", "java/lang/Object" },
     { "android/os/PowerManager", "java/lang/Object" },
+    { "android/view/inputmethod/InputMethodManager", "java/lang/Object" },
     { "android/media/MediaPlayer", "java/lang/Object" },
     { "android/media/SoundPool", "java/lang/Object" },
     { "android/media/SoundPool$Builder", "java/lang/Object" },
