@@ -5004,7 +5004,7 @@ static void VB_hasArray(tl_jcall *c)    { c->ret = vz(tl_jni_get_field(c->self, 
 static void VB_order(tl_jcall *c)       { c->ret = tl_jni_get_field(c->self, "order", "Ljava/nio/ByteOrder;"); }
 static void VB_duplicate(tl_jcall *c)
 {
-    jobj *v = make(tl_jni_class_name(c->self->cls));
+    jobj *v = make(tl_jni_class_name(c->self));
     set_long(v, "addr", get_lng(c->self, "addr")); set_long(v, "cap", get_lng(c->self, "cap"));
     set_int(v, "pos", get_int(c->self, "pos")); set_int(v, "lim", vb_lim(c->self)); set_int(v, "mark", -1);
     set_int(v, "esz", vb_esz(c->self));
@@ -5014,7 +5014,7 @@ static void VB_duplicate(tl_jcall *c)
 static void VB_slice(tl_jcall *c)
 {
     int esz = vb_esz(c->self), pos = vb_pos(c->self), rem = vb_lim(c->self) - pos;
-    jobj *v = make(tl_jni_class_name(c->self->cls));
+    jobj *v = make(tl_jni_class_name(c->self));
     set_long(v, "addr", (int64_t)(uintptr_t)(vb_base(c->self) + (int64_t)pos * esz));
     set_long(v, "cap", rem); set_int(v, "pos", 0); set_int(v, "lim", rem); set_int(v, "mark", -1);
     set_int(v, "esz", esz);
@@ -5096,7 +5096,7 @@ static void CB_wrap(tl_jcall *c)
 static void VB_toString(tl_jcall *c)
 {
     char b[128]; snprintf(b, sizeof(b), "%s[pos=%d,lim=%d,cap=%lld]",
-        tl_jni_class_name(c->self->cls), vb_pos(c->self), vb_lim(c->self), (long long)get_lng(c->self, "cap"));
+        tl_jni_class_name(c->self), vb_pos(c->self), vb_lim(c->self), (long long)get_lng(c->self, "cap"));
     c->ret = vl(STR(b));
 }
 
@@ -11179,7 +11179,7 @@ static void Cur_getType(tl_jcall *c)
 {
     jobj *cell = cur_cell(cur_of(c->self), c->args[0].i);
     if (!cell) { c->ret = vi(0); return; }                       /* FIELD_TYPE_NULL */
-    const char *n = cell->cls ? tl_jni_class_name(cell->cls) : "";
+    const char *n = cell->cls ? tl_jni_class_name(cell) : "";
     c->ret = vi(strstr(n, "String") ? 3 : strstr(n, "Integer") || strstr(n, "Long") || strstr(n, "Short") || strstr(n, "Byte") ? 1 : strstr(n, "Float") || strstr(n, "Double") ? 2 : 0);
 }
 static void Cur_close(tl_jcall *c)      { set_bool(c->self, "closed", true); }

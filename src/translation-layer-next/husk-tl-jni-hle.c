@@ -8,6 +8,7 @@
 #include "husk-tl-jni.h"
 #include "husk-tl-bionic.h"
 
+#include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
 #include <pthread.h>
@@ -54,7 +55,16 @@ static void mkdirs(const char *path)
 static const char *S(const jobj *o) { const char *s = tl_jni_string(o); return s ? s : ""; }
 static void set_str(jobj *o, const char *f, const char *v) { tl_jni_set_field(o, f, "Ljava/lang/String;", vl(STR(v))); }
 static void set_int(jobj *o, const char *f, int v) { tl_jni_set_field(o, f, "I", vi(v)); }
+static void set_bool(jobj *o, const char *f, int v) { tl_jni_set_field(o, f, "Z", vz(v)); }
 static void set_float(jobj *o, const char *f, float v) { tl_jni_set_field(o, f, "F", vf(v)); }
+/* growable char buffer for the prefs file codec */
+typedef struct { char *p; size_t n, cap; } sbuf;
+static void sbp_putc(sbuf *b, char ch)
+{
+    if (b->n + 2 > b->cap) { b->cap = b->cap ? b->cap * 2 : 64; b->p = realloc(b->p, b->cap); }
+    b->p[b->n++] = ch; b->p[b->n] = 0;
+}
+static void sbp_add(sbuf *b, const char *s) { while (*s) sbp_putc(b, *s++); }
 static jobj *make(const char *cls) { return tl_jni_new_object(C(cls)); }
 
 /* -------------------------------------------------------------- java.io.File */
@@ -142,11 +152,28 @@ extern jobj *tl_loop_main_looper(void);
 static void Context_getMainLooper(tl_jcall *c) { c->ret = vl(tl_loop_main_looper()); }
 static void Context_getContentResolver(tl_jcall *c) { c->ret = vl(make("android/content/ContentResolver")); }
 static void Context_getClassLoader(tl_jcall *c) { c->ret = vl(make("dalvik/system/PathClassLoader")); }
+/* Android keeps one SharedPreferences object per name; mirror that so separate
+   calls share the same in-memory map (and thus see each other's writes). */
+static struct { char name[256]; jobj *sp; } sp_cache[24];
+static int sp_cache_n;
 static void Context_getSharedPreferences(tl_jcall *c)
 {
+    const char *name = S(c->args[0].l);
+    for (int i = 0; i < sp_cache_n; i++)
+        if (!strcmp(sp_cache[i].name, name)) { c->ret = vl(tl_jni_ref(sp_cache[i].sp)); return; }
     jobj *p = make("android/content/SharedPreferences");
-    set_str(p, "name", S(c->args[0].l));
+    set_str(p, "name", name);
+    if (sp_cache_n < 24) { snprintf(sp_cache[sp_cache_n].name, 256, "%s", name); sp_cache[sp_cache_n++].sp = tl_jni_ref(p); }
     c->ret = vl(p);
+}
+static void PrefMgr_getDefaultSharedPreferences(tl_jcall *c)
+{
+    static jobj *def;
+    if (!def) {
+        char nm[300]; snprintf(nm, sizeof(nm), "%s_preferences", H.pkg ? H.pkg : "app");
+        def = make("android/content/SharedPreferences"); set_str(def, "name", nm);
+    }
+    c->ret = vl(tl_jni_ref(def));
 }
 static void Context_checkCallingOrSelfPermission(tl_jcall *c) { c->ret = vi(0); }   /* PERMISSION_GRANTED */
 static void Context_checkSelfPermission(tl_jcall *c) { c->ret = vi(0); }
@@ -721,16 +748,193 @@ static void Builder_show(tl_jcall *c)
 static void Object_getClass(tl_jcall *c) { c->ret = vl(c->self && c->self->cls ? tl_jni_class_object(tl_jni_class_name(c->self)) : NULL); }
 static void Class_getClassLoader(tl_jcall *c) { c->ret = vl(make("dalvik/system/PathClassLoader")); }
 static void ClassLoader_findLibrary(tl_jcall *c) { char p[300]; snprintf(p, sizeof(p), "%s/lib%s.so", H.native_lib, S(c->args[0].l)); c->ret = vl(STR(p)); }
-static void SP_getInt(tl_jcall *c) { c->ret = vi(c->args[1].i); }
-static void SP_getString(tl_jcall *c) { c->ret = vl(c->args[1].l ? tl_jni_ref(c->args[1].l) : NULL); }
-static void SP_getBoolean(tl_jcall *c) { c->ret = vz(c->args[1].z); }
-static void SP_contains(tl_jcall *c) { c->ret = vz(0); }
-static void SP_edit(tl_jcall *c) { c->ret = vl(make("android/content/SharedPreferences$Editor")); }
+/* SharedPreferences over <data>/shared_prefs/<name>.xml — our own line format,
+ * one entry per line: <type>\t<key>\t<value> with %-escapes for unsafe bytes.
+ * Values sit in a real HashMap field so getAll/edit share the store. */
+static char *sp_path(jobj *sp)
+{
+    jobj *n = tl_jni_get_field(sp, "name", "Ljava/lang/String;").l;
+    static char p[1200];
+    snprintf(p, sizeof(p), "%s/shared_prefs/%s.xml", H.data, n ? S(n) : "default");
+    return p;
+}
+static void sp_load(jobj *sp)
+{
+    jobj *m = tl_jni_get_field(sp, "_map", "Ljava/util/HashMap;").l;
+    if (m) return;
+    m = make("java/util/HashMap");
+    tl_jni_set_field(sp, "_map", "Ljava/util/HashMap;", vl(m));
+    FILE *f = fopen(sp_path(sp), "r");
+    if (!f) return;
+    char line[8192];
+    while (fgets(line, sizeof(line), f)) {
+        char *t1 = strchr(line, '\t'); if (!t1) continue;
+        char *t2 = strchr(t1 + 1, '\t'); if (!t2) continue;
+        *t1 = 0; *t2 = 0;
+        char *nl = strchr(t2 + 1, '\n'); if (nl) *nl = 0;
+        const char *type = line;
+        sbuf kb = {0}, vb = {0};
+        for (const char *s = t1 + 1; *s; s++)
+            if (*s == '%' && isxdigit((uint8_t)s[1]) && isxdigit((uint8_t)s[2])) {
+                char d[3] = { s[1], s[2], 0 }; sbp_putc(&kb, (char)strtol(d, NULL, 16)); s += 2;
+            } else sbp_putc(&kb, *s);
+        for (const char *s = t2 + 1; *s; s++)
+            if (*s == '%' && isxdigit((uint8_t)s[1]) && isxdigit((uint8_t)s[2])) {
+                char d[3] = { s[1], s[2], 0 }; sbp_putc(&vb, (char)strtol(d, NULL, 16)); s += 2;
+            } else sbp_putc(&vb, *s);
+        jvalue v;
+        v.j = 0;
+        if (!strcmp(type, "S")) v.l = STR(vb.p ? vb.p : "");
+        else if (!strcmp(type, "I")) { v.l = make("java/lang/Integer"); set_int(v.l, "value", atoi(vb.p ? vb.p : "0")); }
+        else if (!strcmp(type, "J")) { v.l = make("java/lang/Long"); tl_jni_set_field(v.l, "value", "J", (jvalue){ .j = strtoll(vb.p ? vb.p : "0", NULL, 10) }); }
+        else if (!strcmp(type, "Z")) { v.l = make("java/lang/Boolean"); set_bool(v.l, "value", !strcmp(vb.p ? vb.p : "0", "1")); }
+        else if (!strcmp(type, "F")) { v.l = make("java/lang/Float"); tl_jni_set_field(v.l, "value", "F", (jvalue){ .f = strtof(vb.p ? vb.p : "0", NULL) }); }
+        else { free(kb.p); free(vb.p); continue; }
+        jvalue key = { .j = 0, .l = STR(kb.p ? kb.p : "") };
+        jvalue pr[2] = { key, v };
+        tl_jni_call(m, "put", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", pr);
+        free(kb.p); free(vb.p);
+    }
+    fclose(f);
+}
+static void sp_esc(sbuf *b, const char *s)
+{
+    for (; *s; s++)
+        if (*s == '%' || *s == '\t' || *s == '\n' || *s == '\r' || (uint8_t)*s < 0x20) {
+            char e[4]; snprintf(e, sizeof(e), "%%%02x", (uint8_t)*s); sbp_add(b, e);
+        } else sbp_putc(b, *s);
+}
+static void sp_flush(jobj *sp)
+{
+    char dir[1200];
+    snprintf(dir, sizeof(dir), "%s", sp_path(sp));
+    char *sl = strrchr(dir, '/'); if (sl) { *sl = 0; mkdirs(dir); }
+    FILE *f = fopen(sp_path(sp), "w");
+    if (!f) return;
+    jobj *m = tl_jni_get_field(sp, "_map", "Ljava/util/HashMap;").l;
+    if (m) {
+        jvalue it = tl_jni_call(m, "entrySet", "()Ljava/util/Set;", NULL);
+        jvalue i2 = it.l ? tl_jni_call(it.l, "iterator", "()Ljava/util/Iterator;", NULL) : (jvalue){0};
+        while (i2.l) {
+            jvalue h = tl_jni_call(i2.l, "hasNext", "()Z", NULL);
+            if (!h.z) break;
+            jvalue e = tl_jni_call(i2.l, "next", "()Ljava/lang/Object;", NULL);
+            if (!e.l) break;
+            jvalue k = tl_jni_call(e.l, "getKey", "()Ljava/lang/Object;", NULL);
+            jvalue v = tl_jni_call(e.l, "getValue", "()Ljava/lang/Object;", NULL);
+            const char *cls = v.l && v.l->cls ? tl_jni_class_name(v.l) : "";
+            char t = 'S';
+            if (strstr(cls, "Integer")) t = 'I'; else if (strstr(cls, "Long")) t = 'J';
+            else if (strstr(cls, "Boolean")) t = 'Z'; else if (strstr(cls, "Float")) t = 'F';
+            jvalue sv = v.l ? tl_jni_call(v.l, "toString", "()Ljava/lang/String;", NULL) : (jvalue){0};
+            sbuf kb = {0}, vb = {0};
+            sp_esc(&kb, k.l ? S(k.l) : "");
+            sp_esc(&vb, sv.l ? S(sv.l) : "");
+            fprintf(f, "%c\t%s\t%s\n", t, kb.p ? kb.p : "", vb.p ? vb.p : "");
+            free(kb.p); free(vb.p);
+        }
+    }
+    fclose(f);
+}
+static jvalue sp_get(tl_jcall *c, char want)
+{
+    sp_load(c->self);
+    jobj *m = tl_jni_get_field(c->self, "_map", "Ljava/util/HashMap;").l;
+    jvalue a[1] = { c->args[0] };
+    jvalue v = m ? tl_jni_call(m, "get", "(Ljava/lang/Object;)Ljava/lang/Object;", a) : (jvalue){0};
+    if (!v.l) return c->args[1];
+    const char *cls = v.l->cls ? tl_jni_class_name(v.l) : "";
+    if (want == 'L') { jvalue s = tl_jni_call(v.l, "toString", "()Ljava/lang/String;", NULL); return s.l ? s : c->args[1]; }
+    if (want == 'I' && strstr(cls, "Integer")) return tl_jni_get_field(v.l, "value", "I");
+    if (want == 'J' && strstr(cls, "Long"))    return tl_jni_get_field(v.l, "value", "J");
+    if (want == 'Z' && strstr(cls, "Boolean")) return tl_jni_get_field(v.l, "value", "Z");
+    if (want == 'F' && strstr(cls, "Float"))   return tl_jni_get_field(v.l, "value", "F");
+    return c->args[1];
+}
+static void SP_getInt(tl_jcall *c) { c->ret = sp_get(c, 'I'); }
+static void SP_getString(tl_jcall *c) { c->ret = sp_get(c, 'L'); }
+static void SP_getBoolean(tl_jcall *c) { c->ret = sp_get(c, 'Z'); }
+static void SP_getFloat(tl_jcall *c) { c->ret = sp_get(c, 'F'); }
+static void SP_getLong(tl_jcall *c) { c->ret = sp_get(c, 'J'); }
+static void SP_getStringSet(tl_jcall *c) { c->ret = vl(c->args[1].l ? tl_jni_ref(c->args[1].l) : NULL); }
+static void SP_contains(tl_jcall *c)
+{
+    sp_load(c->self);
+    jobj *m = tl_jni_get_field(c->self, "_map", "Ljava/util/HashMap;").l;
+    jvalue a[1] = { c->args[0] };
+    jvalue v = m ? tl_jni_call(m, "containsKey", "(Ljava/lang/Object;)Z", a) : (jvalue){0};
+    c->ret = v;
+}
+static void SP_edit(tl_jcall *c)
+{
+    jobj *e = make("android/content/SharedPreferences$Editor");
+    tl_jni_set_field(e, "_sp", "Landroid/content/SharedPreferences;", vl(c->self));
+    c->ret = vl(e);
+}
 static void Editor_self(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
 static void Editor_noop(tl_jcall *c) { (void)c; }
-static void SP_getFloat(tl_jcall *c) { jvalue v; v.j = 0; v.f = c->args[1].f; c->ret = v; }
-static void SP_getLong(tl_jcall *c) { jvalue v; v.j = c->args[1].j; c->ret = v; }
-static void Editor_commit(tl_jcall *c) { c->ret = vz(1); }
+static void Editor_put(tl_jcall *c, const char *cls, const char *sig, jvalue v)
+{
+    jobj *sp = tl_jni_get_field(c->self, "_sp", "Landroid/content/SharedPreferences;").l;
+    if (!sp) { c->ret = vl(tl_jni_ref(c->self)); return; }
+    sp_load(sp);
+    jobj *b = make(cls);
+    tl_jni_set_field(b, "value", sig, v);
+    jobj *m = tl_jni_get_field(sp, "_map", "Ljava/util/HashMap;").l;
+    jvalue pr[2] = { c->args[0], { .j = 0, .l = b } };
+    if (m) tl_jni_call(m, "put", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", pr);
+    sp_flush(sp);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void Editor_putInt(tl_jcall *c)    { Editor_put(c, "java/lang/Integer", "I", c->args[1]); }
+static void Editor_putLong(tl_jcall *c)   { Editor_put(c, "java/lang/Long", "J", c->args[1]); }
+static void Editor_putBoolean(tl_jcall *c){ Editor_put(c, "java/lang/Boolean", "Z", c->args[1]); }
+static void Editor_putFloat(tl_jcall *c)  { Editor_put(c, "java/lang/Float", "F", c->args[1]); }
+static void Editor_putString(tl_jcall *c)
+{
+    jobj *sp = tl_jni_get_field(c->self, "_sp", "Landroid/content/SharedPreferences;").l;
+    if (!sp) { c->ret = vl(tl_jni_ref(c->self)); return; }
+    sp_load(sp);
+    jobj *m = tl_jni_get_field(sp, "_map", "Ljava/util/HashMap;").l;
+    jvalue pr[2] = { c->args[0], c->args[1] };
+    if (m) tl_jni_call(m, "put", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", pr);
+    sp_flush(sp);
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void Editor_remove(tl_jcall *c)
+{
+    jobj *sp = tl_jni_get_field(c->self, "_sp", "Landroid/content/SharedPreferences;").l;
+    if (sp) {
+        sp_load(sp);
+        jobj *m = tl_jni_get_field(sp, "_map", "Ljava/util/HashMap;").l;
+        jvalue a[1] = { c->args[0] };
+        if (m) tl_jni_call(m, "remove", "(Ljava/lang/Object;)Ljava/lang/Object;", a);
+        sp_flush(sp);
+    }
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void Editor_clear(tl_jcall *c)
+{
+    jobj *sp = tl_jni_get_field(c->self, "_sp", "Landroid/content/SharedPreferences;").l;
+    if (sp) {
+        sp_load(sp);
+        jobj *m = tl_jni_get_field(sp, "_map", "Ljava/util/HashMap;").l;
+        if (m) tl_jni_call(m, "clear", "()V", NULL);
+        sp_flush(sp);
+    }
+    c->ret = vl(tl_jni_ref(c->self));
+}
+static void Editor_commit(tl_jcall *c)
+{
+    jobj *sp = tl_jni_get_field(c->self, "_sp", "Landroid/content/SharedPreferences;").l;
+    if (sp) sp_flush(sp);
+    c->ret = vz(1);
+}
+static void Editor_apply(tl_jcall *c)
+{
+    jobj *sp = tl_jni_get_field(c->self, "_sp", "Landroid/content/SharedPreferences;").l;
+    if (sp) sp_flush(sp);
+}
 /* java.io.FileOutputStream over a host file (Unity's Java side writes its files with it): the descriptor + 1 in native */
 static int fos_fd(const jobj *o) { return o && o->native ? (int)(intptr_t)o->native - 1 : -1; }
 static void fos_open(tl_jcall *c, const char *path, bool append)
@@ -781,7 +985,6 @@ jobj *tl_jni_new_list_iterator(jobj *const *items, uint32_t n)
 
 /* ------------------------------------------------ strings and builders */
 
-typedef struct { char *p; size_t n, cap; } sbuf;
 static sbuf *sb_of(jobj *o) { if (!o->native) o->native = calloc(1, sizeof(sbuf)); return o->native; }
 static void sb_add(sbuf *b, const char *s, size_t n)
 {
@@ -909,7 +1112,14 @@ static void Map_entrySet(tl_jcall *c) { c->ret = vl(make("java/util/HashSet")); 
 static void Set_iterator(tl_jcall *c) { c->ret = vl(make("java/util/Iterator")); }
 static void Coll_size(tl_jcall *c) { c->ret = vi(0); }
 static void Coll_isEmpty(tl_jcall *c) { c->ret = vz(1); }
-static void SP_getAll(tl_jcall *c) { c->ret = vl(make("java/util/HashMap")); }
+static void SP_getAll(tl_jcall *c)
+{
+    sp_load(c->self);
+    jobj *m = tl_jni_get_field(c->self, "_map", "Ljava/util/HashMap;").l;
+    jobj *out = make("java/util/HashMap");
+    if (m) { jvalue a[1] = { { .j = 0, .l = m } }; tl_jni_call(out, "putAll", "(Ljava/util/Map;)V", a); }
+    c->ret = vl(out);
+}
 static void Intent_getExtras(tl_jcall *c)
 {
     jobj *b = tl_jni_get_field(c->self, "mExtras", "Landroid/os/Bundle;").l;
@@ -1063,6 +1273,7 @@ static const struct { const char *name, *super; } k_classes[] = {
     { "android/media/AudioDeviceInfo", "java/lang/Object" }, { "android/net/Uri", "java/lang/Object" },
     { "org/fmod/FMODAudioDevice", "java/lang/Object" }, { "android/app/AlertDialog$Builder", "java/lang/Object" }, { "android/app/Dialog", "java/lang/Object" }, { "android/app/AlertDialog", "android/app/Dialog" },
     { "android/content/SharedPreferences$Editor", "java/lang/Object" }, { "java/util/Iterator", "java/lang/Object" },
+    { "android/preference/PreferenceManager", "java/lang/Object" },
 };
 
 /*
@@ -1150,6 +1361,7 @@ static const tl_jhle k_hle[] = {
     M("android/content/Context", "getMainLooper", "()Landroid/os/Looper;", Context_getMainLooper),
     M("android/content/Context", "getClassLoader", "()Ljava/lang/ClassLoader;", Context_getClassLoader),
     M("android/content/Context", "getSharedPreferences", "(Ljava/lang/String;I)Landroid/content/SharedPreferences;", Context_getSharedPreferences),
+    M("android/preference/PreferenceManager", "getDefaultSharedPreferences", "(Landroid/content/Context;)Landroid/content/SharedPreferences;", PrefMgr_getDefaultSharedPreferences),
     M("android/content/Context", "checkCallingOrSelfPermission", "(Ljava/lang/String;)I", Context_checkCallingOrSelfPermission),
     M("android/content/Context", "checkSelfPermission", "(Ljava/lang/String;)I", Context_checkSelfPermission),
     M("android/content/Context", "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;", Context_getSystemService),
@@ -1239,11 +1451,18 @@ static const tl_jhle k_hle[] = {
     M("android/content/SharedPreferences", "edit", "()Landroid/content/SharedPreferences$Editor;", SP_edit),
     M("android/content/SharedPreferences", "getFloat", "(Ljava/lang/String;F)F", SP_getFloat),
     M("android/content/SharedPreferences", "getLong", "(Ljava/lang/String;J)J", SP_getLong),
+    M("android/content/SharedPreferences", "getStringSet", "(Ljava/lang/String;Ljava/util/Set;)Ljava/util/Set;", SP_getStringSet),
+    M("android/content/SharedPreferences", "registerOnSharedPreferenceChangeListener", "(Landroid/content/SharedPreferences$OnSharedPreferenceChangeListener;)V", Editor_noop),
+    M("android/content/SharedPreferences", "unregisterOnSharedPreferenceChangeListener", "(Landroid/content/SharedPreferences$OnSharedPreferenceChangeListener;)V", Editor_noop),
     M("android/content/SharedPreferences$Editor", "commit", "()Z", Editor_commit),
-    M("android/content/SharedPreferences$Editor", "putFloat", "(Ljava/lang/String;F)Landroid/content/SharedPreferences$Editor;", Editor_self),
-    M("android/content/SharedPreferences$Editor", "putLong", "(Ljava/lang/String;J)Landroid/content/SharedPreferences$Editor;", Editor_self),
-    M("android/content/SharedPreferences$Editor", "remove", "(Ljava/lang/String;)Landroid/content/SharedPreferences$Editor;", Editor_self),
-    M("android/content/SharedPreferences$Editor", "clear", "()Landroid/content/SharedPreferences$Editor;", Editor_self),
+    M("android/content/SharedPreferences$Editor", "putInt", "(Ljava/lang/String;I)Landroid/content/SharedPreferences$Editor;", Editor_putInt),
+    M("android/content/SharedPreferences$Editor", "putLong", "(Ljava/lang/String;J)Landroid/content/SharedPreferences$Editor;", Editor_putLong),
+    M("android/content/SharedPreferences$Editor", "putFloat", "(Ljava/lang/String;F)Landroid/content/SharedPreferences$Editor;", Editor_putFloat),
+    M("android/content/SharedPreferences$Editor", "putBoolean", "(Ljava/lang/String;Z)Landroid/content/SharedPreferences$Editor;", Editor_putBoolean),
+    M("android/content/SharedPreferences$Editor", "putString", "(Ljava/lang/String;Ljava/lang/String;)Landroid/content/SharedPreferences$Editor;", Editor_putString),
+    M("android/content/SharedPreferences$Editor", "putStringSet", "(Ljava/lang/String;Ljava/util/Set;)Landroid/content/SharedPreferences$Editor;", Editor_self),
+    M("android/content/SharedPreferences$Editor", "remove", "(Ljava/lang/String;)Landroid/content/SharedPreferences$Editor;", Editor_remove),
+    M("android/content/SharedPreferences$Editor", "clear", "()Landroid/content/SharedPreferences$Editor;", Editor_clear),
     M("java/io/FileOutputStream", "<init>", "(Ljava/io/File;)V", FOS_init_file),
     M("java/io/FileOutputStream", "<init>", "(Ljava/io/File;Z)V", FOS_init_file_append),
     M("java/io/FileOutputStream", "<init>", "(Ljava/lang/String;)V", FOS_init_path),
@@ -1254,10 +1473,7 @@ static const tl_jhle k_hle[] = {
     M("java/io/FileOutputStream", "close", "()V", FOS_close),
     M("java/io/FileOutputStream", "flush", "()V", FOS_flush),
     M("java/io/File", "setReadOnly", "()Z", File_setReadOnly),
-    M("android/content/SharedPreferences$Editor", "putInt", "(Ljava/lang/String;I)Landroid/content/SharedPreferences$Editor;", Editor_self),
-    M("android/content/SharedPreferences$Editor", "putString", "(Ljava/lang/String;Ljava/lang/String;)Landroid/content/SharedPreferences$Editor;", Editor_self),
-    M("android/content/SharedPreferences$Editor", "putBoolean", "(Ljava/lang/String;Z)Landroid/content/SharedPreferences$Editor;", Editor_self),
-    M("android/content/SharedPreferences$Editor", "apply", "()V", Editor_noop),
+    M("android/content/SharedPreferences$Editor", "apply", "()V", Editor_apply),
     M("java/util/Iterator", "hasNext", "()Z", Iterator_hasNext), M("java/util/Iterator", "next", "()Ljava/lang/Object;", Iterator_next),
     M("java/lang/String", "<init>", "()V", String_init_empty), M("java/lang/String", "<init>", "([B)V", String_init_bytes),
     M("java/lang/String", "<init>", "([BLjava/lang/String;)V", String_init_bytes), M("java/lang/String", "<init>", "([BII)V", String_init_bytes_range),
