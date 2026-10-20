@@ -2772,3 +2772,48 @@ diff --git a/configure b/configure
  
 -- 
 2.41.0
+From: BetterHusk <dev@aethercognitivelabs.github>
+Subject: [PATCH] hvf: guest debugging is a macOS surface -- take the ENOSYS stubs on iOS
+
+The !CONFIG_HVF_PRIVATE implementation of guest debugging calls
+hv_vcpu_config_create(), hv_vcpu_config_get_feature_reg(),
+hv_vcpu_set_trap_debug_exceptions() and hv_vcpu_set_trap_debug_reg_accesses()
+-- public Hypervisor.framework APIs that the iOS shim (utmapp/Hypervisor)
+does not provide, so libqemu fails to link. None of them exists on iOS:
+there is no entitlement behind which a guest-debug interface could hide,
+so build the existing ENOSYS stubs there, the same answer a macOS build
+without the private headers gives.
+
+---
+ target/arm/hvf/hvf.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/target/arm/hvf/hvf.c b/target/arm/hvf/hvf.c
+--- a/target/arm/hvf/hvf.c	2026-10-20 02:01:41.329340300 +0200
++++ b/target/arm/hvf/hvf.c	2026-10-20 02:01:50.820909700 +0200
+@@ -121,7 +121,7 @@
+     HV_SYS_REG_DBGWVR15_EL1,
+ };
+ 
+-#if !defined(CONFIG_HVF_PRIVATE)
++#if !defined(CONFIG_HVF_PRIVATE) && TARGET_OS_OSX
+ 
+ static inline int hvf_arm_num_brps(hv_vcpu_config_t config)
+ {
+@@ -2305,14 +2305,14 @@
+     vmstate_register(NULL, 0, &vmstate_hvf_vtimer, &vtimer);
+     qemu_add_vm_change_state_handler(hvf_vm_state_change, &vtimer);
+ 
+-#if !defined(CONFIG_HVF_PRIVATE)
++#if !defined(CONFIG_HVF_PRIVATE) && TARGET_OS_OSX
+     hvf_arm_init_debug();
+ #endif
+ 
+     return 0;
+ }
+ 
+-#if !defined(CONFIG_HVF_PRIVATE)
++#if !defined(CONFIG_HVF_PRIVATE) && TARGET_OS_OSX
+ 
+ static const uint32_t brk_insn = 0xd4200000;
+ 
