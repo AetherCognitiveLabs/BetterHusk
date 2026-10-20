@@ -9812,15 +9812,15 @@ static void NB_setContentText(tl_jcall *c)
     tl_jni_set_field(c->self, "text", "Ljava/lang/CharSequence;", c->args[0]);
     c->ret = vl(tl_jni_ref(c->self));
 }
-static void NB_setSmallIcon(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
-static void NB_setContentIntent(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
-static void NB_setAutoCancel(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
-static void NB_setOngoing(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
-static void NB_setPriority(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
-static void NB_setChannelId(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
-static void NB_setDefaults(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
-static void NB_setTicker(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
-static void NB_setWhen(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void NB_setSmallIcon(tl_jcall *c) { set_int(c->self, "icon", c->args[0].i); c->ret = vl(tl_jni_ref(c->self)); }
+static void NB_setContentIntent(tl_jcall *c) { if (c->args[0].l) tl_jni_set_field(c->self, "contentIntent", "Landroid/app/PendingIntent;", c->args[0]); c->ret = vl(tl_jni_ref(c->self)); }
+static void NB_setAutoCancel(tl_jcall *c) { set_bool(c->self, "autoCancel", c->args[0].z); c->ret = vl(tl_jni_ref(c->self)); }
+static void NB_setOngoing(tl_jcall *c) { set_bool(c->self, "ongoing", c->args[0].z); c->ret = vl(tl_jni_ref(c->self)); }
+static void NB_setPriority(tl_jcall *c) { set_int(c->self, "priority", c->args[0].i); c->ret = vl(tl_jni_ref(c->self)); }
+static void NB_setChannelId(tl_jcall *c) { if (c->args[0].l) set_str(c->self, "channelId", S(c->args[0].l)); c->ret = vl(tl_jni_ref(c->self)); }
+static void NB_setDefaults(tl_jcall *c) { set_int(c->self, "defaults", c->args[0].i); c->ret = vl(tl_jni_ref(c->self)); }
+static void NB_setTicker(tl_jcall *c) { if (c->args[0].l) set_str(c->self, "tickerText", S(c->args[0].l)); c->ret = vl(tl_jni_ref(c->self)); }
+static void NB_setWhen(tl_jcall *c) { set_lng(c->self, "when", c->args[0].j); c->ret = vl(tl_jni_ref(c->self)); }
 static void NB_setProgress(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
 static void NB_setStyle(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
 static void NB_addAction(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
@@ -9828,30 +9828,42 @@ static void NB_setSound(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
 static void NB_setVibrate(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
 static void NB_setLights(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
 static void NB_setLargeIcon(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
-static void NB_setSubText(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
-static void NB_setNumber(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
-static void NB_setOnlyAlertOnce(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
-static void NB_setShowWhen(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
-static void NB_setVisibility(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
+static void NB_setSubText(tl_jcall *c) { if (c->args[0].l) set_str(c->self, "subText", S(c->args[0].l)); c->ret = vl(tl_jni_ref(c->self)); }
+static void NB_setNumber(tl_jcall *c) { set_int(c->self, "number", c->args[0].i); c->ret = vl(tl_jni_ref(c->self)); }
+static void NB_setOnlyAlertOnce(tl_jcall *c) { set_bool(c->self, "onlyAlertOnce", c->args[0].z); c->ret = vl(tl_jni_ref(c->self)); }
+static void NB_setShowWhen(tl_jcall *c) { set_bool(c->self, "showWhen", c->args[0].z); c->ret = vl(tl_jni_ref(c->self)); }
+static void NB_setVisibility(tl_jcall *c) { set_int(c->self, "visibility", c->args[0].i); c->ret = vl(tl_jni_ref(c->self)); }
 static void NB_setColor(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
 static void NB_setCategory(tl_jcall *c) { c->ret = vl(tl_jni_ref(c->self)); }
 static void NB_build(tl_jcall *c)
 {
     jobj *n = make("android/app/Notification");
-    jvalue t = tl_jni_get_field(c->self, "title", "Ljava/lang/CharSequence;");
-    if (t.l) tl_jni_set_field(n, "title", "Ljava/lang/CharSequence;", t);
-    jvalue x = tl_jni_get_field(c->self, "text", "Ljava/lang/CharSequence;");
-    if (x.l) tl_jni_set_field(n, "text", "Ljava/lang/CharSequence;", x);
+    /* carry every stored field onto the notification under its platform name */
+    static const char *cs[] = { "title", "text" }, *ds[] = { "contentTitle", "contentText" };
+    for (int i = 0; i < 2; i++) {
+        jvalue v = tl_jni_get_field(c->self, cs[i], "Ljava/lang/CharSequence;");
+        if (v.l) { tl_jni_set_field(n, cs[i], "Ljava/lang/CharSequence;", v);
+                   tl_jni_set_field(n, ds[i], "Ljava/lang/String;", vl(STR(S(v.l)))); }
+    }
+    static const char *sf[] = { "contentInfo", "tickerText", "subText", "channelId" };
+    for (int i = 0; i < 4; i++) {
+        jobj *v = tl_jni_get_field(c->self, sf[i], "Ljava/lang/String;").l;
+        if (v) set_str(n, sf[i], S(v));
+    }
+    static const char *nf[] = { "icon", "priority", "visibility", "number", "defaults" };
+    for (int i = 0; i < 5; i++) set_int(n, nf[i], get_int(c->self, nf[i]));
+    static const char *bf[] = { "autoCancel", "ongoing", "onlyAlertOnce" };
+    for (int i = 0; i < 3; i++) set_bool(n, bf[i], get_int(c->self, bf[i]));
+    set_lng(n, "when", get_lng(c->self, "when"));
+    jobj *pi = tl_jni_get_field(c->self, "contentIntent", "Landroid/app/PendingIntent;").l;
+    if (pi) tl_jni_set_field(n, "contentIntent", "Landroid/app/PendingIntent;", vl(tl_jni_ref(pi)));
     c->ret = vl(n);
 }
 static void NB_getNotification(tl_jcall *c) { NB_build(c); }
-static void NM_notify(tl_jcall *c) { (void)c; }
-static void NM_notifyTag(tl_jcall *c) { (void)c; }
 static void NM_cancel(tl_jcall *c) { (void)c; }
 static void NM_cancelTag(tl_jcall *c) { (void)c; }
 static void NM_cancelAll(tl_jcall *c) { (void)c; }
 static void NM_areNotificationsEnabled(tl_jcall *c) { c->ret = vz(true); }
-static void NM_getNotificationChannel(tl_jcall *c) { c->ret = vl(NULL); }
 static void NM_createNotificationChannel(tl_jcall *c) { (void)c; }
 static void NM_createNotificationChannels(tl_jcall *c) { (void)c; }
 static void NM_deleteNotificationChannel(tl_jcall *c) { (void)c; }
@@ -9861,6 +9873,53 @@ static void NC_init(tl_jcall *c)
     if (c->args[1].l) tl_jni_set_field(c->self, "name", "Ljava/lang/CharSequence;", c->args[1]);
     set_int(c->self, "imp", c->args[2].i);
 }
+static void NC_getId(tl_jcall *c)   { jobj *v = tl_jni_get_field(c->self, "id", "Ljava/lang/String;").l; c->ret = vl(v ? v : STR("default")); }
+static void NC_getName(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "name", "Ljava/lang/CharSequence;"); }
+static void NC_setDesc(tl_jcall *c) { if (c->args[0].l) set_str(c->self, "description", S(c->args[0].l)); }
+
+/* notify() actually surfaces: the notification's title/text becomes a host toast */
+static void nm_toast(jobj *n)
+{
+    if (!n) return;
+    jobj *t = tl_jni_get_field(n, "contentTitle", "Ljava/lang/String;").l;
+    if (!t) t = tl_jni_get_field(n, "title", "Ljava/lang/CharSequence;").l;
+    jobj *x = tl_jni_get_field(n, "contentText", "Ljava/lang/String;").l;
+    if (!x) x = tl_jni_get_field(n, "text", "Ljava/lang/CharSequence;").l;
+    sbuf b = { 0 };
+    if (t) sb_add(&b, S(t)); if (t && x) sb_add(&b, " — "); if (x) sb_add(&b, S(x));
+    if (b.n) tl_more_toast(b.p);
+    free(b.p);
+}
+static void NM_notify2(tl_jcall *c)  /* (int, Notification) */
+{
+    jobj *n = c->args[1].l;
+    if (n) tl_jni_set_field(n, "_nid", "I", c->args[0]);
+    nm_toast(n);
+}
+static void NM_notify3(tl_jcall *c)  /* (String tag, int, Notification) */
+{
+    jobj *n = c->args[2].l;
+    if (n) { tl_jni_set_field(n, "_nid", "I", c->args[1]); tl_jni_set_field(n, "_tag", "Ljava/lang/String;", c->args[0]); }
+    nm_toast(n);
+}
+static void NM_getChannel(tl_jcall *c)
+{
+    jobj *ch = make("android/app/NotificationChannel");
+    if (c->args[0].l) set_str(ch, "id", S(c->args[0].l));
+    set_int(ch, "imp", 3);
+    c->ret = vl(ch);
+}
+static void NM_importance(tl_jcall *c) { c->ret = vi(3); }
+
+/* IntentSender back-reference so getTarget()/sendIntent() work */
+static void PI_send(tl_jcall *c);
+static void IS_getTarget(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "target", "Landroid/app/PendingIntent;"); }
+static void IS_sendIntent(tl_jcall *c)
+{
+    jobj *p = tl_jni_get_field(c->self, "target", "Landroid/app/PendingIntent;").l;
+    if (p) { tl_jcall x = *c; x.self = p; PI_send(&x); }
+}
+static void NB_setInfo(tl_jcall *c) { if (c->args[0].l) set_str(c->self, "contentInfo", S(c->args[0].l)); c->ret = vl(c->self); }
 
 /* PendingIntent: store intent + type */
 static jobj *pi_make(int kind, jobj *ctx, int req, jobj *intent, int flags)
@@ -9876,13 +9935,24 @@ static void PI_getService(tl_jcall *c) { c->ret = vl(pi_make(1, c->args[0].l, c-
 static void PI_getBroadcast(tl_jcall *c) { c->ret = vl(pi_make(2, c->args[0].l, c->args[1].i, c->args[2].l, c->args[3].i)); }
 static void PI_send(tl_jcall *c)
 {
+    if (get_int(c->self, "canceled")) { tl_jni_throw("android/app/PendingIntent$CanceledException", "pending intent canceled"); return; }
     jobj *i = tl_jni_get_field(c->self, "intent", "Landroid/content/Intent;").l;
     jobj *ctx = tl_jni_get_field(c->self, "ctx", "Landroid/content/Context;").l;
-    if (i && ctx) { jvalue v = vl(i); tl_jni_call(ctx, "startActivity", "(Landroid/content/Intent;)V", &v); }
+    int kind = get_int(c->self, "kind");
+    if (!ctx || !i) return;
+    jvalue v = vl(i);
+    if (kind == 2) tl_jni_call(ctx, "sendBroadcast", "(Landroid/content/Intent;)V", &v);
+    else           tl_jni_call(ctx, "startActivity", "(Landroid/content/Intent;)V", &v);
+    if (tl_jni_pending()) tl_jni_clear();
 }
 static void PI_sendCtx(tl_jcall *c) { PI_send(c); }
-static void PI_cancel(tl_jcall *c) { (void)c; }
-static void PI_getIntentSender(tl_jcall *c) { c->ret = vl(make("android/content/IntentSender")); }
+static void PI_cancel(tl_jcall *c) { set_int(c->self, "canceled", 1); }
+static void PI_getIntentSender(tl_jcall *c)
+{
+    jobj *s = make("android/content/IntentSender");
+    tl_jni_set_field(s, "target", "Landroid/app/PendingIntent;", vl(tl_jni_ref(c->self)));
+    c->ret = vl(s);
+}
 static void PI_getTargetPackage(tl_jcall *c) { c->ret = vl(STR("com.betterhusk.app")); }
 static void PI_isActivity(tl_jcall *c) { c->ret = vz(get_int(c->self, "kind") == 0); }
 
@@ -10468,6 +10538,23 @@ static void IMM_isFullscreen(tl_jcall *c)  { c->ret = vz(0); }
 static void IMM_restartInput(tl_jcall *c)  { (void)c; }
 static void IMM_showStatusIcon(tl_jcall *c){ (void)c; }
 static void IMM_updateSelection(tl_jcall *c){ (void)c; }
+
+/* ---- Settings$System / Settings$Global ---- */
+static void SS_getString(tl_jcall *c)
+{
+    jobj *nj = c->args[1].l; const char *name = nj ? S(nj) : "";
+    c->ret = vl(name && strstr(name, "android_id") ? STR("7f3a9c1e4b2d88aa") : NULL);
+}
+static void SS_getInt(tl_jcall *c)
+{
+    jobj *nj = c->args[1].l; const char *name = nj ? S(nj) : "";
+    int v = name && strstr(name, "brightness") ? 128 : 0;
+    c->ret = vi(v);
+}
+static void SS_getIntDef(tl_jcall *c) { c->ret = vi(c->args[2].i); }
+static void SS_getFloat(tl_jcall *c)  { c->ret = vf(1.0f); }
+static void SS_putString(tl_jcall *c) { c->ret = vz(1); }
+static void SS_getUriFor(tl_jcall *c) { jobj *n = c->args[0].l; sbuf b = { 0 }; sb_add(&b, "content://settings/system/"); if (n) sb_add(&b, S(n)); c->ret = vl(STR(b.p ? b.p : "content://settings/system")); free(b.p); }
 
 /* MediaPlayer: id in native; sources resolved where Java handed us one */
 static int mp_of(jobj *o)
@@ -18475,13 +18562,13 @@ static const tl_jhle k_more_hle[] = {
     M("android/app/Notification$Builder", "setCategory", NULL, NB_setCategory),
     M("android/app/Notification$Builder", "build", NULL, NB_build),
     M("android/app/Notification$Builder", "getNotification", NULL, NB_getNotification),
-    M("android/app/NotificationManager", "notify", NULL, NM_notify),
-    M("android/app/NotificationManager", "notifyTag", NULL, NM_notifyTag),
+    M("android/app/NotificationManager", "notify", "(ILjava/lang/Object;)V", NM_notify2),
+    M("android/app/NotificationManager", "notify", "(Ljava/lang/String;ILjava/lang/Object;)V", NM_notify3),
     M("android/app/NotificationManager", "cancel", NULL, NM_cancel),
     M("android/app/NotificationManager", "cancelTag", NULL, NM_cancelTag),
     M("android/app/NotificationManager", "cancelAll", NULL, NM_cancelAll),
     M("android/app/NotificationManager", "areNotificationsEnabled", NULL, NM_areNotificationsEnabled),
-    M("android/app/NotificationManager", "getNotificationChannel", NULL, NM_getNotificationChannel),
+    M("android/app/NotificationManager", "getNotificationChannel", "(Ljava/lang/String;)Ljava/lang/Object;", NM_getChannel),
     M("android/app/NotificationManager", "createNotificationChannel", NULL, NM_createNotificationChannel),
     M("android/app/NotificationManager", "createNotificationChannels", NULL, NM_createNotificationChannels),
     M("android/app/NotificationManager", "deleteNotificationChannel", NULL, NM_deleteNotificationChannel),
@@ -18656,6 +18743,32 @@ static const tl_jhle k_more_hle[] = {
     M("android/view/inputmethod/InputMethodManager", "restartInput", "(Ljava/lang/Object;)V", IMM_restartInput),
     M("android/view/inputmethod/InputMethodManager", "showStatusIcon", "(Ljava/lang/Object;Ljava/lang/String;I)V", IMM_showStatusIcon),
     M("android/view/inputmethod/InputMethodManager", "updateSelection", "(Ljava/lang/Object;IIII)V", IMM_updateSelection),
+    M("android/app/PendingIntent", "getActivity", "(Ljava/lang/Object;ILjava/lang/Object;I)Ljava/lang/Object;", PI_getActivity),
+    M("android/app/PendingIntent", "getActivity", "(Ljava/lang/Object;ILjava/lang/Object;ILjava/lang/Object;)Ljava/lang/Object;", PI_getActivity),
+    M("android/app/PendingIntent", "getBroadcast", "(Ljava/lang/Object;ILjava/lang/Object;I)Ljava/lang/Object;", PI_getBroadcast),
+    M("android/app/PendingIntent", "getService", "(Ljava/lang/Object;ILjava/lang/Object;I)Ljava/lang/Object;", PI_getService),
+    M("android/app/PendingIntent", "getForegroundService", "(Ljava/lang/Object;ILjava/lang/Object;I)Ljava/lang/Object;", PI_getService),
+    M("android/app/PendingIntent", "send", "()V", PI_send),
+    M("android/app/PendingIntent", "send", "(Ljava/lang/Object;ILjava/lang/Object;)V", PI_sendCtx),
+    M("android/app/PendingIntent", "cancel", "()V", PI_cancel),
+    M("android/app/PendingIntent", "getIntentSender", "()Ljava/lang/Object;", PI_getIntentSender),
+    M("android/content/IntentSender", "sendIntent", "(Ljava/lang/Object;ILjava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)V", IS_sendIntent),
+    M("android/content/IntentSender", "getTarget", "()Ljava/lang/Object;", IS_getTarget),
+    M("android/app/Notification$Builder", "setContentInfo", "(Ljava/lang/Object;)Ljava/lang/Object;", NB_setInfo),
+    M("android/app/NotificationChannel", "getId", "()Ljava/lang/String;", NC_getId),
+    M("android/app/NotificationChannel", "getName", "()Ljava/lang/Object;", NC_getName),
+    M("android/app/NotificationChannel", "setDescription", "(Ljava/lang/String;)V", NC_setDesc),
+    M("android/app/NotificationManager", "getImportance", "()I", NM_importance),
+    M("android/provider/Settings$System", "getString", "(Ljava/lang/Object;Ljava/lang/String;)Ljava/lang/String;", SS_getString),
+    M("android/provider/Settings$System", "getInt", "(Ljava/lang/Object;Ljava/lang/String;)I", SS_getInt),
+    M("android/provider/Settings$System", "getInt", "(Ljava/lang/Object;Ljava/lang/String;I)I", SS_getIntDef),
+    M("android/provider/Settings$System", "getFloat", "(Ljava/lang/Object;Ljava/lang/String;)F", SS_getFloat),
+    M("android/provider/Settings$System", "putString", "(Ljava/lang/Object;Ljava/lang/String;Ljava/lang/String;)Z", SS_putString),
+    M("android/provider/Settings$System", "getUriFor", "(Ljava/lang/String;)Ljava/lang/Object;", SS_getUriFor),
+    M("android/provider/Settings$Global", "getString", "(Ljava/lang/Object;Ljava/lang/String;)Ljava/lang/String;", SS_getString),
+    M("android/provider/Settings$Global", "getInt", "(Ljava/lang/Object;Ljava/lang/String;I)I", SS_getIntDef),
+    M("android/provider/Settings$Secure", "getInt", "(Ljava/lang/Object;Ljava/lang/String;I)I", SS_getIntDef),
+    M("android/provider/Settings$Secure", "getFloat", "(Ljava/lang/Object;Ljava/lang/String;)F", SS_getFloat),
     M("android/os/PowerManager", "newWakeLock", "(ILjava/lang/Object;)Ljava/lang/Object;", PM_newWakeLock),
     M("android/os/PowerManager", "isInteractive", NULL, PM_isInteractive),
     M("android/os/PowerManager", "isScreenOn", NULL, PM_isScreenOn),
@@ -19987,7 +20100,12 @@ static const struct { const char *name, *super; } k_more_classes[] = {
     { "android/app/Notification$Builder", "java/lang/Object" },
     { "android/app/NotificationManager", "java/lang/Object" },
     { "android/app/NotificationChannel", "java/lang/Object" },
+    { "android/app/Notification", "java/lang/Object" },
     { "android/app/PendingIntent", "java/lang/Object" },
+    { "android/content/IntentSender", "java/lang/Object" },
+    { "android/provider/Settings$System", "java/lang/Object" },
+    { "android/provider/Settings$Global", "java/lang/Object" },
+    { "android/provider/Settings$Secure", "java/lang/Object" },
     { "android/app/AlertDialog$Builder", "java/lang/Object" },
     { "android/app/Dialog", "java/lang/Object" },
     { "android/app/AlertDialog", "android/app/Dialog" },
