@@ -692,3 +692,129 @@ int tl_wv_progress(int id)
     on_main(^{ p = wv_get(id).estimatedProgress; });
     return (int)(p * 100);
 }
+
+/* ---------------- TLS sockets over Network.framework ----------------
+ * Java's SSLSocket delegates the wire to Apple's TLS stack: certificate
+ * validation is the platform's own, so Java-side TrustManager checks get a
+ * positive answer for connections that made it through the handshake. */
+#import <Network/Network.h>
+
+typedef struct {
+    nw_connection_t c;
+    dispatch_queue_t q;
+    dispatch_semaphore_t ready;   /* connect() waits on the state handler */
+    dispatch_semaphore_t data;    /* the receive loop signals per chunk */
+    uint8_t *buf; size_t head, tail, cap;
+    int st;                       /* 0 connecting, 1 ready, 2 dead */
+    bool closed, eof;
+} tl_tls_t;
+
+static void tls_pump(tl_tls_t *t)
+{
+    nw_connection_receive(t->c, 1, 64 * 1024, ^(dispatch_data_t content, nw_content_context_t ctx, bool complete, nw_error_t error) {
+        if (!t) return;
+        size_t n = content ? dispatch_data_get_size(content) : 0;
+        if (n) {
+            if (t->tail + n > t->cap) {
+                size_t used = t->tail - t->head;
+                if (t->head) { memmove(t->buf, t->buf + t->head, used); t->head = 0; t->tail = used; }
+                if (t->tail + n > t->cap) { while (t->tail + n > t->cap) t->cap = t->cap ? t->cap * 2 : 65536; t->buf = realloc(t->buf, t->cap); }
+            }
+            const void *p = NULL; size_t sz = 0;
+            dispatch_data_t m = dispatch_data_create_map(content, &p, &sz);
+            memcpy(t->buf + t->tail, p, sz);
+            t->tail += sz;
+            dispatch_semaphore_signal(t->data);
+        }
+        if (complete) t->eof = true;
+        if (error) t->st = 2;
+        if (!complete && !error && !t->closed) tls_pump(t);
+        else { t->closed = true; dispatch_semaphore_signal(t->data); }
+    });
+}
+
+/* Returns the handle once the handshake finished, NULL when it failed or timed out. */
+void *tl_tls_connect(const char *host, int port, int timeout_ms)
+{
+    if (!host || port <= 0) return NULL;
+    tl_tls_t *t = calloc(1, sizeof(*t));
+    t->q = dispatch_queue_create("husk.tls", DISPATCH_QUEUE_SERIAL);
+    t->ready = dispatch_semaphore_create(0);
+    t->data = dispatch_semaphore_create(0);
+    char ps[8]; snprintf(ps, sizeof(ps), "%d", port);
+    nw_endpoint_t ep = nw_endpoint_create_host(host, ps);
+    nw_parameters_t p = nw_parameters_create_secure_tcp(NW_PARAMETERS_DEFAULT_CONFIGURATION, NW_PARAMETERS_DEFAULT_CONFIGURATION);
+    t->c = nw_connection_create(ep, p);
+    nw_connection_set_queue(t->c, t->q);
+    nw_connection_set_state_changed_handler(t->c, ^(nw_connection_state_t st, nw_error_t err) {
+        if (st == nw_connection_state_ready) { t->st = 1; dispatch_semaphore_signal(t->ready); tls_pump(t); }
+        else if (st == nw_connection_state_failed || st == nw_connection_state_cancelled) {
+            t->st = 2; t->closed = true;
+            dispatch_semaphore_signal(t->ready);
+            dispatch_semaphore_signal(t->data);
+        }
+    });
+    nw_connection_start(t->c);
+    int64_t wait = timeout_ms > 0 ? (int64_t)timeout_ms * NSEC_PER_MSEC : (int64_t)30 * NSEC_PER_SEC;
+    if (dispatch_semaphore_wait(t->ready, dispatch_time(DISPATCH_TIME_NOW, wait)) != 0 || t->st != 1) {
+        nw_connection_cancel(t->c);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), t->q, ^{
+            free(t->buf); free(t);
+        });
+        return NULL;
+    }
+    return t;
+}
+
+/* >0 bytes read, 0 on timeout, -1 on EOF, -2 on a dead connection. */
+int tl_tls_read(void *h, void *buf, int n, int timeout_ms)
+{
+    tl_tls_t *t = h;
+    if (!t) return -2;
+    if (t->tail == t->head) {
+        if (t->eof) return -1;
+        if (t->st == 2) return -2;
+        dispatch_time_t w = timeout_ms > 0 ? dispatch_time(DISPATCH_TIME_NOW, (int64_t)timeout_ms * NSEC_PER_MSEC)
+                                           : DISPATCH_TIME_FOREVER;
+        if (dispatch_semaphore_wait(t->data, w) != 0) return 0;
+        if (t->tail == t->head) return t->eof ? -1 : -2;
+    }
+    size_t n2 = t->tail - t->head;
+    if ((size_t)n < n2) n2 = (size_t)n;
+    memcpy(buf, t->buf + t->head, n2);
+    t->head += n2;
+    if (t->head == t->tail) t->head = t->tail = 0;
+    return (int)n2;
+}
+
+int tl_tls_write(void *h, const void *buf, int n)
+{
+    tl_tls_t *t = h;
+    if (!t || t->st == 2) return -1;
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    __block bool ok = true;
+    dispatch_data_t d = dispatch_data_create(buf, (size_t)n, t->q, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+    nw_connection_send(t->c, d, NW_CONNECTION_DEFAULT_MESSAGE_CONTEXT, true, ^(nw_error_t error) {
+        if (error) ok = false;
+        dispatch_semaphore_signal(done);
+    });
+    dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
+    return ok ? n : -1;
+}
+
+int tl_tls_available(void *h)
+{
+    tl_tls_t *t = h;
+    return t ? (int)(t->tail - t->head) : 0;
+}
+
+void tl_tls_close(void *h)
+{
+    tl_tls_t *t = h;
+    if (!t) return;
+    t->closed = true;
+    nw_connection_cancel(t->c);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), t->q, ^{
+        free(t->buf); free(t);
+    });
+}

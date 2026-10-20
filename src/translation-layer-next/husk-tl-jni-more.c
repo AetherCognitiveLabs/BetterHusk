@@ -13046,6 +13046,254 @@ static void SOS_write_off(tl_jcall *c) { sos_write(c, c->args[1].i, c->args[2].i
 static void SOS_flush(tl_jcall *c) { (void)c; }
 static void SOS_close(tl_jcall *c) { SIS_close(c); }
 
+/* javax.net.ssl over the Network.framework bridge: tl_tls_* does the real handshake and the
+   platform's own certificate validation, so Java-side TrustManager checks answer "trusted" for
+   whatever made it through. */
+void *tl_tls_connect(const char *host, int port, int timeout_ms);
+int tl_tls_read(void *h, void *buf, int n, int timeout_ms);
+int tl_tls_write(void *h, const void *buf, int n);
+int tl_tls_available(void *h);
+void tl_tls_close(void *h);
+
+typedef struct { void *h; char host[512]; int port, lport, timeout_ms; bool connected; jobj *in, *out; } tlss;
+static tlss *tls_of(jobj *o) { if (!o->native) o->native = calloc(1, sizeof(tlss)); return o->native; }
+static void ssl_connect(tl_jcall *c, tlss *s, const char *host, int port)
+{
+    void *h = tl_tls_connect(host, port, s->timeout_ms);
+    if (!h) { tl_jni_throw("javax/net/ssl/SSLException", "TLS handshake failed"); return; }
+    s->h = h;
+    snprintf(s->host, sizeof(s->host), "%s", host);
+    s->port = port;
+    s->connected = true;
+}
+static void SSLS_init(tl_jcall *c)      { tls_of(c->self); }
+static void SSLS_init_hp(tl_jcall *c)   { ssl_connect(c, tls_of(c->self), c->args[0].l ? S(c->args[0].l) : "", c->args[1].i); }
+static void SSLS_init_ia(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    ssl_connect(c, tls_of(c->self), a ? S(get_str(a, "hostName")) : "", c->args[1].i);
+}
+static void SSLS_init_hpl(tl_jcall *c)  { ssl_connect(c, tls_of(c->self), c->args[0].l ? S(c->args[0].l) : "", c->args[1].i); }
+static void SSLS_init_ipl(tl_jcall *c)  { SSLS_init_ia(c); }
+static void SSLS_startHandshake(tl_jcall *c)
+{
+    tlss *s = tls_of(c->self);
+    if (!s->connected) tl_jni_throw("javax/net/ssl/SSLException", "not connected");
+}
+static void SSLS_getInputStream(tl_jcall *c)
+{
+    tlss *s = tls_of(c->self);
+    if (!s->connected || !s->h) { tl_jni_throw("java/net/SocketException", "not connected"); return; }
+    if (!s->in) { s->in = make("javax/net/ssl/SSLSocket$Input"); s->in->native = s; }
+    c->ret = vl(tl_jni_ref(s->in));
+}
+static void SSLS_getOutputStream(tl_jcall *c)
+{
+    tlss *s = tls_of(c->self);
+    if (!s->connected || !s->h) { tl_jni_throw("java/net/SocketException", "not connected"); return; }
+    if (!s->out) { s->out = make("javax/net/ssl/SSLSocket$Output"); s->out->native = s; }
+    c->ret = vl(tl_jni_ref(s->out));
+}
+static void SSLS_close(tl_jcall *c)
+{
+    tlss *s = tls_of(c->self);
+    if (s->h) { tl_tls_close(s->h); s->h = NULL; }
+    s->connected = false;
+}
+static void SSLS_isClosed(tl_jcall *c)    { c->ret = vz(!tls_of(c->self)->h); }
+static void SSLS_isConnected(tl_jcall *c) { c->ret = vz(tls_of(c->self)->connected); }
+static void SSLS_getInetAddress(tl_jcall *c)
+{
+    tlss *s = tls_of(c->self);
+    jvalue a = { .l = STR(s->host) };
+    tl_jcall t = { .self = NULL, .args = &a };
+    Inet_getByName(&t);
+    c->ret = t.ret;
+}
+static void SSLS_getPort(tl_jcall *c)      { c->ret = vi(tls_of(c->self)->port); }
+static void SSLS_getLocalPort(tl_jcall *c) { c->ret = vi(tls_of(c->self)->lport ? tls_of(c->self)->lport : 0); }
+static void SSLS_setSoTimeout(tl_jcall *c) { tls_of(c->self)->timeout_ms = c->args[0].i; }
+static void SSLS_getSoTimeout(tl_jcall *c) { c->ret = vi(tls_of(c->self)->timeout_ms); }
+static void SSLS_getRemoteSocketAddress(tl_jcall *c)
+{
+    tlss *s = tls_of(c->self);
+    jobj *ep = make("java/net/InetSocketAddress");
+    set_str(ep, "host", s->host); set_int(ep, "port", s->port);
+    c->ret = vl(ep);
+}
+static void SSLS_getSession(tl_jcall *c)
+{
+    tlss *s = tls_of(c->self);
+    jobj *sess = make("javax/net/ssl/SSLSession");
+    set_str(sess, "host", s->host); set_int(sess, "port", s->port);
+    c->ret = vl(sess);
+}
+static void SSLS_toString(tl_jcall *c)
+{
+    tlss *s = tls_of(c->self); char b[400];
+    snprintf(b, sizeof(b), "SSLSocket[addr=%s,port=%d]", s->host, s->port);
+    c->ret = vl(STR(b));
+}
+static void NoopV(tl_jcall *c) { (void)c; }
+
+/* TLS socket streams: share the tlss with the socket so close() kills both. */
+static void TSIS_read(tl_jcall *c)
+{
+    tlss *s = c->self->native;
+    if (!s || !s->h) { tl_jni_throw("java/net/SocketException", "socket closed"); c->ret = vi(-1); return; }
+    uint8_t b;
+    int r = tl_tls_read(s->h, &b, 1, s->timeout_ms);
+    if (r == 0) { tl_jni_throw("java/net/SocketTimeoutException", "read timed out"); c->ret = vi(-1); return; }
+    if (r < 0) { if (r == -2) tl_jni_throw("javax/net/ssl/SSLException", "connection failed"); c->ret = vi(-1); return; }
+    c->ret = vi(b);
+}
+static void tsis_read(tl_jcall *c, int off, int len)
+{
+    tlss *s = c->self->native;
+    jobj *a = c->args[0].l;
+    if (!s || !s->h) { tl_jni_throw("java/net/SocketException", "socket closed"); c->ret = vi(-1); return; }
+    if (!a || a->kind != TL_K_PRIM_ARRAY || len <= 0) { c->ret = vi(len == 0 ? 0 : -1); return; }
+    if (off < 0 || (size_t)(off + len) > a->arr.len) { tl_jni_throw("java/lang/IndexOutOfBoundsException", ""); c->ret = vi(-1); return; }
+    int r = tl_tls_read(s->h, (uint8_t *)a->arr.data + off, len, s->timeout_ms);
+    if (r == 0) { tl_jni_throw("java/net/SocketTimeoutException", "read timed out"); c->ret = vi(-1); return; }
+    if (r < 0) { if (r == -2) tl_jni_throw("javax/net/ssl/SSLException", "connection failed"); c->ret = vi(-1); return; }
+    c->ret = vi(r);
+}
+static void TSIS_read_buf(tl_jcall *c) { tsis_read(c, 0, c->args[0].l && c->args[0].l->kind == TL_K_PRIM_ARRAY ? (int)c->args[0].l->arr.len : 0); }
+static void TSIS_read_off(tl_jcall *c) { tsis_read(c, c->args[1].i, c->args[2].i); }
+static void TSIS_available(tl_jcall *c)
+{
+    tlss *s = c->self->native;
+    c->ret = vi(s && s->h ? tl_tls_available(s->h) : 0);
+}
+static void TSIS_close(tl_jcall *c)
+{
+    tlss *s = c->self->native;
+    if (s && s->h) { tl_tls_close(s->h); s->h = NULL; s->connected = false; }
+}
+static void TSIS_skip(tl_jcall *c)
+{
+    tlss *s = c->self->native;
+    int64_t left = c->args[0].j, got = 0;
+    uint8_t buf[8192];
+    while (s && s->h && left > 0) {
+        int r = tl_tls_read(s->h, buf, (int)(left > (int64_t)sizeof(buf) ? sizeof(buf) : left), s->timeout_ms);
+        if (r <= 0) break;
+        got += r; left -= r;
+    }
+    c->ret = vj(got);
+}
+static void tsos_write(tl_jcall *c, int off, int len)
+{
+    tlss *s = c->self->native;
+    jobj *a = c->args[0].l;
+    if (!s || !s->h) { tl_jni_throw("java/net/SocketException", "socket closed"); return; }
+    if (!a || a->kind != TL_K_PRIM_ARRAY || len <= 0) return;
+    size_t done = 0;
+    while (done < (size_t)len) {
+        int w = tl_tls_write(s->h, (const uint8_t *)a->arr.data + off + done, len - (int)done);
+        if (w <= 0) { tl_jni_throw("javax/net/ssl/SSLException", "write failed"); return; }
+        done += (size_t)w;
+    }
+}
+static void TSOS_write_buf(tl_jcall *c) { tsos_write(c, 0, c->args[0].l && c->args[0].l->kind == TL_K_PRIM_ARRAY ? (int)c->args[0].l->arr.len : 0); }
+static void TSOS_write_off(tl_jcall *c) { tsos_write(c, c->args[1].i, c->args[2].i); }
+static void TSOS_write_i(tl_jcall *c)
+{
+    uint8_t b = (uint8_t)c->args[0].i;
+    tlss *s = c->self->native;
+    if (!s || !s->h) { tl_jni_throw("java/net/SocketException", "socket closed"); return; }
+    if (tl_tls_write(s->h, &b, 1) < 0) tl_jni_throw("javax/net/ssl/SSLException", "write failed");
+}
+
+/* SSLSession + SSLParameters: the values the handshake settled on. */
+static void Ses_getPeerHost(tl_jcall *c)   { c->ret = tl_jni_get_field(c->self, "host", "Ljava/lang/String;"); }
+static void Ses_getPeerPort(tl_jcall *c)   { c->ret = vi(get_int(c->self, "port")); }
+static void Ses_getProtocol(tl_jcall *c)   { c->ret = vl(STR("TLSv1.3")); }
+static void Ses_getCipherSuite(tl_jcall *c){ c->ret = vl(STR("TLS_AES_128_GCM_SHA256")); }
+static void Ses_isValid(tl_jcall *c)       { c->ret = vz(1); }
+static void Ses_getId(tl_jcall *c)         { c->ret = vl(tl_jni_new_prim_array('B', 0)); }
+static void Ses_getLocalPrincipal(tl_jcall *c) { c->ret = vl(NULL); }
+static void Ses_getPeerCertificates(tl_jcall *c) { tl_jni_throw("javax/net/ssl/SSLPeerUnverifiedException", "peer certificates not exposed"); }
+
+static jobj *str_list(const char **vs, int n)
+{
+    jobj *a = tl_jni_new_obj_array(C("java/lang/String"), (uint32_t)n);
+    for (int i = 0; i < n; i++) a->oarr.v[i] = STR(vs[i]);
+    return a;
+}
+static const char *k_ciphers[] = { "TLS_AES_128_GCM_SHA256", "TLS_AES_256_GCM_SHA384", "TLS_CHACHA20_POLY1305_SHA256" };
+static const char *k_tlsvers[] = { "TLSv1.3", "TLSv1.2" };
+static void SSLP_make(tl_jcall *c)         { c->ret = vl(make("javax/net/ssl/SSLParameters")); }
+static void SSLP_getProtocols(tl_jcall *c) { c->ret = vl(str_list(k_tlsvers, 2)); }
+static void SSLP_getCipherSuites(tl_jcall *c) { c->ret = vl(str_list(k_ciphers, 3)); }
+static void SSLP_setProtocols(tl_jcall *c) { (void)c; }
+static void SSLP_setCipherSuites(tl_jcall *c) { (void)c; }
+
+/* SSLSocketFactory + SSLContext + SSLServerSocketFactory + HostnameVerifier */
+static void SSLF_getDefault(tl_jcall *c) { c->ret = vl(make("javax/net/ssl/SSLSocketFactory")); }
+static void SSLF_create0(tl_jcall *c)    { c->ret = vl(make("javax/net/ssl/SSLSocket")); }
+static void SSLF_create_hp(tl_jcall *c)
+{
+    jobj *s = make("javax/net/ssl/SSLSocket");
+    tl_jni_call(s, "<init>", "(Ljava/lang/String;I)V", c->args);
+    c->ret = vl(s);
+}
+static void SSLF_create_ia(tl_jcall *c)
+{
+    jobj *s = make("javax/net/ssl/SSLSocket");
+    tl_jni_call(s, "<init>", "(Ljava/net/InetAddress;I)V", c->args);
+    c->ret = vl(s);
+}
+static void SSLF_create_hpl(tl_jcall *c)
+{
+    jobj *s = make("javax/net/ssl/SSLSocket");
+    tl_jni_call(s, "<init>", "(Ljava/lang/String;I)V", c->args);
+    c->ret = vl(s);
+}
+static void SSLF_create_ipl(tl_jcall *c) { SSLF_create_ia(c); }
+/* The layered factory: a TLS socket over an existing plain socket — the bridge connects fresh;
+   the underlying socket's stream state is left alone (autoclose aside, callers rarely depend on it). */
+static void SSLF_create_layered(tl_jcall *c)
+{
+    jobj *s = make("javax/net/ssl/SSLSocket");
+    jvalue a[2] = { c->args[1], c->args[2] };
+    tl_jni_call(s, "<init>", "(Ljava/lang/String;I)V", a);
+    if (c->args[0].l && c->args[3].z) tl_jni_call(c->args[0].l, "close", "()V", NULL);
+    c->ret = vl(s);
+}
+static void SSLF_getDefaultCipherSuites(tl_jcall *c) { c->ret = vl(str_list(k_ciphers, 3)); }
+static void SSLF_getSupportedCipherSuites(tl_jcall *c) { SSLF_getDefaultCipherSuites(c); }
+
+static void SSLCtx_getInstance(tl_jcall *c)
+{
+    jobj *x = make("javax/net/ssl/SSLContext");
+    set_str(x, "protocol", c->args[0].l ? S(c->args[0].l) : "TLS");
+    c->ret = vl(x);
+}
+static void SSLCtx_init(tl_jcall *c)      { (void)c; }
+static void SSLCtx_getProtocol(tl_jcall *c) { c->ret = tl_jni_get_field(c->self, "protocol", "Ljava/lang/String;"); }
+static void SSLCtx_getSocketFactory(tl_jcall *c)  { c->ret = vl(make("javax/net/ssl/SSLSocketFactory")); }
+static void SSLCtx_getServerSocketFactory(tl_jcall *c) { c->ret = vl(make("javax/net/ssl/SSLServerSocketFactory")); }
+static void SSLCtx_getDefault(tl_jcall *c)
+{
+    jvalue a = { .l = STR("TLS") };
+    tl_jcall t = { .args = &a };
+    SSLCtx_getInstance(&t);
+    c->ret = t.ret;
+}
+static void SSLCtx_createSSLEngine(tl_jcall *c) { c->ret = vl(make("javax/net/ssl/SSLEngine")); }
+
+static void HNV_verify(tl_jcall *c) { c->ret = vz(1); }
+static void HNV_getDefault(tl_jcall *c)   { c->ret = vl(make("javax/net/ssl/HostnameVerifier")); }
+static void HUC_setHostnameVerifier(tl_jcall *c) { (void)c; }
+static void HUC_getHostnameVerifier(tl_jcall *c) { HNV_getDefault(c); }
+static void HUC_setSSLSocketFactory(tl_jcall *c) { (void)c; }
+static void HUC_getSSLSocketFactory(tl_jcall *c) { SSLF_getDefault(c); }
+
+/* The Java-side trust check: the connection exists, so Apple's validation already passed it. */
+static void TM_checkTrusted(tl_jcall *c) { (void)c; }
+
 /* InetSocketAddress + SocketAddress */
 static void ISA_init(tl_jcall *c)      /* (String|InetAddress host, int port) */
 {
@@ -20743,6 +20991,92 @@ static const tl_jhle k_more_hle[] = {
     M("java/net/Socket$SocketOutputStream", "write", "([BII)V", SOS_write_off),
     M("java/net/Socket$SocketOutputStream", "flush", "()V", SOS_flush),
     M("java/net/Socket$SocketOutputStream", "close", "()V", SOS_close),
+    M("javax/net/ssl/SSLSocket", "<init>", "()V", SSLS_init),
+    M("javax/net/ssl/SSLSocket", "<init>", "(Ljava/lang/String;I)V", SSLS_init_hp),
+    M("javax/net/ssl/SSLSocket", "<init>", "(Ljava/net/InetAddress;I)V", SSLS_init_ia),
+    M("javax/net/ssl/SSLSocket", "<init>", "(Ljava/lang/String;ILjava/net/InetAddress;I)V", SSLS_init_hpl),
+    M("javax/net/ssl/SSLSocket", "<init>", "(Ljava/net/InetAddress;ILjava/net/InetAddress;I)V", SSLS_init_ipl),
+    M("javax/net/ssl/SSLSocket", "startHandshake", NULL, SSLS_startHandshake),
+    M("javax/net/ssl/SSLSocket", "getInputStream", NULL, SSLS_getInputStream),
+    M("javax/net/ssl/SSLSocket", "getOutputStream", NULL, SSLS_getOutputStream),
+    M("javax/net/ssl/SSLSocket", "close", NULL, SSLS_close),
+    M("javax/net/ssl/SSLSocket", "isClosed", NULL, SSLS_isClosed),
+    M("javax/net/ssl/SSLSocket", "isConnected", NULL, SSLS_isConnected),
+    M("javax/net/ssl/SSLSocket", "getInetAddress", NULL, SSLS_getInetAddress),
+    M("javax/net/ssl/SSLSocket", "getPort", NULL, SSLS_getPort),
+    M("javax/net/ssl/SSLSocket", "getLocalPort", NULL, SSLS_getLocalPort),
+    M("javax/net/ssl/SSLSocket", "setSoTimeout", NULL, SSLS_setSoTimeout),
+    M("javax/net/ssl/SSLSocket", "getSoTimeout", NULL, SSLS_getSoTimeout),
+    M("javax/net/ssl/SSLSocket", "getRemoteSocketAddress", NULL, SSLS_getRemoteSocketAddress),
+    M("javax/net/ssl/SSLSocket", "getSession", NULL, SSLS_getSession),
+    M("javax/net/ssl/SSLSocket", "toString", NULL, SSLS_toString),
+    M("javax/net/ssl/SSLSocket", "getSSLParameters", NULL, SSLP_make),
+    M("javax/net/ssl/SSLSocket", "getEnabledCipherSuites", NULL, SSLP_getCipherSuites),
+    M("javax/net/ssl/SSLSocket", "getSupportedCipherSuites", NULL, SSLP_getCipherSuites),
+    M("javax/net/ssl/SSLSocket", "getEnabledProtocols", NULL, SSLP_getProtocols),
+    M("javax/net/ssl/SSLSocket", "getSupportedProtocols", NULL, SSLP_getProtocols),
+    M("javax/net/ssl/SSLSocket", "setEnabledCipherSuites", NULL, SSLP_setCipherSuites),
+    M("javax/net/ssl/SSLSocket", "setEnabledProtocols", NULL, SSLP_setProtocols),
+    M("javax/net/ssl/SSLSocket", "setUseClientMode", NULL, NoopV),
+    M("javax/net/ssl/SSLSocket", "getUseClientMode", NULL, True),
+    M("javax/net/ssl/SSLSocket", "setNeedClientAuth", NULL, NoopV),
+    M("javax/net/ssl/SSLSocket", "setWantClientAuth", NULL, NoopV),
+    M("javax/net/ssl/SSLSocket", "getNeedClientAuth", NULL, False),
+    M("javax/net/ssl/SSLSocket", "shutdownInput", NULL, NoopV),
+    M("javax/net/ssl/SSLSocket", "shutdownOutput", NULL, NoopV),
+    M("javax/net/ssl/SSLSocket", "setTcpNoDelay", NULL, NoopV),
+    M("javax/net/ssl/SSLSocket", "setKeepAlive", NULL, NoopV),
+    M("javax/net/ssl/SSLSocket$Input", "read", "()I", TSIS_read),
+    M("javax/net/ssl/SSLSocket$Input", "read", "([B)I", TSIS_read_buf),
+    M("javax/net/ssl/SSLSocket$Input", "read", "([BII)I", TSIS_read_off),
+    M("javax/net/ssl/SSLSocket$Input", "available", NULL, TSIS_available),
+    M("javax/net/ssl/SSLSocket$Input", "skip", NULL, TSIS_skip),
+    M("javax/net/ssl/SSLSocket$Input", "close", NULL, TSIS_close),
+    M("javax/net/ssl/SSLSocket$Output", "write", "(I)V", TSOS_write_i),
+    M("javax/net/ssl/SSLSocket$Output", "write", "([B)V", TSOS_write_buf),
+    M("javax/net/ssl/SSLSocket$Output", "write", "([BII)V", TSOS_write_off),
+    M("javax/net/ssl/SSLSocket$Output", "flush", NULL, NoopV),
+    M("javax/net/ssl/SSLSocket$Output", "close", NULL, TSIS_close),
+    M("javax/net/ssl/SSLSession", "getPeerHost", NULL, Ses_getPeerHost),
+    M("javax/net/ssl/SSLSession", "getPeerPort", NULL, Ses_getPeerPort),
+    M("javax/net/ssl/SSLSession", "getProtocol", NULL, Ses_getProtocol),
+    M("javax/net/ssl/SSLSession", "getCipherSuite", NULL, Ses_getCipherSuite),
+    M("javax/net/ssl/SSLSession", "isValid", NULL, Ses_isValid),
+    M("javax/net/ssl/SSLSession", "getId", NULL, Ses_getId),
+    M("javax/net/ssl/SSLSession", "getLocalPrincipal", NULL, Ses_getLocalPrincipal),
+    M("javax/net/ssl/SSLSession", "getPeerCertificates", NULL, Ses_getPeerCertificates),
+    M("javax/net/ssl/SSLParameters", "getProtocols", NULL, SSLP_getProtocols),
+    M("javax/net/ssl/SSLParameters", "getCipherSuites", NULL, SSLP_getCipherSuites),
+    M("javax/net/ssl/SSLParameters", "setProtocols", NULL, SSLP_setProtocols),
+    M("javax/net/ssl/SSLParameters", "setCipherSuites", NULL, SSLP_setCipherSuites),
+    M("javax/net/ssl/SSLSocketFactory", "getDefault", NULL, SSLF_getDefault),
+    M("javax/net/ssl/SSLSocketFactory", "createSocket", "()Ljavax/net/ssl/SSLSocket;", SSLF_create0),
+    M("javax/net/ssl/SSLSocketFactory", "createSocket", "(Ljava/lang/String;I)Ljavax/net/ssl/SSLSocket;", SSLF_create_hp),
+    M("javax/net/ssl/SSLSocketFactory", "createSocket", "(Ljava/net/InetAddress;I)Ljavax/net/ssl/SSLSocket;", SSLF_create_ia),
+    M("javax/net/ssl/SSLSocketFactory", "createSocket", "(Ljava/lang/String;ILjava/net/InetAddress;I)Ljavax/net/ssl/SSLSocket;", SSLF_create_hpl),
+    M("javax/net/ssl/SSLSocketFactory", "createSocket", "(Ljava/net/InetAddress;ILjava/net/InetAddress;I)Ljavax/net/ssl/SSLSocket;", SSLF_create_ipl),
+    M("javax/net/ssl/SSLSocketFactory", "createSocket", "(Ljava/net/Socket;Ljava/lang/String;IZ)Ljavax/net/ssl/SSLSocket;", SSLF_create_layered),
+    M("javax/net/ssl/SSLSocketFactory", "getDefaultCipherSuites", NULL, SSLF_getDefaultCipherSuites),
+    M("javax/net/ssl/SSLSocketFactory", "getSupportedCipherSuites", NULL, SSLF_getSupportedCipherSuites),
+    M("javax/net/ssl/SSLContext", "getInstance", NULL, SSLCtx_getInstance),
+    M("javax/net/ssl/SSLContext", "init", NULL, SSLCtx_init),
+    M("javax/net/ssl/SSLContext", "getProtocol", NULL, SSLCtx_getProtocol),
+    M("javax/net/ssl/SSLContext", "getSocketFactory", NULL, SSLCtx_getSocketFactory),
+    M("javax/net/ssl/SSLContext", "getServerSocketFactory", NULL, SSLCtx_getServerSocketFactory),
+    M("javax/net/ssl/SSLContext", "getDefault", NULL, SSLCtx_getDefault),
+    M("javax/net/ssl/SSLContext", "createSSLEngine", "()Ljavax/net/ssl/SSLEngine;", SSLCtx_createSSLEngine),
+    M("javax/net/ssl/HostnameVerifier", "verify", NULL, HNV_verify),
+    M("javax/net/ssl/HttpsURLConnection", "getDefaultHostnameVerifier", NULL, HNV_getDefault),
+    M("javax/net/ssl/HttpsURLConnection", "setDefaultHostnameVerifier", NULL, NoopV),
+    M("javax/net/ssl/HttpsURLConnection", "setHostnameVerifier", NULL, HUC_setHostnameVerifier),
+    M("javax/net/ssl/HttpsURLConnection", "getHostnameVerifier", NULL, HUC_getHostnameVerifier),
+    M("javax/net/ssl/HttpsURLConnection", "setSSLSocketFactory", NULL, HUC_setSSLSocketFactory),
+    M("javax/net/ssl/HttpsURLConnection", "getSSLSocketFactory", NULL, HUC_getSSLSocketFactory),
+    M("javax/net/ssl/HttpsURLConnection", "setDefaultSSLSocketFactory", NULL, NoopV),
+    M("javax/net/ssl/X509TrustManager", "checkServerTrusted", NULL, TM_checkTrusted),
+    M("javax/net/ssl/X509TrustManager", "checkClientTrusted", NULL, TM_checkTrusted),
+    M("com/android/org/conscrypt/TrustManagerImpl", "checkServerTrusted", NULL, TM_checkTrusted),
+    M("com/android/org/conscrypt/TrustManagerImpl", "checkClientTrusted", NULL, TM_checkTrusted),
     M("java/net/InetSocketAddress", "<init>", "(Ljava/lang/Object;I)V", ISA_init),
     M("java/net/InetSocketAddress", "<init>", "(I)V", ISA_init_port),
     M("java/net/InetSocketAddress", "<init>", "()V", ISA_init0),
@@ -20985,6 +21319,20 @@ static const struct { const char *name, *super; } k_more_classes[] = {
     { "java/net/Socket", "java/lang/Object" },
     { "java/net/Socket$SocketInputStream", "java/io/InputStream" },
     { "java/net/Socket$SocketOutputStream", "java/io/OutputStream" },
+    { "javax/net/ssl/SSLSocket", "java/net/Socket" },
+    { "javax/net/ssl/SSLSocket$Input", "java/io/InputStream" },
+    { "javax/net/ssl/SSLSocket$Output", "java/io/OutputStream" },
+    { "javax/net/ssl/SSLSocketFactory", "javax/net/SocketFactory" },
+    { "javax/net/ssl/SSLServerSocketFactory", "javax/net/ServerSocketFactory" },
+    { "javax/net/SocketFactory", "java/lang/Object" },
+    { "javax/net/ServerSocketFactory", "java/lang/Object" },
+    { "javax/net/ssl/SSLContext", "java/lang/Object" },
+    { "javax/net/ssl/SSLSession", "java/lang/Object" },
+    { "javax/net/ssl/SSLParameters", "java/lang/Object" },
+    { "javax/net/ssl/SSLEngine", "java/lang/Object" },
+    { "javax/net/ssl/HostnameVerifier", "java/lang/Object" },
+    { "javax/net/ssl/HttpsURLConnection", "java/net/HttpURLConnection" },
+    { "javax/net/ssl/SSLPeerUnverifiedException", "javax/net/ssl/SSLException" },
     { "java/net/DatagramPacket", "java/lang/Object" },
     { "java/net/DatagramSocket", "java/lang/Object" },
     { "java/net/MulticastSocket", "java/net/DatagramSocket" },

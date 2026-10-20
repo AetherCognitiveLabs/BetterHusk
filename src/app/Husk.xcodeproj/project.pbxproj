@@ -1331,6 +1331,8 @@
 					Accelerate,
 					"-framework",
 					Security,
+					"-framework",
+					Network,
 					"-lhusk_rppairing",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "$(HUSK_BUNDLE_IDENTIFIER)";
@@ -1409,6 +1411,8 @@
 					Accelerate,
 					"-framework",
 					Security,
+					"-framework",
+					Network,
 					"-lhusk_rppairing",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "$(HUSK_BUNDLE_IDENTIFIER)";
