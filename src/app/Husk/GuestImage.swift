@@ -1452,6 +1452,8 @@ private final class SnapshotFetcher {
 
     func wrote(_ downloadTask: URLSessionDownloadTask,
                totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
+        // A stale part reporting bytes is not progress on the part being fetched now.
+        guard downloadTask.taskDescription == "part-\(index)" else { return }
         // The parts are near enough the same size that one of them stands in for
         // the rest; the alternative is a HEAD request per part before starting,
         // which buys a smoother bar and nothing else.
@@ -1463,6 +1465,8 @@ private final class SnapshotFetcher {
     }
 
     func completed(_ task: URLSessionTask, error: Error?) {
+        // A stale task's error is its own business -- it must not kill the part in flight now.
+        guard task.taskDescription == "part-\(index)" else { return }
         if let error, (error as NSError).code != NSURLErrorCancelled {
             fail(error.localizedDescription)
         }
