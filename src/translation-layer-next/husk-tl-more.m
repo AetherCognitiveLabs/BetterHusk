@@ -16,6 +16,8 @@
 #include <string.h>
 #include <unistd.h>
 
+#import <CoreText/CoreText.h>
+#import <CoreGraphics/CoreGraphics.h>
 #if TARGET_OS_IPHONE
 #import <UIKit/UIKit.h>
 #import <AVFoundation/AVFoundation.h>
@@ -266,6 +268,120 @@ int tl_more_decode_image_mem(const void *data, size_t n, int *w, int *h, void **
     int ok = decode_into(prov, w, h, out);
     CGDataProviderRelease(prov);
     return ok;
+}
+
+/* ---------------------------------------------------------- Canvas bridge */
+/* android.graphics.Canvas on top of a CGBitmapContext wrapped around the
+ * Bitmap's own pixels: save/restore/clip/transform are native CG state. */
+static pthread_mutex_t g_cv_lock = PTHREAD_MUTEX_INITIALIZER;
+static NSMutableDictionary<NSNumber *, NSValue *> *g_cv;
+static _Atomic int g_cv_next = 1;
+
+int tl_canvas_new(void *pixels, int w, int h)
+{
+    if (!pixels || w <= 0 || h <= 0) return 0;
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    CGContextRef ctx = CGBitmapContextCreate(pixels, (size_t)w, (size_t)h, 8, (size_t)w * 4, cs,
+        (CGBitmapInfo)kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+    CGColorSpaceRelease(cs);
+    if (!ctx) return 0;
+    pthread_mutex_lock(&g_cv_lock);
+    if (!g_cv) g_cv = [NSMutableDictionary new];
+    int id = g_cv_next++;
+    g_cv[@(id)] = [NSValue valueWithPointer:ctx];
+    pthread_mutex_unlock(&g_cv_lock);
+    return id;
+}
+static CGContextRef cv_ctx(int id)
+{
+    pthread_mutex_lock(&g_cv_lock);
+    NSValue *v = g_cv ? g_cv[@(id)] : nil;
+    pthread_mutex_unlock(&g_cv_lock);
+    return v ? (CGContextRef)v.pointerValue : NULL;
+}
+void tl_canvas_free(int id)
+{
+    pthread_mutex_lock(&g_cv_lock);
+    NSValue *v = g_cv ? g_cv[@(id)] : nil;
+    if (v) { [g_cv removeObjectForKey:@(id)]; CGContextRelease((CGContextRef)v.pointerValue); }
+    pthread_mutex_unlock(&g_cv_lock);
+}
+static CGFloat cv_r(uint32_t c) { return ((c >> 16) & 255) / 255.f; }
+static CGFloat cv_g(uint32_t c) { return ((c >> 8) & 255) / 255.f; }
+static CGFloat cv_b(uint32_t c) { return (c & 255) / 255.f; }
+static CGFloat cv_a(uint32_t c) { return (c >> 24) / 255.f; }
+void tl_canvas_fill_rect(int id, float l, float t, float r, float b, uint32_t argb)
+{
+    CGContextRef x = cv_ctx(id); if (!x) return;
+    CGContextSetRGBFillColor(x, cv_r(argb), cv_g(argb), cv_b(argb), cv_a(argb));
+    CGContextFillRect(x, CGRectMake(l, t, r - l, b - t));
+}
+void tl_canvas_stroke_rect(int id, float l, float t, float r, float b, uint32_t argb, float width)
+{
+    CGContextRef x = cv_ctx(id); if (!x) return;
+    CGContextSetRGBStrokeColor(x, cv_r(argb), cv_g(argb), cv_b(argb), cv_a(argb));
+    CGContextSetLineWidth(x, width);
+    CGContextStrokeRect(x, CGRectMake(l, t, r - l, b - t));
+}
+void tl_canvas_line(int id, float x1, float y1, float x2, float y2, uint32_t argb, float width)
+{
+    CGContextRef x = cv_ctx(id); if (!x) return;
+    CGContextSetRGBStrokeColor(x, cv_r(argb), cv_g(argb), cv_b(argb), cv_a(argb));
+    CGContextSetLineWidth(x, width);
+    CGContextMoveToPoint(x, x1, y1); CGContextAddLineToPoint(x, x2, y2);
+    CGContextStrokePath(x);
+}
+void tl_canvas_oval(int id, float l, float t, float r, float b, uint32_t argb, int fill, float width)
+{
+    CGContextRef x = cv_ctx(id); if (!x) return;
+    CGRect rc = CGRectMake(l, t, r - l, b - t);
+    if (fill) { CGContextSetRGBFillColor(x, cv_r(argb), cv_g(argb), cv_b(argb), cv_a(argb)); CGContextFillEllipseInRect(x, rc); }
+    else { CGContextSetRGBStrokeColor(x, cv_r(argb), cv_g(argb), cv_b(argb), cv_a(argb)); CGContextSetLineWidth(x, width); CGContextStrokeEllipseInRect(x, rc); }
+}
+static CGColorRef cv_color(uint32_t argb)
+{
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    CGFloat c[4] = { cv_r(argb), cv_g(argb), cv_b(argb), cv_a(argb) };
+    CGColorRef col = CGColorCreate(cs, c);
+    CGColorSpaceRelease(cs);
+    return col;
+}
+void tl_canvas_text(int id, const char *s, float x0, float y0, float size, uint32_t argb, int bold)
+{
+    CGContextRef x = cv_ctx(id); if (!x || !s) return;
+    CTFontRef f = CTFontCreateWithName(bold ? CFSTR("Helvetica-Bold") : CFSTR("Helvetica"), size, NULL);
+    if (!f) return;
+    CGColorRef col = cv_color(argb);
+    NSDictionary *attrs = @{ (id)kCTFontAttributeName: (__bridge id)f,
+        (id)kCTForegroundColorAttributeName: (__bridge id)col };
+    NSAttributedString *as = [[NSAttributedString alloc] initWithString:@(s) attributes:attrs];
+    CTLineRef line = CTLineCreateWithAttributedString((__bridge CFAttributedStringRef)as);
+    CGContextSetTextMatrix(x, CGAffineTransformIdentity);
+    /* CG text draws in flipped space for bitmap contexts */
+    CGContextSaveGState(x);
+    CGContextSetTextPosition(x, x0, CGContextGetClipBoundingBox(x).size.height - y0);
+    CTLineDraw(line, x);
+    CGContextRestoreGState(x);
+    CFRelease(line); CFRelease(f); CGColorRelease(col);
+}
+void tl_canvas_blit(int id, const void *src, int sw, int sh, float dx, float dy, float dw, float dh)
+{
+    CGContextRef x = cv_ctx(id); if (!x || !src) return;
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    CGDataProviderRef p = CGDataProviderCreateWithData(NULL, src, (size_t)sw * sh * 4, NULL);
+    CGImageRef img = CGImageCreate((size_t)sw, (size_t)sh, 8, 32, (size_t)sw * 4, cs,
+        (CGBitmapInfo)kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big, p, NULL, false, kCGRenderingIntentDefault);
+    CGColorSpaceRelease(cs); CGDataProviderRelease(p);
+    if (img) { CGContextDrawImage(x, CGRectMake(dx, dy, dw, dh), img); CGImageRelease(img); }
+}
+void tl_canvas_save(int id)        { CGContextRef x = cv_ctx(id); if (x) CGContextSaveGState(x); }
+void tl_canvas_restore(int id)     { CGContextRef x = cv_ctx(id); if (x) CGContextRestoreGState(x); }
+void tl_canvas_translate(int id, float dx, float dy) { CGContextRef x = cv_ctx(id); if (x) CGContextTranslateCTM(x, dx, dy); }
+void tl_canvas_scale(int id, float sx, float sy)     { CGContextRef x = cv_ctx(id); if (x) CGContextScaleCTM(x, sx, sy); }
+void tl_canvas_rotate(int id, float deg)             { CGContextRef x = cv_ctx(id); if (x) CGContextRotateCTM(x, deg * M_PI / 180.0); }
+void tl_canvas_clip(int id, float l, float t, float r, float b)
+{
+    CGContextRef x = cv_ctx(id); if (x) CGContextClipToRect(x, CGRectMake(l, t, r - l, b - t));
 }
 
 /* ------------------------------------------------------- MediaPlayer pool */

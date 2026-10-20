@@ -12539,6 +12539,174 @@ static void BM_eraseColor(tl_jcall *c)
 }
 static void BM_compress(tl_jcall *c) { (void)c; c->ret = vz(0); }
 
+/* ---- android.graphics.Canvas: real drawing into Bitmap pixels via CG ----
+ * Games and libs do `new Canvas(bitmap)` then drawColor/drawRect/drawText/
+ * drawBitmap. With the persistent CGBitmapContext the whole state stack
+ * (save/restore/clip/transforms) works for free. */
+int tl_canvas_new(void *pixels, int w, int h);
+void tl_canvas_free(int id);
+void tl_canvas_fill_rect(int id, float l, float t, float r, float b, uint32_t argb);
+void tl_canvas_stroke_rect(int id, float l, float t, float r, float b, uint32_t argb, float w);
+void tl_canvas_line(int id, float x1, float y1, float x2, float y2, uint32_t argb, float w);
+void tl_canvas_oval(int id, float l, float t, float r, float b, uint32_t argb, int fill, float w);
+void tl_canvas_text(int id, const char *s, float x, float y, float size, uint32_t argb, int bold);
+void tl_canvas_blit(int id, const void *src, int sw, int sh, float dx, float dy, float dw, float dh);
+void tl_canvas_save(int id);
+void tl_canvas_restore(int id);
+void tl_canvas_translate(int id, float dx, float dy);
+void tl_canvas_scale(int id, float sx, float sy);
+void tl_canvas_rotate(int id, float deg);
+void tl_canvas_clip(int id, float l, float t, float r, float b);
+
+typedef struct { int cg; jobj *bmp; bmpx *p; } cvx;
+static cvx *cvx_of(jobj *o) { if (!o->native) o->native = calloc(1, sizeof(cvx)); return o->native; }
+
+static uint32_t paint_argb(jobj *p) { return p ? (uint32_t)get_int(p, "color") : 0xFF000000u; }
+static float    paint_sw(jobj *p)   { float f = p ? get_flt(p, "strokeWidth") : 0; return f > 0 ? f : 1.0f; }
+static int      paint_fill(jobj *p) { return !p || get_int(p, "style") != 1; }  /* STROKE=1 */
+
+static void Cvs_init(tl_jcall *c) { (void)c; }
+static void Cvs_init_bmp(tl_jcall *c)
+{
+    jobj *b = c->args[0].l;
+    cvx *v = cvx_of(c->self);
+    if (!b) return;
+    v->p = bmpx_of(b);
+    v->bmp = tl_jni_ref(b);
+    if (v->p->px) v->cg = tl_canvas_new(v->p->px, v->p->w, v->p->h);
+}
+static void Cvs_release(tl_jcall *c)
+{
+    cvx *v = cvx_of(c->self);
+    if (v->cg) { tl_canvas_free(v->cg); v->cg = 0; }
+}
+static void Cvs_drawColor(tl_jcall *c)
+{
+    cvx *v = cvx_of(c->self);
+    if (v->cg && v->p) tl_canvas_fill_rect(v->cg, 0, 0, (float)v->p->w, (float)v->p->h, (uint32_t)c->args[0].i);
+}
+static void Cvs_drawARGB(tl_jcall *c)
+{
+    cvx *v = cvx_of(c->self);
+    uint32_t col = ((uint32_t)c->args[0].i << 24) | ((uint32_t)c->args[1].i << 16) |
+                   ((uint32_t)c->args[2].i << 8) | (uint32_t)c->args[3].i;
+    if (v->cg && v->p) tl_canvas_fill_rect(v->cg, 0, 0, (float)v->p->w, (float)v->p->h, col);
+}
+static void Cvs_drawRect(tl_jcall *c)     /* (l, t, r, b, Paint) */
+{
+    cvx *v = cvx_of(c->self); if (!v->cg) return;
+    jobj *p = c->args[4].l;
+    float l = c->args[0].f, t = c->args[1].f, r = c->args[2].f, b = c->args[3].f;
+    if (paint_fill(p)) tl_canvas_fill_rect(v->cg, l, t, r, b, paint_argb(p));
+    else               tl_canvas_stroke_rect(v->cg, l, t, r, b, paint_argb(p), paint_sw(p));
+}
+static void Cvs_drawRect_obj(tl_jcall *c) /* (Rect|RectF, Paint) */
+{
+    cvx *v = cvx_of(c->self); if (!v->cg) return;
+    jobj *rc = c->args[0].l, *p = c->args[1].l;
+    if (!rc) return;
+    float l = (float)get_int(rc, "left"), t = (float)get_int(rc, "top"),
+          r = (float)get_int(rc, "right"), b = (float)get_int(rc, "bottom");
+    if (paint_fill(p)) tl_canvas_fill_rect(v->cg, l, t, r, b, paint_argb(p));
+    else               tl_canvas_stroke_rect(v->cg, l, t, r, b, paint_argb(p), paint_sw(p));
+}
+static void Cvs_drawLine(tl_jcall *c)     /* (x1, y1, x2, y2, Paint) */
+{
+    cvx *v = cvx_of(c->self); if (!v->cg) return;
+    jobj *p = c->args[4].l;
+    tl_canvas_line(v->cg, c->args[0].f, c->args[1].f, c->args[2].f, c->args[3].f, paint_argb(p), paint_sw(p));
+}
+static void Cvs_drawPoint(tl_jcall *c)    /* (x, y, Paint) */
+{
+    cvx *v = cvx_of(c->self); if (!v->cg) return;
+    jobj *p = c->args[2].l;
+    float w = paint_sw(p);
+    tl_canvas_fill_rect(v->cg, c->args[0].f - w / 2, c->args[1].f - w / 2,
+                        c->args[0].f + w / 2, c->args[1].f + w / 2, paint_argb(p));
+}
+static void Cvs_drawCircle(tl_jcall *c)   /* (cx, cy, r, Paint) */
+{
+    cvx *v = cvx_of(c->self); if (!v->cg) return;
+    jobj *p = c->args[3].l; float r = c->args[2].f;
+    tl_canvas_oval(v->cg, c->args[0].f - r, c->args[1].f - r,
+                   c->args[0].f + r, c->args[1].f + r, paint_argb(p), paint_fill(p), paint_sw(p));
+}
+static void Cvs_drawOval(tl_jcall *c)     /* (RectF, Paint) */
+{
+    cvx *v = cvx_of(c->self); if (!v->cg) return;
+    jobj *rc = c->args[0].l, *p = c->args[1].l;
+    if (!rc) return;
+    tl_canvas_oval(v->cg, (float)get_int(rc, "left"), (float)get_int(rc, "top"),
+                   (float)get_int(rc, "right"), (float)get_int(rc, "bottom"),
+                   paint_argb(p), paint_fill(p), paint_sw(p));
+}
+static void Cvs_drawText(tl_jcall *c)     /* (String, x, y, Paint) */
+{
+    cvx *v = cvx_of(c->self); if (!v->cg || !c->args[0].l) return;
+    jobj *p = c->args[3].l;
+    float ts = p ? get_flt(p, "textSize") : 0; if (ts <= 0) ts = 12.0f;
+    tl_canvas_text(v->cg, S(c->args[0].l), c->args[1].f, c->args[2].f,
+                   ts, paint_argb(p), p ? get_int(p, "fakeBold") : 0);
+}
+static void Cvs_drawTextChars(tl_jcall *c) /* (char[], idx, count, x, y, Paint) */
+{
+    cvx *v = cvx_of(c->self); if (!v->cg || !c->args[0].l) return;
+    jobj *a = c->args[0].l;
+    if (a->kind != TL_K_PRIM_ARRAY) return;
+    int idx = c->args[1].i, cnt = c->args[2].i;
+    char *s = malloc((size_t)cnt + 1);
+    uint16_t *ch = a->arr.data;
+    for (int i = 0; i < cnt; i++) s[i] = (char)(ch[idx + i] < 128 ? ch[idx + i] : '?');
+    s[cnt] = 0;
+    jobj *p = c->args[5].l;
+    float ts = p ? get_flt(p, "textSize") : 0; if (ts <= 0) ts = 12.0f;
+    tl_canvas_text(v->cg, s, c->args[3].f, c->args[4].f, ts, paint_argb(p), p ? get_int(p, "fakeBold") : 0);
+    free(s);
+}
+static void Cvs_drawBitmap(tl_jcall *c)   /* (Bitmap, x, y, Paint) */
+{
+    cvx *v = cvx_of(c->self); if (!v->cg || !c->args[0].l) return;
+    bmpx *src = bmpx_of(c->args[0].l);
+    if (!src->px) return;
+    tl_canvas_blit(v->cg, src->px, src->w, src->h,
+                   c->args[1].f, c->args[2].f, (float)src->w, (float)src->h);
+}
+static void Cvs_drawBitmap_rect(tl_jcall *c) /* (Bitmap, Rect src, RectF dst, Paint) */
+{
+    cvx *v = cvx_of(c->self); if (!v->cg || !c->args[0].l || !c->args[2].l) return;
+    bmpx *src = bmpx_of(c->args[0].l); jobj *d = c->args[2].l;
+    if (!src->px) return;
+    tl_canvas_blit(v->cg, src->px, src->w, src->h,
+                   (float)get_int(d, "left"), (float)get_int(d, "top"),
+                   (float)(get_int(d, "right") - get_int(d, "left")),
+                   (float)(get_int(d, "bottom") - get_int(d, "top")));
+}
+static void Cvs_save(tl_jcall *c)      { cvx *v = cvx_of(c->self); if (v->cg) tl_canvas_save(v->cg); c->ret = vi(1); }
+static void Cvs_restore(tl_jcall *c)   { cvx *v = cvx_of(c->self); if (v->cg) tl_canvas_restore(v->cg); }
+static void Cvs_translate(tl_jcall *c) { cvx *v = cvx_of(c->self); if (v->cg) tl_canvas_translate(v->cg, c->args[0].f, c->args[1].f); }
+static void Cvs_scale(tl_jcall *c)     { cvx *v = cvx_of(c->self); if (v->cg) tl_canvas_scale(v->cg, c->args[0].f, c->args[1].f); }
+static void Cvs_rotate(tl_jcall *c)    { cvx *v = cvx_of(c->self); if (v->cg) tl_canvas_rotate(v->cg, c->args[0].f); }
+static void Cvs_clipRect(tl_jcall *c)  /* (l, t, r, b) float overload */
+{
+    cvx *v = cvx_of(c->self); if (!v->cg) return;
+    tl_canvas_clip(v->cg, c->args[0].f, c->args[1].f, c->args[2].f, c->args[3].f);
+    c->ret = vz(1);
+}
+static void Cvs_clipRect_i(tl_jcall *c) /* (l, t, r, b) int overload */
+{
+    cvx *v = cvx_of(c->self); if (!v->cg) return;
+    tl_canvas_clip(v->cg, (float)c->args[0].i, (float)c->args[1].i,
+                   (float)c->args[2].i, (float)c->args[3].i);
+    c->ret = vz(1);
+}
+static void Cvs_restoreToCount(tl_jcall *c)
+{
+    cvx *v = cvx_of(c->self); if (!v->cg) return;
+    for (int i = c->args[0].i; i > 0; i--) tl_canvas_restore(v->cg);
+}
+static void Cvs_getWidth(tl_jcall *c)  { cvx *v = cvx_of(c->self); c->ret = vi(v->p ? v->p->w : 0); }
+static void Cvs_getHeight(tl_jcall *c) { cvx *v = cvx_of(c->self); c->ret = vi(v->p ? v->p->h : 0); }
+
 /* ---- java.util.zip: real zlib inflate/deflate ----
  * OkHttp transparently gzips; APK assets and bundled config are deflate.
  * Every networking library dies without InflaterInputStream. */
@@ -18883,7 +19051,7 @@ static const tl_jhle k_more_hle[] = {
     M("android/database/CrossProcessCursorWrapper", "respond", NULL, Cur_respond),
     M("android/database/CrossProcessCursorWrapper", "copyStringToBuffer", NULL, Cur_copyStringToBuffer),
 
-    M("android/content/ContentValues", "<init>", "()V", CV_init),
+    M("android/content/ContentValues", "<init>", "()V", Cvs_init),
     M("android/content/ContentValues", "<init>", "(Ljava/lang/Object;)V", CV_init_copy),
     M("android/content/ContentValues", "put", "(Ljava/lang/Object;Ljava/lang/Object;)V", CV_put),
     M("android/content/ContentValues", "get", "(Ljava/lang/Object;)Ljava/lang/Object;", CV_get),
@@ -19235,6 +19403,31 @@ static const tl_jhle k_more_hle[] = {
     M("android/graphics/Bitmap", "createScaledBitmap", "(Ljava/lang/Object;IIZ)Ljava/lang/Object;", BM_createScaled),
     M("android/graphics/Bitmap", "eraseColor", "(I)V", BM_eraseColor),
     M("android/graphics/Bitmap", "compress", "(Ljava/lang/Object;ILjava/lang/Object;)Z", BM_compress),
+    M("android/graphics/Canvas", "<init>", "()V", Cvs_init),
+    M("android/graphics/Canvas", "<init>", "(Ljava/lang/Object;)V", Cvs_init_bmp),
+    M("android/graphics/Canvas", "release", "()V", Cvs_release),
+    M("android/graphics/Canvas", "drawColor", "(I)V", Cvs_drawColor),
+    M("android/graphics/Canvas", "drawARGB", "(IIII)V", Cvs_drawARGB),
+    M("android/graphics/Canvas", "drawRect", "(FFFFLjava/lang/Object;)V", Cvs_drawRect),
+    M("android/graphics/Canvas", "drawRect", "(Ljava/lang/Object;Ljava/lang/Object;)V", Cvs_drawRect_obj),
+    M("android/graphics/Canvas", "drawLine", "(FFFFLjava/lang/Object;)V", Cvs_drawLine),
+    M("android/graphics/Canvas", "drawPoint", "(FFLjava/lang/Object;)V", Cvs_drawPoint),
+    M("android/graphics/Canvas", "drawCircle", "(FFFLjava/lang/Object;)V", Cvs_drawCircle),
+    M("android/graphics/Canvas", "drawOval", "(Ljava/lang/Object;Ljava/lang/Object;)V", Cvs_drawOval),
+    M("android/graphics/Canvas", "drawText", "(Ljava/lang/String;FFLjava/lang/Object;)V", Cvs_drawText),
+    M("android/graphics/Canvas", "drawText", "([CIIFFLjava/lang/Object;)V", Cvs_drawTextChars),
+    M("android/graphics/Canvas", "drawBitmap", "(Ljava/lang/Object;FFLjava/lang/Object;)V", Cvs_drawBitmap),
+    M("android/graphics/Canvas", "drawBitmap", "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)V", Cvs_drawBitmap_rect),
+    M("android/graphics/Canvas", "save", "()I", Cvs_save),
+    M("android/graphics/Canvas", "restore", "()V", Cvs_restore),
+    M("android/graphics/Canvas", "restoreToCount", "(I)V", Cvs_restoreToCount),
+    M("android/graphics/Canvas", "translate", "(FF)V", Cvs_translate),
+    M("android/graphics/Canvas", "scale", "(FF)V", Cvs_scale),
+    M("android/graphics/Canvas", "rotate", "(F)V", Cvs_rotate),
+    M("android/graphics/Canvas", "clipRect", "(FFFF)Z", Cvs_clipRect),
+    M("android/graphics/Canvas", "clipRect", "(IIII)Z", Cvs_clipRect_i),
+    M("android/graphics/Canvas", "getWidth", "()I", Cvs_getWidth),
+    M("android/graphics/Canvas", "getHeight", "()I", Cvs_getHeight),
     { NULL, NULL, NULL, NULL }
 };
 
@@ -19295,6 +19488,7 @@ static const struct { const char *name, *super; } k_more_classes[] = {
     { "java/util/zip/GZIPOutputStream", "java/util/zip/DeflaterOutputStream" },
     { "java/util/zip/DataFormatException", "java/lang/Exception" },
     { "android/graphics/Bitmap", "java/lang/Object" },
+    { "android/graphics/Canvas", "java/lang/Object" },
     { "android/graphics/Bitmap$Config", "java/lang/Enum" },
     { "android/graphics/BitmapFactory", "java/lang/Object" },
     { "java/net/ConnectException", "java/net/SocketException" },
