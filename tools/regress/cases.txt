@@ -19,3 +19,5 @@ mousepounce-java | javaapp-test | fdroid:com.dozingcatsoftware.mouse_pounce_10  
 pysolfc-java | javaapp-test | fdroid:org.lufebe16.pysolfc_102130601                    | 45 | 1748 804 | TL_PACKAGE=org.lufebe16.pysolfc TL_FRAMEWORK=$R/build/java-runtime/husk-framework.dex |
 catashoot-jit | javaapp-test | fdroid:org.xolatgames.catashoot_6                        | 30 | 1748 804 | TL_PACKAGE=org.xolatgames.catashoot TL_PHONE_JIT=1 TL_FRAMEWORK=$R/build/java-runtime/husk-framework.dex |
 vectorpinball | javaapp-test | fdroid:com.dozingcatsoftware.bouncy_43                  | 20 | 804 1748 | TL_PACKAGE=com.dozingcatsoftware.bouncy TL_FRAMEWORK=$R/build/java-runtime/husk-framework.dex |
+shattered   | javaapp-test | fdroid:com.shatteredpixel.shatteredpixeldungeon_922   | 40 | 804 1748 | TL_PACKAGE=com.shatteredpixel.shatteredpixeldungeon TL_FRAMEWORK=$R/build/java-runtime/husk-framework.dex |
+mindustry   | javaapp-test | fdroid:io.anuke.mindustry_1115                        | 60 | 804 1748 | TL_PACKAGE=io.anuke.mindustry TL_FRAMEWORK=$R/build/java-runtime/husk-framework.dex |
