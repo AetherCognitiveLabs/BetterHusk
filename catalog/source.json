@@ -8,7 +8,8 @@
       "version": "1.21.0",
       "downloadURL": "https://f-droid.org/F-Droid.apk",
       "iconURL": "https://f-droid.org/repo/org.fdroid.fdroid/en-US/icon_Qn89D6m2Hn4p_wO89v3z-iR7mPz5E0l9iA7xJmB7U_E=.png",
-      "localizedDescription": "F-Droid is an installable catalogue of FOSS (Free and Open Source Software) applications for the Android platform."
+      "localizedDescription": "F-Droid is an installable catalogue of FOSS (Free and Open Source Software) applications for the Android platform.",
+      "route": "android"
     },
     {
       "name": "Aurora Store",
@@ -16,7 +17,8 @@
       "version": "4.5.1",
       "downloadURL": "https://f-droid.org/repo/com.aurora.store_55.apk",
       "iconURL": "https://f-droid.org/repo/com.aurora.store/en-US/icon_W82R_G632wG1rKjF5s2Yt68WnIq7zB1q2C51Xf7n1uE=.png",
-      "localizedDescription": "Aurora Store is an unofficial, FOSS client to Google's Play Store with an elegant design. Not only does it download, update, and search for apps, it empowers the user with new features."
+      "localizedDescription": "Aurora Store is an unofficial, FOSS client to Google's Play Store with an elegant design. Not only does it download, update, and search for apps, it empowers the user with new features.",
+      "route": "android"
     },
     {
       "name": "Termux",
@@ -24,7 +26,8 @@
       "version": "0.118.0",
       "downloadURL": "https://f-droid.org/repo/com.termux_118.apk",
       "iconURL": "https://f-droid.org/repo/com.termux/en-US/icon_J_Q028LzW9M_4H7U7I9E7S4Q2K6M4B_M7N8O0P_H0Z4=.png",
-      "localizedDescription": "Termux is an Android terminal emulator and Linux environment app that works directly with no rooting or setup required."
+      "localizedDescription": "Termux is an Android terminal emulator and Linux environment app that works directly with no rooting or setup required.",
+      "route": "android"
     },
     {
       "name": "VLC",
@@ -32,7 +35,35 @@
       "version": "3.5.4",
       "downloadURL": "https://f-droid.org/repo/org.videolan.vlc_13050404.apk",
       "iconURL": "https://f-droid.org/repo/org.videolan.vlc/en-US/icon_D82E_G5w2M6Y2_Z0Z3O5N1W_O_N_F_Q_X_Z_R_W_K_O=.png",
-      "localizedDescription": "VLC for Android is a full audio player, with a complete database, an equalizer and filters, playing all weird audio formats."
+      "localizedDescription": "VLC for Android is a full audio player, with a complete database, an equalizer and filters, playing all weird audio formats.",
+      "route": "android"
+    },
+    {
+      "name": "Shattered Pixel Dungeon",
+      "bundleIdentifier": "com.shatteredpixel.shatteredpixeldungeon",
+      "version": "4.0.2",
+      "downloadURL": "https://f-droid.org/repo/com.shatteredpixel.shatteredpixeldungeon_922.apk",
+      "iconURL": "https://f-droid.org/repo/icons-640/com.shatteredpixel.shatteredpixeldungeon.922.png",
+      "localizedDescription": "A libGDX roguelike: five heroes, four regions, one very unfair dungeon. Route: Translation Layer.",
+      "route": "tl"
+    },
+    {
+      "name": "Mindustry",
+      "bundleIdentifier": "io.anuke.mindustry",
+      "version": "8-fdroid-160.7",
+      "downloadURL": "https://f-droid.org/repo/io.anuke.mindustry_1115.apk",
+      "iconURL": "https://f-droid.org/repo/icons-640/io.anuke.mindustry.1115.png",
+      "localizedDescription": "A libGDX tower-defense factory hybrid: build conveyor-fed defenses and survive the waves. Route: Translation Layer.",
+      "route": "tl"
+    },
+    {
+      "name": "Vector Pinball",
+      "bundleIdentifier": "com.dozingcatsoftware.bouncy",
+      "version": "1.16.0",
+      "downloadURL": "https://f-droid.org/repo/com.dozingcatsoftware.bouncy_43.apk",
+      "iconURL": "https://f-droid.org/repo/icons-640/com.dozingcatsoftware.bouncy.43.png",
+      "localizedDescription": "Pinball on a custom minimal engine — a good first test of the Translation Layer. Route: Translation Layer.",
+      "route": "tl"
     }
   ]
 }

@@ -15,6 +15,10 @@ struct SourceApp: Identifiable, Equatable {
     let downloadURL: String
     let iconURL: String
     let localizedDescription: String
+    /// Where an install should land: "tl" for the Translation Layer,
+    /// "android" for the full guest, nil to let the APK's own game flag
+    /// decide (downloadAndInstall).
+    let route: String? = nil
     var id: String { bundleIdentifier }
 }
 
@@ -47,6 +51,7 @@ private struct HuskSimpleSource: Codable {
 }
 private struct SourceAppCodable: Codable {
     let name, bundleIdentifier, version, downloadURL, iconURL, localizedDescription: String
+    let route: String?
 }
 
 // MARK: - Manager
@@ -61,8 +66,14 @@ final class SourceManager: ObservableObject {
 
     var isLoading: Bool { !loadingSources.isEmpty }
 
+    /// BetterHusk's own curated list: stores and tools known to need the full
+    /// guest, and later games certified for the Translation Layer.
+    private static let catalogURL =
+        "https://raw.githubusercontent.com/AetherCognitiveLabs/BetterHusk/main/catalog/source.json"
+
     @Published var sourceURLs: [String] = [
-        "https://f-droid.org/repo/index-v1.json"
+        "https://f-droid.org/repo/index-v1.json",
+        catalogURL,
     ] {
         didSet {
             UserDefaults.standard.set(sourceURLs, forKey: "HuskSourceURLs")
@@ -79,6 +90,14 @@ final class SourceManager: ObservableObject {
     init() {
         if let saved = UserDefaults.standard.stringArray(forKey: "HuskSourceURLs"), !saved.isEmpty {
             sourceURLs = saved
+        }
+        // Existing installs carry a saved list from before the catalog
+        // existed: offer it to them once. Removing it afterwards sticks,
+        // because the marker is already set.
+        let seededKey = "HuskCatalogSeeded"
+        if !UserDefaults.standard.bool(forKey: seededKey), !sourceURLs.contains(Self.catalogURL) {
+            sourceURLs.append(Self.catalogURL)
+            UserDefaults.standard.set(true, forKey: seededKey)
         }
     }
 
@@ -143,7 +162,8 @@ final class SourceManager: ObservableObject {
                 let apps = simple.apps.map {
                     SourceApp(name: $0.name, bundleIdentifier: $0.bundleIdentifier,
                               version: $0.version, downloadURL: $0.downloadURL,
-                              iconURL: $0.iconURL, localizedDescription: $0.localizedDescription)
+                              iconURL: $0.iconURL, localizedDescription: $0.localizedDescription,
+                              route: $0.route)
                 }
                 let source = AppSource(name: simple.name, identifier: urlString, apps: apps)
                 upsert(source: source)
@@ -191,7 +211,18 @@ final class SourceManager: ObservableObject {
                 let dest = downloadDir.appendingPathComponent("\(app.bundleIdentifier)-\(app.version).apk")
                 try? FileManager.default.removeItem(at: dest)
                 if (try? FileManager.default.moveItem(at: localURL, to: dest)) != nil {
-                    AndroidHost.shared.install([dest])
+                    // A source may declare the route; otherwise the APK's own
+                    // game flag decides. Games go to the Translation Layer
+                    // (natively faster, no guest boot), the rest needs the
+                    // full Android system.
+                    let toLayer = app.route == "tl"
+                        || (app.route == nil && husk_apk_is_game(dest.path) != 0)
+                    if toLayer {
+                        HuskLog.log("sources", "\(app.name): to the Translation Layer")
+                        TranslationLayerStore.shared.add([dest], move: true)
+                    } else {
+                        AndroidHost.shared.install([dest])
+                    }
                 }
             }
         }
