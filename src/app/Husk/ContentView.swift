@@ -195,7 +195,11 @@ struct ContentView: View {
             }
         }
         .onChange(of: host.busy) { _ in incoming.installForAndroidIfReady() }
-        .sheet(isPresented: $jit.showSetup) { JITSetupFlow() }
+        // Onboarding presents its own copy on the same flag; while the cover
+        // is up this one must stay out of the way or the wizard can double up.
+        .sheet(isPresented: Binding(
+            get: { jit.showSetup && !showOnboarding },
+            set: { jit.showSetup = $0 })) { JITSetupFlow() }
         // The built-in helper attaches while Husk stays in the foreground, so
         // there is no relaunch to trigger the region claim below; this is it.
         .onChange(of: jit.attachGeneration) { _ in evaluate() }

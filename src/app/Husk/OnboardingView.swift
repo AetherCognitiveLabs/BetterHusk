@@ -96,14 +96,16 @@ struct OnboardingView: View {
     @AppStorage(Theme.Appearance.key) private var appearance = Theme.Appearance.system
     @ObservedObject private var theme = AppTheme.shared
     @ObservedObject private var jit = JITCoordinator.shared
-    @State private var settingUpJIT = false
 
     var body: some View {
         ZStack {
             Theme.backdrop
             setup
         }
-        .sheet(isPresented: $settingUpJIT) { JITSetupFlow() }
+        // Same flag ContentView's presenter uses: the cover wins while it is
+        // up, and JITSetupFlow's onDisappear clears it either way -- no second
+        // copy of the wizard can queue behind the first.
+        .sheet(isPresented: $jit.showSetup) { JITSetupFlow() }
     }
 
     // MARK: frame
@@ -392,7 +394,7 @@ struct OnboardingView: View {
                     .font(.callout.weight(.medium))
                     .foregroundStyle(JITBootstrap.ready ? .green : Theme.textDim)
             }
-            Button(jitState == nil ? (JITBootstrap.isInsideLiveContainer ? "Set Up JIT" : "Set Up StikJIT Now") : "Change JIT Setup") { settingUpJIT = true }
+            Button(jitState == nil ? (JITBootstrap.isInsideLiveContainer ? "Set Up JIT" : "Set Up StikJIT Now") : "Change JIT Setup") { jit.showSetup = true }
                 .font(.body.weight(.semibold))
                 .foregroundStyle(Theme.accent)
             Text("You can skip this: BetterHusk asks again when a game needs it, and it is in Settings › JIT & Sideload.")

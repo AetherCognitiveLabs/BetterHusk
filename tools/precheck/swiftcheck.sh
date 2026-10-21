@@ -33,7 +33,9 @@ fail=0
 checked=0
 pids=()
 for f in $FILES; do
-  xcrun --sdk iphoneos swiftc "${ARGS[@]}" -primary-file "$f" $FILES &
+  # A -primary-file may not also appear as a plain input of the same job.
+  OTHERS="$(printf '%s\n' $FILES | grep -vxF "$f")"
+  xcrun --sdk iphoneos swiftc "${ARGS[@]}" -primary-file "$f" $OTHERS &
   pids+=($!)
   checked=$((checked + 1))
   if (( ${#pids[@]} >= JOBS )); then

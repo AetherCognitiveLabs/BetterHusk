@@ -576,6 +576,9 @@ struct AndroidSystemPage: View {
 
     @State private var askCancelDownload = false
     @State private var askRemoveAndroid = false
+    /// Recent (time, received-bytes) samples of the guest download: enough of
+    /// a window to say how fast it is actually moving and what is left.
+    @State private var rateSamples: [(Date, Int64)] = []
 
     private var running: Bool { router.androidStarted }
 
@@ -622,6 +625,17 @@ struct AndroidSystemPage: View {
         .navigationTitle("Android")
         .navigationBarTitleDisplayMode(.inline)
         .animation(.easeInOut(duration: 0.2), value: status)
+        // Keep ~10 s of download progress so the status line can name a rate
+        // and a rough ETA instead of only a running total.
+        .onChange(of: guest.state) { state in
+            if case .downloading(_, let received, _) = state {
+                let now = Date()
+                rateSamples.append((now, received))
+                rateSamples = rateSamples.filter { now.timeIntervalSince($0.0) <= 10 }
+            } else {
+                rateSamples.removeAll()
+            }
+        }
         .confirmationDialog("Cancel the download?", isPresented: $askCancelDownload, titleVisibility: .visible) {
             Button("Cancel Download", role: .destructive) { guest.cancel() }
             Button("Keep Downloading", role: .cancel) {}
@@ -648,11 +662,29 @@ struct AndroidSystemPage: View {
         switch guest.state {
         case .missing: return String(localized: "Not downloaded yet")
         case .downloading(_, let received, let total):
+            if let eta = downloadETA {
+                return String(localized: "Downloading · \(bytes(received)) of \(total > 0 ? bytes(total) : "…") · \(eta)")
+            }
             return String(localized: "Downloading · \(bytes(received)) of \(total > 0 ? bytes(total) : "…")")
         case .installing: return String(localized: "Installing…")
         case .failed: return String(localized: "Something went wrong")
         case .ready: return Launcher.jitOn ? String(localized: "Ready to start") : String(localized: "Needs JIT to start")
         }
+    }
+
+    /// "~1.2 MB/s · ~4 min": the rate over the last few seconds and what is
+    /// still to come at that rate, or nil before enough samples exist.
+    private var downloadETA: String? {
+        guard case .downloading(_, let received, let total) = guest.state, total > received,
+              let first = rateSamples.first, let last = rateSamples.last, rateSamples.count >= 2 else { return nil }
+        let dt = last.0.timeIntervalSince(first.0), dBytes = last.1 - first.1
+        guard dt > 2, dBytes > 0 else { return nil }
+        let rate = Double(dBytes) / dt
+        let secs = Double(total - received) / rate
+        let eta = secs > 3600 ? String(localized: ">1 h")
+                : secs > 90 ? String(localized: "~\(Int(secs / 60)) min")
+                : String(localized: "~\(Int(secs)) s")
+        return String(localized: "\(bytes(Int64(rate)))/s · \(eta)")
     }
 
     private var progress: Double? {
