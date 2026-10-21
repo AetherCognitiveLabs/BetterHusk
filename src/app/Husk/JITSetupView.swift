@@ -42,7 +42,7 @@ struct JITSetupFlow: View {
         // jit.error is one string shared by every page: moving between steps
         // clears it so a failure from the previous step cannot echo onto the
         // next one.
-        .onChange(of: path) { _ in jit.error = nil }
+        .onChange(of: path) { _ in jit.clearError() }
         // Installed-checks (StikDebug, TrollStore, LocalDevVPN) read once per
         // render: coming back from the App Store or Settings re-renders, so a
         // step's done-mark catches up on its own.

@@ -172,6 +172,10 @@ final class JITCoordinator: ObservableObject {
         pairingSource = JITPairingFileStore.source
     }
 
+    /// The setup wizard clears the banner as the user moves between steps, so
+    /// a failure from one step cannot echo onto the next.
+    func clearError() { error = nil }
+
     /// The last answer `ready` gave, so a flip can be published. Not read here: asking at coordinator-init
     /// could probe before the trap guard exists, which inside LiveContainer is a hard stop.
     private var readyKnown = false
