@@ -13,6 +13,9 @@ public class PdfDocument {
     public void writeTo(java.io.OutputStream p0) {}
     public static abstract class Page {
         protected Page() {}
+        public abstract android.graphics.Canvas getCanvas();
+        public abstract android.graphics.pdf.PdfDocument.PageInfo getInfo();
+        public abstract boolean isFinished();
     }
     public static final class PageInfo {
         private final java.util.HashMap<String, Object> huskProps = new java.util.HashMap<>();

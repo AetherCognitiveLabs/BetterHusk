@@ -3,4 +3,29 @@ package android.content.pm;
 
 @SuppressWarnings({"unchecked", "rawtypes", "deprecation"})
 public interface IPackageInstallerSession extends android.os.IInterface {
+    void setClientProgress(float progress) throws android.os.RemoteException;
+    void addClientProgress(float progress) throws android.os.RemoteException;
+    String[] getNames() throws android.os.RemoteException;
+    android.os.ParcelFileDescriptor openWrite(String name, long offsetBytes, long lengthBytes) throws android.os.RemoteException;
+    android.os.ParcelFileDescriptor openRead(String name) throws android.os.RemoteException;
+    void removeSplit(String splitName) throws android.os.RemoteException;
+    void close() throws android.os.RemoteException;
+    void commit(android.content.IntentSender statusReceiver) throws android.os.RemoteException;
+    void abandon() throws android.os.RemoteException;
+    void stageViaHardLink(String target, int appId) throws android.os.RemoteException;
+
+    abstract class Stub extends android.os.Binder implements IPackageInstallerSession {
+        private static final String DESCRIPTOR = "android.content.pm.IPackageInstallerSession";
+        public Stub() { attachInterface(this, DESCRIPTOR); }
+        public static IPackageInstallerSession asInterface(android.os.IBinder obj) {
+            if (obj == null) return null;
+            android.os.IInterface iin = obj.queryLocalInterface(DESCRIPTOR);
+            if (iin instanceof IPackageInstallerSession) return (IPackageInstallerSession) iin;
+            return null;
+        }
+        public android.os.IBinder asBinder() { return this; }
+        public boolean onTransact(int code, android.os.Parcel data, android.os.Parcel reply, int flags) throws android.os.RemoteException {
+            return super.onTransact(code, data, reply, flags);
+        }
+    }
 }
