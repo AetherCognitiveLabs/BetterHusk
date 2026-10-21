@@ -1505,9 +1505,24 @@ final class QemuRunner: ObservableObject {
         HuskLog.log("gl", "binding the EGL surface to the layer published at "
                         + "\(Int(size.width))x\(Int(size.height)) px")
         var created = false
-        DispatchQueue.main.sync {
+        if Thread.isMainThread {
             created = husk_display_gl_create(Unmanaged.passUnretained(layer).toOpaque(),
                                              Int32(size.width), Int32(size.height))
+        } else {
+            // Not main.sync: if the main queue is itself waiting on QEMU, a
+            // synchronous dispatch deadlocks both sides until the watchdog
+            // kills the app. Wait with a bound instead -- no answer means the
+            // software display, which is a fine answer.
+            let answered = DispatchSemaphore(value: 0)
+            DispatchQueue.main.async {
+                created = husk_display_gl_create(Unmanaged.passUnretained(layer).toOpaque(),
+                                                 Int32(size.width), Int32(size.height))
+                answered.signal()
+            }
+            if answered.wait(timeout: .now() + 10) == .timedOut {
+                HuskLog.log("gl", "main queue did not answer in 10s; staying on the software display")
+                return
+            }
         }
         if QemuRunner.glProven {
             HuskLog.log("gl", "GL already proven on this device; context created "

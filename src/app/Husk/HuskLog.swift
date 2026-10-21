@@ -206,11 +206,16 @@ enum HuskLog {
         for sig in fatal {
             signal(sig) { received in
                 // Async-signal-safe only: write(2) straight to the fds, no
-                // allocation, no locks, no Swift runtime.
-                let msg = "\n*** FATAL SIGNAL \(received) -- process is dying ***\n"
-                msg.withCString { p in
-                    let n = strlen(p)
-                    if HuskLog.rawLogFD >= 0 { _ = write(HuskLog.rawLogFD, p, n) }
+                // allocation, no locks, no Swift runtime. A String built by
+                // interpolation and bridged with withCString allocates through
+                // the runtime, so it can deadlock exactly when abort() is
+                // raised inside malloc -- snprintf into the buffer that was
+                // allocated up front is the honest version of "no allocation".
+                let p = HuskLog.crashBuf.assumingMemoryBound(to: CChar.self)
+                var n = snprintf(p, 8192,
+                                 "\n*** FATAL SIGNAL %d -- process is dying ***\n", received)
+                if n > 0, HuskLog.rawLogFD >= 0 {
+                    _ = write(HuskLog.rawLogFD, p, min(Int(n), 8191))
                 }
                 // Drain whatever C wrote but the reader thread never got to.
                 //
@@ -253,12 +258,10 @@ enum HuskLog {
                 // buffer is taken at startup because nothing in a signal
                 // handler may allocate.
                 if HuskLog.rawLogFD >= 0 {
-                    let header = "\n--- backtrace ---\n"
-                    header.withCString { p in
-                        _ = write(HuskLog.rawLogFD, p, strlen(p))
-                    }
-                    let n = backtrace(HuskLog.crashFrames, 64)
-                    backtrace_symbols_fd(HuskLog.crashFrames, n, HuskLog.rawLogFD)
+                    n = snprintf(p, 8192, "\n--- backtrace ---\n")
+                    _ = write(HuskLog.rawLogFD, p, min(Int(n), 8191))
+                    let frames = backtrace(HuskLog.crashFrames, 64)
+                    backtrace_symbols_fd(HuskLog.crashFrames, frames, HuskLog.rawLogFD)
                 }
                 if HuskLog.rawLogFD >= 0 { fsync(HuskLog.rawLogFD) }
                 signal(received, SIG_DFL)

@@ -1084,8 +1084,16 @@ final class GuestImage: ObservableObject {
         let flg = head[3]
         if flg & 0x04 != 0 {                                  // FEXTRA
             let n = try input.read(upToCount: 2) ?? Data()
+            guard n.count == 2 else {
+                throw NSError(domain: "husk", code: 1, userInfo:
+                    [NSLocalizedDescriptionKey: "truncated gzip header"])
+            }
             let len = Int(n[0]) | (Int(n[1]) << 8)
-            _ = try input.read(upToCount: len)
+            let extra = try input.read(upToCount: len) ?? Data()
+            guard extra.count == len else {
+                throw NSError(domain: "husk", code: 1, userInfo:
+                    [NSLocalizedDescriptionKey: "truncated gzip extra field"])
+            }
         }
         for mask in [UInt8(0x08), UInt8(0x10)] where flg & mask != 0 {   // FNAME, FCOMMENT
             while let b = try input.read(upToCount: 1), b.count == 1, b[0] != 0 {}
