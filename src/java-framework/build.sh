@@ -8,7 +8,7 @@ OUT="${1:-$HERE/../../build/husk-framework.dex}"
 TMP="$(mktemp -d)"
 # A native-Windows JDK cannot see MSYS paths (/tmp/..., /c/...). cygpath
 # translates where it exists; everywhere else paths are already native.
-native() { if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else printf '%s' "$1"; fi; }
+native() { if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else printf '%s\n' "$1"; fi; }
 WTMP="$(native "$TMP")"
 python3 "$HERE/gen/gles20.py" "$HERE/src/android/opengl" "$HERE/../translation-layer-next/husk-tl-dvm-gles20.c" >/dev/null
 # libcore's own classes that javac's JDK does not have (org.xmlpull): compiled to build against, not put in the dex.
