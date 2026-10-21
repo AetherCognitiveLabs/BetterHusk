@@ -8,6 +8,7 @@ public final class TextAttribute implements android.os.Parcelable {
     public int describeContents() { return 0; }
     public android.os.PersistableBundle getExtras() { return (android.os.PersistableBundle) huskProps.get("Extras"); }
     public java.util.List getTextConversionSuggestions() { return (huskProps.get("TextConversionSuggestions") != null ? (java.util.List) huskProps.get("TextConversionSuggestions") : new java.util.ArrayList()); }
+    public boolean isTextSuggestionSelected() { return java.lang.Boolean.TRUE.equals(huskProps.get("TextSuggestionSelected")); }
     public void writeToParcel(android.os.Parcel p0, int p1) {}
     protected TextAttribute() {}
     public static final class Builder {

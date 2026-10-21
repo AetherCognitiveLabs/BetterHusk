@@ -4,4 +4,5 @@ package android.system;
 @SuppressWarnings({"unchecked", "rawtypes", "deprecation"})
 public abstract class StructStatVfs {
     protected StructStatVfs() {}
+    public long f_bavail, f_bfree, f_blocks, f_bsize, f_favail, f_ffree, f_files, f_flag, f_frsize, f_fsid, f_namemax;
 }

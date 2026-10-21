@@ -68,7 +68,12 @@ public final class MediaSessionManager {
         void onDefaultRemoteSessionChanged(android.media.session.MediaSession.Token p0);
         void onVolumeChanged(android.media.session.MediaSession.Token p0, int p1);
     }
-    public static abstract class RemoteUserInfo {
-        protected RemoteUserInfo() {}
+    public static class RemoteUserInfo {
+        private final java.lang.String mPackageName;
+        private final int mPid, mUid;
+        public RemoteUserInfo(java.lang.String packageName, int pid, int uid) { mPackageName = packageName; mPid = pid; mUid = uid; }
+        public java.lang.String getPackageName() { return mPackageName; }
+        public int getPid() { return mPid; }
+        public int getUid() { return mUid; }
     }
 }
