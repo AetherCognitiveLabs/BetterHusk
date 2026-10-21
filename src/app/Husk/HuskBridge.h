@@ -109,6 +109,13 @@ void husk_snapshot_save(void (*cb)(bool ok, const char *what));
    as an allocation that has already happened. */
 void husk_balloon_set_bytes(int64_t target_bytes);
 
+/* --- Crash-log writes for the fatal-signal handler (PipeShim.c) ---
+   snprintf is variadic and therefore unavailable to Swift; these fixed-argument
+   shims are what the handler calls instead. buf/cap point at storage HuskLog
+   allocated up front. */
+int husk_crash_marker(char *buf, size_t cap, int sig);
+int husk_crash_backtrace_marker(char *buf, size_t cap);
+
 /* --- On-device pairing for Built-in StikJIT (JITPairing.swift) --- */
 #include "HuskRPPairing.h"
 

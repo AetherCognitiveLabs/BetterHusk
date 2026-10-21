@@ -211,9 +211,10 @@ enum HuskLog {
                 // the runtime, so it can deadlock exactly when abort() is
                 // raised inside malloc -- snprintf into the buffer that was
                 // allocated up front is the honest version of "no allocation".
+                // (snprintf itself is variadic and unavailable to Swift;
+                // husk_crash_marker is the fixed-argument shim in PipeShim.c.)
                 let p = HuskLog.crashBuf.assumingMemoryBound(to: CChar.self)
-                var n = snprintf(p, 8192,
-                                 "\n*** FATAL SIGNAL %d -- process is dying ***\n", received)
+                var n = husk_crash_marker(p, 8192, received)
                 if n > 0, HuskLog.rawLogFD >= 0 {
                     _ = write(HuskLog.rawLogFD, p, min(Int(n), 8191))
                 }
@@ -258,7 +259,7 @@ enum HuskLog {
                 // buffer is taken at startup because nothing in a signal
                 // handler may allocate.
                 if HuskLog.rawLogFD >= 0 {
-                    n = snprintf(p, 8192, "\n--- backtrace ---\n")
+                    n = husk_crash_backtrace_marker(p, 8192)
                     _ = write(HuskLog.rawLogFD, p, min(Int(n), 8191))
                     let frames = backtrace(HuskLog.crashFrames, 64)
                     backtrace_symbols_fd(HuskLog.crashFrames, frames, HuskLog.rawLogFD)

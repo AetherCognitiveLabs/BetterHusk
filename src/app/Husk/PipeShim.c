@@ -62,3 +62,23 @@ static void husk_install_pipe_shim(void)
     rebind_symbols(rebindings, 1);
     fprintf(stderr, "[pipe2-shim] pipe2 rebind hook installed\n");
 }
+
+/*
+ * Crash-log writes for HuskLog's fatal-signal handler.
+ *
+ * snprintf is a variadic function, which makes it unavailable to Swift, and a
+ * Swift String built inside a signal handler allocates exactly when abort()
+ * may be holding the allocator lock. These fixed-argument wrappers are the
+ * whole formatted output the handler needs; buf/cap are the storage HuskLog
+ * allocated at startup, so the only work here is into memory that already
+ * exists.
+ */
+int husk_crash_marker(char *buf, size_t cap, int sig)
+{
+    return snprintf(buf, cap, "\n*** FATAL SIGNAL %d -- process is dying ***\n", sig);
+}
+
+int husk_crash_backtrace_marker(char *buf, size_t cap)
+{
+    return snprintf(buf, cap, "\n--- backtrace ---\n");
+}
