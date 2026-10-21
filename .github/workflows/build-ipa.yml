@@ -4,12 +4,36 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
+
+# A push supersedes the run of the one before it on the same ref: the old IPA
+# is worthless anyway, and macos-26-intel minutes are the scarce resource.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: write
 
 jobs:
+  # The compile/link error class that used to surface 40-110 minutes into the
+  # IPA build fails here in a couple of minutes instead. The heavy job only
+  # starts when every native source parses and the Swift target typechecks.
+  precheck:
+    runs-on: macos-26-intel
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Syntax-check native sources
+        run: ./tools/precheck/check.sh
+
+      - name: Typecheck Swift app target
+        run: ./tools/precheck/swiftcheck.sh
+
   build:
+    needs: precheck
     runs-on: macos-26-intel
     timeout-minutes: 300
     steps:
@@ -136,6 +160,9 @@ jobs:
           retention-days: 14
 
       - name: Publish test IPA to GitHub Releases
+        # Pull requests (especially from forks) get a read-only GITHUB_TOKEN --
+        # they build and upload the artifact, but cannot publish a release.
+        if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
