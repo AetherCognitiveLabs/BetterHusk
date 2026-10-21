@@ -31,6 +31,11 @@ final class GuestImage: ObservableObject {
 
     @Published private(set) var state: State = .missing
 
+    /// True while `.failed` specifically means the userdata partition ran out
+    /// of automatic repairs (#128): the one failure "Try Again" cannot fix, so
+    /// the Android page offers Remove-and-Reinstall instead (ItemPages).
+    @Published private(set) var userdataUnrepairable = false
+
     /// Published alongside the IPA. Kept as a constant here so a rebuilt guest can
     /// be rolled out without shipping a new app binary.
     /// A qcow2 with compressed clusters (`qemu-img convert -c`). QEMU reads those
@@ -510,6 +515,7 @@ final class GuestImage: ObservableObject {
         let freed = androidBytes
         for path in androidFiles { try? FileManager.default.removeItem(atPath: path) }
         HuskLog.log("guest", "removed Android's files (\(freed / 1_048_576) MiB); the next start downloads them again")
+        userdataUnrepairable = false
         state = .missing
         return freed
     }
@@ -519,6 +525,7 @@ final class GuestImage: ObservableObject {
         if case .downloading = state { return }
         if case .installing = state { return }
         removeStaleDownloads()
+        userdataUnrepairable = false
 
         guard FileManager.default.fileExists(atPath: diskPath) else {
             state = .missing
@@ -554,8 +561,9 @@ final class GuestImage: ObservableObject {
             if !fm.fileExists(atPath: userdataBootedStampPath),
                (Int((try? String(contentsOfFile: userdataReseedCountPath,
                                  encoding: .utf8)) ?? "") ?? 0) >= Self.userdataReseedLimit {
+                userdataUnrepairable = true
                 state = .failed("Android's data partition could not be repaired "
-                              + "automatically. Remove Android in Settings and install it "
+                              + "automatically. Remove Android and install it "
                               + "again — and if it fails the same way, please send "
                               + "guest-serial.log with the report.")
                 return

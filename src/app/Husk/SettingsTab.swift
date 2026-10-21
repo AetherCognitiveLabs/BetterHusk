@@ -30,6 +30,23 @@ struct SettingsTab: View {
                     row(LanguageSettings(), "globe", .purple, "Language", "What apps and games inside BetterHusk speak")
                     row(FontSettings(), "textformat", .indigo, "Fonts", "Chinese, Japanese and Korean text")
                     row(FAQTab(), "questionmark.circle.fill", .teal, "Help", "Answers to common problems")
+                    Button { Onboarding.replay() } label: {
+                        Label {
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text("Run Setup Again")
+                                Text("The welcome tour: language, region, JIT, look").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                        } icon: {
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .fill(Color.brown.huskGradient)
+                                .frame(width: 30, height: 30)
+                                .overlay {
+                                    Image(systemName: "arrow.counterclockwise")
+                                        .font(.system(size: 15, weight: .medium))
+                                        .foregroundStyle(.white)
+                                }
+                        }
+                    }
                 }
 
                 Section {

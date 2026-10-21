@@ -15,11 +15,14 @@ struct JITSetupFlow: View {
     @ObservedObject private var pairing = OnDevicePairing.shared
     @State private var path: [Step] = []
     @State private var importing = false
+    @State private var foregroundTick = false
     @Environment(\.dismiss) private var dismiss
 
     private var device: String { OnDevicePairing.deviceKind }
 
     var body: some View {
+        let _ = foregroundTick  // read during body eval: returning from
+        // Settings/App Store re-checks the installed flags the cards show.
         NavigationStack(path: $path) {
             choose
                 .huskDestination(for: Step.self) { step in
@@ -36,6 +39,16 @@ struct JITSetupFlow: View {
                 }
         }
         .tint(Theme.accent)
+        // jit.error is one string shared by every page: moving between steps
+        // clears it so a failure from the previous step cannot echo onto the
+        // next one.
+        .onChange(of: path) { _ in jit.error = nil }
+        // Installed-checks (StikDebug, TrollStore, LocalDevVPN) read once per
+        // render: coming back from the App Store or Settings re-renders, so a
+        // step's done-mark catches up on its own.
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
+            foregroundTick.toggle()
+        }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.propertyList, .data]) { result in
             switch result {
             case .success(let url): jit.importPairingFile(url)
@@ -191,6 +204,14 @@ struct JITSetupFlow: View {
                 point(4, "Come back to BetterHusk.", done: pairedOnDevice)
             }
             .padding(16).huskCard()
+            // The pairing row only exists while Developer Mode is on, and the
+            // first enable restarts the iPhone -- say so BEFORE the user waits
+            // out the 300-second timeout wondering why nothing appears.
+            Label(String(localized: "If there is no \"Pair with\" row in Settings, Developer Mode is off: enable it first (Settings › Privacy & Security) -- it restarts the \(device) once."),
+                  systemImage: "exclamationmark.circle")
+                .font(.system(size: 13))
+                .foregroundStyle(Theme.textDim)
+                .fixedSize(horizontal: false, vertical: true)
             pairingStatus
         } actions: {
             switch pairing.phase {
@@ -247,7 +268,16 @@ struct JITSetupFlow: View {
         case .paired(let name):
             outcome(String(localized: "Paired with \(name)"), ok: true)
         case .failed(let message):
-            outcome(message, ok: false)
+            // A refused Local Network permission or missing Developer Mode
+            // ends here -- the way out is Settings, so hand it over instead of
+            // leaving the user on a dead end.
+            VStack(alignment: .leading, spacing: 10) {
+                outcome(message, ok: false)
+                Button("Open Settings") {
+                    if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+                }
+                .font(.system(size: 14, weight: .semibold))
+            }
         }
     }
 

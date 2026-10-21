@@ -33,8 +33,8 @@ struct BootScreen: View {
         "Waking Android up",
         "Teaching an iPhone to speak Android",
         "This is a whole operating system — be patient",
-        "App by Levi",
-        "Star the repo if you like this sort of thing",
+        "Based on Levi's Husk — carried further here",
+        "Star BetterHusk if you like this sort of thing",
         "Translating arm64, one block at a time",
         "No, it has not frozen",
         "Unpacking the guest",
@@ -57,16 +57,16 @@ struct BootScreen: View {
                                value: pulse)
                     .onAppear { pulse = true }
 
-                Text("HUSK")
-                    .font(.system(size: 22, weight: .semibold))
-                    .tracking(9)
+                Text("BETTERHUSK")
+                    .font(.system(size: 20, weight: .semibold))
+                    .tracking(6)
                     .foregroundStyle(Theme.text)
                     .padding(.leading, 9)
                     .padding(.top, 18)
 
                 // The line that talks. Keyed on the index so each one fades
                 // into the next rather than snapping.
-                Text(Self.phrases[phrase % Self.phrases.count])
+                Text(Self.phrases[phrase % Self.phrases.count].l10n)
                     .font(.system(size: 15))
                     .foregroundStyle(Theme.textDim)
                     .multilineTextAlignment(.center)

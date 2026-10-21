@@ -21,6 +21,13 @@ enum Onboarding {
         UserDefaults.standard.set(version, forKey: key)
     }
 
+    /// Settings' "Run Setup Again" row: asks ContentView to re-present the
+    /// flow. Finishing still stamps `version`, so a replay costs nothing.
+    static let replayNotification = Notification.Name("husk.replayOnboarding")
+    static func replay() {
+        NotificationCenter.default.post(name: replayNotification, object: nil)
+    }
+
     /// What apps inside Husk are told about where you are, chosen in setup.
     /// Consumed by QemuRunner (persist.sys.* over the guest bridge) and by the
     /// translation layer (husk_tl_set_locale -> sysprops, dvm System props).
@@ -351,6 +358,7 @@ struct OnboardingView: View {
             }
             Spacer(minLength: 8)
             Toggle("", isOn: isOn).labelsHidden().tint(Theme.accent)
+                .accessibilityLabel(title.l10n)
         }
         .padding(16)
         .huskCard()
@@ -380,7 +388,7 @@ struct OnboardingView: View {
                    : "Games need JIT, which iOS only grants to an attached debugger. StikJIT is built into BetterHusk and turns it on from "
                      + "inside the app, with no computer. StikDebug and TrollStore work too.")
             if let state = jitState {
-                Label(state.l10n, systemImage: JITBootstrap.ready ? "checkmark.circle.fill" : "shippingbox")
+                Label(state.l10n, systemImage: JITBootstrap.ready ? "checkmark.circle.fill" : "bolt.fill")
                     .font(.callout.weight(.medium))
                     .foregroundStyle(JITBootstrap.ready ? .green : Theme.textDim)
             }

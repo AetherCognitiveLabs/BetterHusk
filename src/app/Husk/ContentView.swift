@@ -133,6 +133,10 @@ struct ContentView: View {
                 }
             }
         }
+        // Settings' "Run Setup Again" row re-presents the whole flow.
+        .onReceive(NotificationCenter.default.publisher(for: Onboarding.replayNotification)) { _ in
+            showOnboarding = true
+        }
         .sheet(isPresented: $showLogs) { LogView() }
         .alert("Start Android?", isPresented: $confirmAndroid) {
             Button("Start") { startFromLibrary() }

@@ -574,6 +574,9 @@ struct AndroidSystemPage: View {
     @ObservedObject private var router = Router.shared
     @ObservedObject private var jit = JITCoordinator.shared
 
+    @State private var askCancelDownload = false
+    @State private var askRemoveAndroid = false
+
     private var running: Bool { router.androidStarted }
 
     var body: some View {
@@ -619,6 +622,22 @@ struct AndroidSystemPage: View {
         .navigationTitle("Android")
         .navigationBarTitleDisplayMode(.inline)
         .animation(.easeInOut(duration: 0.2), value: status)
+        .confirmationDialog("Cancel the download?", isPresented: $askCancelDownload, titleVisibility: .visible) {
+            Button("Cancel Download", role: .destructive) { guest.cancel() }
+            Button("Keep Downloading", role: .cancel) {}
+        } message: {
+            Text("The part already downloaded is discarded; starting again begins at the beginning.")
+        }
+        .confirmationDialog("Remove Android?", isPresented: $askRemoveAndroid, titleVisibility: .visible) {
+            Button("Remove Android", role: .destructive) {
+                _ = guest.removeAll()
+                JITBootstrap.prewarm()
+                guest.download()
+            }
+            Button("Keep Android", role: .cancel) {}
+        } message: {
+            Text("This deletes Android and the apps installed in it, then downloads it again.")
+        }
     }
 
     private var status: String {
@@ -668,11 +687,18 @@ struct AndroidSystemPage: View {
                     guest.download()
                 }
             case .downloading:
-                BigButton(title: "Cancel Download", systemImage: "xmark", prominent: false) { guest.cancel() }
+                // ~1 GB over Wi-Fi is not something one stray tap should discard.
+                BigButton(title: "Cancel Download", systemImage: "xmark", prominent: false) { askCancelDownload = true }
             case .installing:
                 ProgressView().frame(height: 50)
             case .failed:
-                BigButton(title: "Try Again", systemImage: "arrow.clockwise") { JITBootstrap.prewarm(); guest.download() }
+                if guest.userdataUnrepairable {
+                    // Re-downloading lands back in the same recovery loop (#128):
+                    // a fresh userdata partition is the only way forward.
+                    BigButton(title: "Remove Android and Install Again", systemImage: "arrow.counterclockwise") { askRemoveAndroid = true }
+                } else {
+                    BigButton(title: "Try Again", systemImage: "arrow.clockwise") { JITBootstrap.prewarm(); guest.download() }
+                }
             case .ready:
                 if jit.busy {
                     HStack(spacing: 10) { ProgressView(); Text(jit.status ?? String(localized: "Turning on JIT…")).foregroundStyle(.secondary) }
