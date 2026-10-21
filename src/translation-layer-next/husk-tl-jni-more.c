@@ -855,6 +855,7 @@ static void Thr_getStackTrace(tl_jcall *c)
     jvalue t = tl_jni_get_field(c->self, "stackTrace", "[Ljava/lang/StackTraceElement;");
     if (t.l) { c->ret = t; return; }
     jobj *arr = tl_jni_new_obj_array(C("java/lang/StackTraceElement"), 1);
+    if (!arr || !arr->oarr.v) { c->ret = vl(arr); return; }
     jobj *el = make("java/lang/StackTraceElement");
     set_str(el, "declaringClass", tl_jni_class_name(c->self));
     set_str(el, "methodName", "?"); set_str(el, "fileName", "?"); set_int(el, "lineNumber", -1);
@@ -2535,14 +2536,18 @@ static void Arr_binarySearch(tl_jcall *c)
 static void Arr_copyOf(tl_jcall *c)
 {
     jobj *a = c->args[0].l; int n = c->args[1].i;
-    if (!a) { c->ret = vl(NULL); return; }
+    if (!a || n < 0) { c->ret = vl(NULL); return; }
     if (a->kind == TL_K_PRIM_ARRAY) {
         jobj *r = tl_jni_new_prim_array(a->arr.etype, (uint32_t)n);
-        memcpy(r->arr.data, a->arr.data, (size_t)((int)a->arr.len < n ? a->arr.len : n) * a->arr.esz);
+        if (!r) { c->ret = vl(NULL); return; }
+        if (r->arr.data && a->arr.data)
+            memcpy(r->arr.data, a->arr.data, (size_t)((int)a->arr.len < n ? a->arr.len : n) * a->arr.esz);
         c->ret = vl(r);
     } else if (a->kind == TL_K_OBJ_ARRAY) {
         jobj *r = tl_jni_new_obj_array(a->cls, (uint32_t)n);
-        for (int i = 0; i < n && i < (int)a->oarr.len; i++) r->oarr.v[i] = a->oarr.v[i];
+        if (!r) { c->ret = vl(NULL); return; }
+        if (r->oarr.v && a->oarr.v)
+            for (int i = 0; i < n && i < (int)a->oarr.len; i++) r->oarr.v[i] = a->oarr.v[i];
         c->ret = vl(r);
     } else c->ret = vl(NULL);
 }
@@ -2553,11 +2558,15 @@ static void Arr_copyOfRange(tl_jcall *c)
     int n = to - from;
     if (a->kind == TL_K_PRIM_ARRAY) {
         jobj *r = tl_jni_new_prim_array(a->arr.etype, (uint32_t)n);
-        if (from < (int)a->arr.len) memcpy(r->arr.data, (char *)a->arr.data + (size_t)from * a->arr.esz, (size_t)((int)a->arr.len - from < n ? a->arr.len - from : n) * a->arr.esz);
+        if (!r) { c->ret = vl(NULL); return; }
+        if (r->arr.data && a->arr.data && from < (int)a->arr.len)
+            memcpy(r->arr.data, (char *)a->arr.data + (size_t)from * a->arr.esz, (size_t)((int)a->arr.len - from < n ? a->arr.len - from : n) * a->arr.esz);
         c->ret = vl(r);
     } else if (a->kind == TL_K_OBJ_ARRAY) {
         jobj *r = tl_jni_new_obj_array(a->cls, (uint32_t)n);
-        for (int i = 0; i < n && from + i < (int)a->oarr.len; i++) r->oarr.v[i] = a->oarr.v[from + i];
+        if (!r) { c->ret = vl(NULL); return; }
+        if (r->oarr.v && a->oarr.v)
+            for (int i = 0; i < n && from + i < (int)a->oarr.len; i++) r->oarr.v[i] = a->oarr.v[from + i];
         c->ret = vl(r);
     } else c->ret = vl(NULL);
 }
@@ -4191,13 +4200,15 @@ static int bais_len(jobj *o)
 {
     jobj *b = tl_jni_get_field(o, "buf", "[B").l;
     int cnt = get_int(o, "count");
-    return cnt ? cnt : (b ? (int)b->arr.len : 0);
+    int max = (b && b->kind == TL_K_PRIM_ARRAY) ? (int)arr_bytes(b) : 0;
+    if (cnt > max) cnt = max;
+    return cnt > 0 ? cnt : max;
 }
 static void BAIS_read0(tl_jcall *c)
 {
     jobj *b = tl_jni_get_field(c->self, "buf", "[B").l;
     int pos = get_int(c->self, "pos");
-    if (!b || pos >= bais_len(c->self)) { c->ret = vi(-1); return; }
+    if (!b || !b->arr.data || pos < 0 || pos >= bais_len(c->self)) { c->ret = vi(-1); return; }
     set_int(c->self, "pos", pos + 1);
     c->ret = vi(((uint8_t *)b->arr.data)[pos]);
 }
@@ -4206,8 +4217,9 @@ static void BAIS_read_arr(tl_jcall *c)
     jobj *b = tl_jni_get_field(c->self, "buf", "[B").l;
     jobj *dst = c->args[0].l;
     int pos = get_int(c->self, "pos"), avail = bais_len(c->self) - pos;
-    if (!b || !dst || avail <= 0) { c->ret = vi(-1); return; }
-    int n = (int)dst->arr.len < avail ? (int)dst->arr.len : avail;
+    if (!b || !b->arr.data || avail <= 0) { c->ret = vi(-1); return; }
+    if (!dst || dst->kind != TL_K_PRIM_ARRAY || !dst->arr.data) { c->ret = vi(-1); return; }
+    int n = (int)arr_bytes(dst) < avail ? (int)arr_bytes(dst) : avail;
     memcpy(dst->arr.data, (char *)b->arr.data + pos, (size_t)n);
     set_int(c->self, "pos", pos + n);
     c->ret = vi(n);
@@ -4215,13 +4227,13 @@ static void BAIS_read_arr(tl_jcall *c)
 static void BAIS_read_range(tl_jcall *c)
 {
     jobj *b = tl_jni_get_field(c->self, "buf", "[B").l;
-    jobj *dst = c->args[0].l;
     int off = c->args[1].i, len = c->args[2].i;
     int pos = get_int(c->self, "pos"), avail = bais_len(c->self) - pos;
-    if (!b || !dst || avail <= 0) { c->ret = vi(-1); return; }
+    if (!b || !b->arr.data || avail <= 0) { c->ret = vi(-1); return; }
+    void *w = arr_win(c, c->args[0].l, off, len);
+    if (!w) { c->ret = vi(-1); return; }
     int n = len < avail ? len : avail;
-    if (off < 0 || off + n > (int)dst->arr.len) n = (int)dst->arr.len - off;
-    memcpy((char *)dst->arr.data + off, (char *)b->arr.data + pos, (size_t)n);
+    memcpy(w, (char *)b->arr.data + pos, (size_t)n);
     set_int(c->self, "pos", pos + n);
     c->ret = vi(n);
 }
@@ -4263,13 +4275,15 @@ static void BAOS_toByteArray(tl_jcall *c)
 {
     sbuf *b = sb_of(c->self);
     jobj *a = tl_jni_new_prim_array('B', (uint32_t)b->n);
-    memcpy(a->arr.data, b->p, b->n);
+    if (a && a->arr.data && b->n) memcpy(a->arr.data, b->p, b->n);
     c->ret = vl(a);
 }
 static void BAOS_toString(tl_jcall *c)
 {
     sbuf *b = sb_of(c->self);
-    char *t = malloc(b->n + 1); memcpy(t, b->p, b->n); t[b->n] = 0;
+    char *t = malloc(b->n + 1);
+    if (!t) { c->ret = vl(NULL); return; }
+    if (b->n) memcpy(t, b->p, b->n); t[b->n] = 0;
     c->ret = vl(STR(t)); free(t);
 }
 static void BAOS_size(tl_jcall *c)  { c->ret = vi((int)sb_of(c->self)->n); }
@@ -4871,7 +4885,7 @@ static void File_createTempFile(tl_jcall *c)
 static void File_listRoots(tl_jcall *c)
 {
     jobj *a = tl_jni_new_obj_array(C("java/io/File"), 1);
-    a->oarr.v[0] = new_file("/");
+    if (a && a->oarr.v) a->oarr.v[0] = new_file("/");
     c->ret = vl(a);
 }
 static void File_init_uri(tl_jcall *c)
@@ -5180,7 +5194,8 @@ static void BB_allocate(tl_jcall *c)
 {
     int n = c->args[0].i > 0 ? c->args[0].i : 0;
     jobj *arr = tl_jni_new_prim_array('B', (uint32_t)n);
-    jobj *b = new_bb(arr->arr.data, n, false);
+    if (!arr) return;
+    jobj *b = new_bb(arr->arr.data, arr->arr.data ? n : 0, false);
     set_obj(b, "array", "[B", arr);
     c->ret = vl(b);
 }
@@ -5188,13 +5203,14 @@ static void BB_allocateDirect(tl_jcall *c)
 {
     int n = c->args[0].i > 0 ? c->args[0].i : 0;
     void *p = calloc(1, (size_t)n);
-    c->ret = vl(new_bb(p, n, true));
+    if (!p && n > 0) { tl_jni_throw("java/lang/OutOfMemoryError", "direct buffer"); return; }
+    c->ret = vl(new_bb(p, p ? n : 0, true));
 }
 static void BB_wrap(tl_jcall *c)
 {
     jobj *a = c->args[0].l;
     if (!a || a->kind != TL_K_PRIM_ARRAY) { c->ret = vl(NULL); return; }
-    jobj *b = new_bb(a->arr.data, a->arr.len, false);
+    jobj *b = new_bb(a->arr.data, (int)arr_bytes(a), false);
     set_obj(b, "array", "[B", a);
     c->ret = vl(b);
 }
@@ -5493,7 +5509,9 @@ static void CB_toArray(tl_jcall *c)
     const char *p = s ? S(s) : "";
     int n = utf8_nchars(p, (int)strlen(p));
     jobj *a = tl_jni_new_prim_array('C', (uint32_t)n);
+    if (!a) { c->ret = vl(NULL); return; }
     uint16_t *w = a->arr.data;
+    if (!w) { c->ret = vl(a); return; }
     for (int i = 0, j = 0; i < n; i++) { int byte = utf8_byteof(p, i); w[j++] = (uint16_t)utf8_dec(p, byte); }
     c->ret = vl(a);
 }
@@ -5504,16 +5522,16 @@ static void String_getBytes_cs(tl_jcall *c)
     uint8_t *out = NULL;
     size_t n = cs_encode(S(c->self), cs_kind(cs ? cs_name_of(cs) : "UTF-8"), &out);
     jobj *a = tl_jni_new_prim_array('B', (uint32_t)n);
-    if (n) memcpy(a->arr.data, out, n);
+    if (n && a && a->arr.data && out) memcpy(a->arr.data, out, n);
     free(out);
     c->ret = vl(a);
 }
 static void String_init_cs(tl_jcall *c)
 {
     jobj *a = c->args[0].l, *cs = c->args[1].l;
-    if (!a || a->kind != TL_K_PRIM_ARRAY) { c->ret = vl(STR("")); return; }
+    if (!a || a->kind != TL_K_PRIM_ARRAY || !a->arr.data) { c->ret = vl(STR("")); return; }
     char *out = NULL;
-    cs_decode(a->arr.data, a->arr.len, cs_kind(cs ? cs_name_of(cs) : "UTF-8"), &out);
+    cs_decode(a->arr.data, arr_bytes(a), cs_kind(cs ? cs_name_of(cs) : "UTF-8"), &out);
     c->ret = vl(STR(out ? out : ""));
     free(out);
 }
@@ -5521,7 +5539,7 @@ static void String_init_cs_range(tl_jcall *c)
 {
     jobj *a = c->args[0].l; int off = c->args[1].i, n = c->args[2].i;
     jobj *cs = c->args[3].l;
-    if (!a || a->kind != TL_K_PRIM_ARRAY || off < 0 || off >= (int)a->arr.len) { c->ret = vl(STR("")); return; }
+    if (!a || a->kind != TL_K_PRIM_ARRAY || !a->arr.data || off < 0 || n < 0 || off >= (int)a->arr.len) { c->ret = vl(STR("")); return; }
     if (off + n > (int)a->arr.len) n = (int)a->arr.len - off;
     char *out = NULL;
     cs_decode((uint8_t *)a->arr.data + off, (size_t)n, cs_kind(cs ? cs_name_of(cs) : "UTF-8"), &out);
@@ -6917,8 +6935,8 @@ static void CH_read(tl_jcall *c)
     jobj *b = c->args[0].l;
     int fd = ch_fd(c->self);
     if (!b || fd < 0) { c->ret = vi(-1); return; }
-    int p = bb_pos(b), n = bb_lim(b) - p;
-    if (n <= 0) { c->ret = vi(0); return; }
+    int p = bb_pos(b), n = bb_span(b) - p;
+    if (n <= 0 || !bb_addr(b)) { c->ret = vi(0); return; }
     ssize_t r = read(fd, bb_addr(b) + p, (size_t)n);
     if (r > 0) { set_int(b, "pos", p + (int)r); c->ret = vi((int)r); }
     else c->ret = vi(-1);
@@ -6928,8 +6946,8 @@ static void CH_write(tl_jcall *c)
     jobj *b = c->args[0].l;
     int fd = ch_fd(c->self);
     if (!b || fd < 0) { c->ret = vi(0); return; }
-    int p = bb_pos(b), n = bb_lim(b) - p;
-    if (n <= 0) { c->ret = vi(0); return; }
+    int p = bb_pos(b), n = bb_span(b) - p;
+    if (n <= 0 || !bb_addr(b)) { c->ret = vi(0); return; }
     ssize_t w = write(fd, bb_addr(b) + p, (size_t)n);
     if (w > 0) set_int(b, "pos", p + (int)w);
     c->ret = vi(w > 0 ? (int)w : 0);
@@ -7016,11 +7034,12 @@ static void CH_transferFrom(tl_jcall *c)
 static void B64_encode(tl_jcall *c)
 {
     jobj *a = c->args[0].l;
-    if (!a) { c->ret = vl(NULL); return; }
+    if (!a || a->kind != TL_K_PRIM_ARRAY) { c->ret = vl(NULL); return; }
     size_t n;
-    char *e = b64enc(a->arr.data, a->arr.len, c->args[1].i, &n);
+    char *e = b64enc(a->arr.data, arr_bytes(a), c->args[1].i, &n);
     jobj *r = tl_jni_new_prim_array('B', (uint32_t)n);
-    memcpy(r->arr.data, e, n);
+    if (!r || !e) { free(e); c->ret = vl(r); return; }
+    if (r->arr.data) memcpy(r->arr.data, e, n);
     free(e);
     c->ret = vl(r);
 }
@@ -7028,28 +7047,29 @@ static void B64_encode3(tl_jcall *c)
 {
     jobj *a = c->args[0].l;
     int off = c->args[1].i, len = c->args[2].i;
-    if (!a || off < 0 || len < 0 || (size_t)(off + len) > a->arr.len) { c->ret = vl(NULL); return; }
+    if (!a || a->kind != TL_K_PRIM_ARRAY || !a->arr.data || off < 0 || len < 0 || (size_t)off + (size_t)len > arr_bytes(a)) { c->ret = vl(NULL); return; }
     size_t n;
-    char *e = b64enc(a->arr.data + off, len, c->args[3].i, &n);
+    char *e = b64enc((uint8_t *)a->arr.data + off, len, c->args[3].i, &n);
     jobj *r = tl_jni_new_prim_array('B', (uint32_t)n);
-    memcpy(r->arr.data, e, n);
+    if (!r || !e) { free(e); c->ret = vl(r); return; }
+    if (r->arr.data) memcpy(r->arr.data, e, n);
     free(e);
     c->ret = vl(r);
 }
 static void B64_encodeToString(tl_jcall *c)
 {
     jobj *a = c->args[0].l;
-    if (!a) { c->ret = vl(NULL); return; }
-    char *e = b64enc(a->arr.data, a->arr.len, c->args[1].i, NULL);
-    c->ret = vl(STR(e)); free(e);
+    if (!a || a->kind != TL_K_PRIM_ARRAY || !a->arr.data) { c->ret = vl(NULL); return; }
+    char *e = b64enc(a->arr.data, arr_bytes(a), c->args[1].i, NULL);
+    c->ret = vl(STR(e ? e : "")); free(e);
 }
 static void B64_ets3(tl_jcall *c)
 {
     jobj *a = c->args[0].l;
     int off = c->args[1].i, len = c->args[2].i;
-    if (!a || off < 0 || len < 0 || (size_t)(off + len) > a->arr.len) { c->ret = vl(NULL); return; }
-    char *e = b64enc(a->arr.data + off, len, c->args[3].i, NULL);
-    c->ret = vl(STR(e)); free(e);
+    if (!a || a->kind != TL_K_PRIM_ARRAY || !a->arr.data || off < 0 || len < 0 || (size_t)off + (size_t)len > arr_bytes(a)) { c->ret = vl(NULL); return; }
+    char *e = b64enc((uint8_t *)a->arr.data + off, len, c->args[3].i, NULL);
+    c->ret = vl(STR(e ? e : "")); free(e);
 }
 static void B64_decode(tl_jcall *c)
 {
@@ -7057,22 +7077,26 @@ static void B64_decode(tl_jcall *c)
     uint8_t *d;
     if (c->args[0].l && ((jobj *)c->args[0].l)->kind == TL_K_STRING)
         d = b64dec(S(c->args[0].l), strlen(S(c->args[0].l)), &n);
-    else if (c->args[0].l)
-        d = b64dec(((jobj *)c->args[0].l)->arr.data, ((jobj *)c->args[0].l)->arr.len, &n);
+    else if (c->args[0].l && ((jobj *)c->args[0].l)->kind == TL_K_PRIM_ARRAY)
+        d = b64dec(((jobj *)c->args[0].l)->arr.data, arr_bytes((jobj *)c->args[0].l), &n);
     else { c->ret = vl(NULL); return; }
+    if (!d) { c->ret = vl(NULL); return; }
     jobj *r = tl_jni_new_prim_array('B', (uint32_t)n);
-    memcpy(r->arr.data, d, n); free(d);
+    if (!r) { free(d); return; }
+    if (r->arr.data) memcpy(r->arr.data, d, n); free(d);
     c->ret = vl(r);
 }
 static void B64_decode3(tl_jcall *c)
 {
     jobj *a = c->args[0].l;
     int off = c->args[1].i, len = c->args[2].i;
-    if (!a || off < 0 || len < 0 || (size_t)(off + len) > a->arr.len) { c->ret = vl(NULL); return; }
+    if (!a || a->kind != TL_K_PRIM_ARRAY || !a->arr.data || off < 0 || len < 0 || (size_t)off + (size_t)len > arr_bytes(a)) { c->ret = vl(NULL); return; }
     size_t n;
-    uint8_t *d = b64dec(a->arr.data + off, len, &n);
+    uint8_t *d = b64dec((uint8_t *)a->arr.data + off, len, &n);
+    if (!d) { c->ret = vl(NULL); return; }
     jobj *r = tl_jni_new_prim_array('B', (uint32_t)n);
-    memcpy(r->arr.data, d, n); free(d);
+    if (!r) { free(d); return; }
+    if (r->arr.data) memcpy(r->arr.data, d, n); free(d);
     c->ret = vl(r);
 }
 
@@ -7996,13 +8020,19 @@ static parcel *parcel_of(jobj *o)
     if (!o->native) o->native = calloc(1, sizeof(parcel));
     return o->native;
 }
-static void pc_need(parcel *p, size_t n)
+static bool pc_need(parcel *p, size_t n)
 {
-    if (p->pos + n > p->cap) { p->cap = (p->pos + n + 256) * 2; p->p = realloc(p->p, p->cap); }
+    if (p->pos + n > p->cap) {
+        size_t cap = (p->pos + n + 256) * 2;
+        uint8_t *q = realloc(p->p, cap);
+        if (!q) { tl_jni_throw("java/lang/OutOfMemoryError", "parcel grow"); return false; }
+        p->cap = cap; p->p = q;
+    }
+    return true;
 }
 static void pc_w(parcel *p, const void *d, size_t n)
 {
-    pc_need(p, n);
+    if (!pc_need(p, n)) return;
     memcpy(p->p + p->pos, d, n); p->pos += n;
     if (p->pos > p->n) p->n = p->pos;
 }
@@ -8022,12 +8052,40 @@ static void Parcel_dataAvail(tl_jcall *c)
 }
 static void Parcel_dataPos(tl_jcall *c) { c->ret = vi((int)parcel_of(c->self)->pos); }
 static void Parcel_dataCapacity(tl_jcall *c) { c->ret = vi((int)parcel_of(c->self)->cap); }
-static void Parcel_setDataPosition(tl_jcall *c) { parcel_of(c->self)->pos = (size_t)c->args[0].i; }
-static void Parcel_setDataSize(tl_jcall *c) { parcel_of(c->self)->n = (size_t)c->args[0].i; }
+static void Parcel_setDataPosition(tl_jcall *c)
+{
+    parcel *p = parcel_of(c->self);
+    int64_t v = c->args[0].i;
+    p->pos = v < 0 ? 0 : (size_t)v;
+}
+static void Parcel_setDataSize(tl_jcall *c)
+{
+    /* dataSize is a real bound for later reads, so it must be backed by the
+     * allocation — grow to the requested size and zero-fill like Android. */
+    parcel *p = parcel_of(c->self);
+    int64_t v = c->args[0].i;
+    if (v < 0) v = 0;
+    size_t n = (size_t)v;
+    if (n > p->cap) {
+        uint8_t *q = realloc(p->p, n ? n : 1);
+        if (!q) { tl_jni_throw("java/lang/OutOfMemoryError", "parcel setDataSize"); return; }
+        memset(q + p->n, 0, n - p->n);
+        p->p = q; p->cap = n;
+    } else if (n > p->n) {
+        memset(p->p + p->n, 0, n - p->n);
+    }
+    p->n = n;
+}
 static void Parcel_setDataCapacity(tl_jcall *c)
 {
     parcel *p = parcel_of(c->self);
-    if ((size_t)c->args[0].i > p->cap) { p->cap = (size_t)c->args[0].i; p->p = realloc(p->p, p->cap); }
+    int64_t v = c->args[0].i;
+    if (v > 0 && (size_t)v > p->cap) {
+        uint8_t *q = realloc(p->p, (size_t)v);
+        if (!q) { tl_jni_throw("java/lang/OutOfMemoryError", "parcel setDataCapacity"); return; }
+        if ((size_t)v > p->n) memset(q + p->n, 0, (size_t)v - p->n);
+        p->cap = (size_t)v; p->p = q;
+    }
 }
 static void Parcel_writeInt(tl_jcall *c) { int32_t v = c->args[0].i; pc_w(parcel_of(c->self), &v, 4); }
 static void Parcel_readInt(tl_jcall *c) { int32_t v = 0; pc_r(parcel_of(c->self), &v, 4); c->ret = vi(v); }
@@ -8060,7 +8118,8 @@ static void Parcel_writeByteArray(tl_jcall *c)
 {
     jobj *a = c->args[0].l;
     parcel *p = parcel_of(c->self);
-    int32_t n = a ? (int32_t)a->arr.len : -1;
+    if (a && a->kind != TL_K_PRIM_ARRAY) { tl_jni_throw("java/lang/IllegalArgumentException", "not a byte array"); return; }
+    int32_t n = a ? (int32_t)arr_bytes(a) : -1;
     pc_w(p, &n, 4);
     if (a) pc_w(p, a->arr.data, (size_t)n);
 }
@@ -8070,6 +8129,7 @@ static void Parcel_createByteArray(tl_jcall *c)
     int32_t n = 0; pc_r(p, &n, 4);
     if (n < 0 || n > 1 << 24) { c->ret = vl(NULL); return; }
     jobj *a = tl_jni_new_prim_array('B', (uint32_t)n);
+    if (!a) return;
     pc_r(p, a->arr.data, (size_t)n);
     c->ret = vl(a);
 }
@@ -8121,17 +8181,18 @@ static void Parcel_marshall(tl_jcall *c)
 {
     parcel *p = parcel_of(c->self);
     jobj *a = tl_jni_new_prim_array('B', (uint32_t)p->n);
-    memcpy(a->arr.data, p->p, p->n);
+    if (!a) return;
+    if (a->arr.data && p->n) memcpy(a->arr.data, p->p, p->n);
     c->ret = vl(a);
 }
 static void Parcel_unmarshall(tl_jcall *c)
 {
-    jobj *a = c->args[0].l;
-    parcel *p = parcel_of(c->self);
-    if (!a) return;
     int off = c->args[1].i, len = c->args[2].i;
-    pc_need(p, (size_t)len);
-    memcpy(p->p, (char *)a->arr.data + off, (size_t)len);
+    void *w = arr_win(c, c->args[0].l, off, len);
+    if (!w || len < 0) return;
+    parcel *p = parcel_of(c->self);
+    if (!pc_need(p, (size_t)len)) return;
+    memcpy(p->p, w, (size_t)len);
     p->n = (size_t)len; p->pos = 0;
 }
 static void Parcel_appendFrom(tl_jcall *c) { (void)c; }
@@ -8492,7 +8553,7 @@ static void Inet_getAllByName(tl_jcall *c)
     tl_jcall t = { .self = NULL, .args = c->args };
     Inet_getByName(&t);
     jobj *arr = tl_jni_new_obj_array(C("java/net/InetAddress"), 1);
-    arr->oarr.v[0] = t.ret.l;
+    if (arr && arr->oarr.v) arr->oarr.v[0] = t.ret.l;
     c->ret = vl(arr);
 }
 static void Inet_getHostAddress(tl_jcall *c) { c->ret = vl(STR("127.0.0.1")); }
@@ -8652,7 +8713,7 @@ static void ConnMan_getAllNetworkInfo(tl_jcall *c)
     jobj *arr = tl_jni_new_obj_array(C("android/net/NetworkInfo"), 1);
     tl_jcall t = { .self = c->self };
     ConnMan_getActiveNetworkInfo(&t);
-    arr->oarr.v[0] = t.ret.l;
+    if (arr && arr->oarr.v) arr->oarr.v[0] = t.ret.l;
     c->ret = vl(arr);
 }
 static void ConnMan_getActiveNetwork(tl_jcall *c)
@@ -8967,6 +9028,9 @@ static void Color_toArgb(tl_jcall *c) { c->ret = vi(get_int(c->self, "value")); 
 static void Color_HSVToColor(tl_jcall *c)
 {
     jobj *hsv = c->args[1].l;
+    if (!hsv || hsv->kind != TL_K_PRIM_ARRAY || hsv->arr.len < 3 || !hsv->arr.data) {
+        tl_jni_throw("java/lang/IllegalArgumentException", "hsv array needs 3 elements"); return;
+    }
     float *f = hsv->arr.data;
     float h = f[0], s_ = f[1], v = f[2];
     int hi = ((int)(h / 60.0f)) % 6;
@@ -8993,6 +9057,9 @@ static void Color_RGBToHSV(tl_jcall *c)
         else if (mx == g) h = (b - r) / d + 2;
         else h = (r - g) / d + 4;
         h *= 60; if (h < 0) h += 360;
+    }
+    if (!hsv || hsv->kind != TL_K_PRIM_ARRAY || hsv->arr.len < 3 || !hsv->arr.data) {
+        tl_jni_throw("java/lang/IllegalArgumentException", "hsv array needs 3 elements"); return;
     }
     float *f = hsv->arr.data;
     f[0] = h; f[1] = mx > 0 ? d / mx : 0; f[2] = mx;
@@ -9176,7 +9243,7 @@ static void Paint_breakText(tl_jcall *c)
     const char *s = c->args[0].l ? S(c->args[0].l) : "";
     float avail = c->args[2].f, ts = get_flt(c->self, "textSize"); if (ts <= 0) ts = 12;
     int n = (int)strlen(s), fit = (int)(avail / (ts * 0.6f));
-    if (c->args[3].l && ((jobj *)c->args[3].l)->kind == TL_K_PRIM_ARRAY)
+    if (c->args[3].l && ((jobj *)c->args[3].l)->kind == TL_K_PRIM_ARRAY && ((jobj *)c->args[3].l)->arr.len >= 1)
         ((float *)((jobj *)c->args[3].l)->arr.data)[0] = fit * ts * 0.6f;
     c->ret = vi(fit > n ? n : fit);
 }
@@ -9185,8 +9252,9 @@ static void Paint_getTextWidths(tl_jcall *c)
     const char *s = c->args[0].l ? S(c->args[0].l) : "";
     jobj *w = c->args[1].l;
     float ts = get_flt(c->self, "textSize"); if (ts <= 0) ts = 12;
-    int n = (int)strlen(s), m = w ? (int)w->arr.len : 0;
-    for (int i = 0; i < n && i < m; i++) ((float *)w->arr.data)[i] = ts * 0.6f;
+    int n = (int)strlen(s), m = (w && w->kind == TL_K_PRIM_ARRAY) ? (int)w->arr.len : 0;
+    if (w && w->kind == TL_K_PRIM_ARRAY)
+        for (int i = 0; i < n && i < m; i++) ((float *)w->arr.data)[i] = ts * 0.6f;
     c->ret = vi(n < m ? n : m);
 }
 static void Typeface_create(tl_jcall *c)
@@ -9229,9 +9297,14 @@ static void Typeface_getDEFAULTBOLD(tl_jcall *c)
 /* Matrix: 9 floats in "values" field (float[]). */
 static float *mat_of(jobj *o)
 {
+    /* always return writable memory — callers multiply into it unconditionally */
+    static _Thread_local float scratch[9];
+    if (!o) { memset(scratch, 0, 36); scratch[0] = scratch[4] = scratch[8] = 1.0f; return scratch; }
     jobj *a = tl_jni_get_field(o, "values", "[F").l;
+    if (a && (a->kind != TL_K_PRIM_ARRAY || a->arr.len < 9 || !a->arr.data)) a = NULL;
     if (!a) {
         a = tl_jni_new_prim_array('F', 9);
+        if (!a) { memset(scratch, 0, 36); scratch[0] = scratch[4] = scratch[8] = 1.0f; return scratch; }
         float *f = a->arr.data;
         f[0]=f[4]=f[8]=1.0f;
         tl_jni_set_field(o, "values", "[F", vl(a));
@@ -9422,13 +9495,13 @@ static void Matrix_mapRect(tl_jcall *c)
 static void Matrix_getValues(tl_jcall *c)
 {
     jobj *a = c->args[0].l;
-    if (a && a->kind == TL_K_PRIM_ARRAY && a->arr.len >= 9)
+    if (a && a->kind == TL_K_PRIM_ARRAY && a->arr.data && arr_bytes(a) >= 36)
         memcpy(a->arr.data, mat_of(c->self), 36);
 }
 static void Matrix_setValues(tl_jcall *c)
 {
     jobj *a = c->args[0].l;
-    if (a && a->kind == TL_K_PRIM_ARRAY && a->arr.len >= 9)
+    if (a && a->kind == TL_K_PRIM_ARRAY && a->arr.data && arr_bytes(a) >= 36)
         memcpy(mat_of(c->self), a->arr.data, 36);
 }
 static void Matrix_toString(tl_jcall *c)
@@ -10470,7 +10543,7 @@ static void MD_getInstance(tl_jcall *c)
 static void MD_update(tl_jcall *c)
 {
     jobj *a = c->args[0].l;
-    if (a && a->kind == TL_K_PRIM_ARRAY) dg_upd(dg_of(c->self), a->arr.data, a->arr.len);
+    if (a && a->kind == TL_K_PRIM_ARRAY) dg_upd(dg_of(c->self), a->arr.data, arr_bytes(a));
     else if (a) { uint8_t b = (uint8_t)get_int(a, "value"); dg_upd(dg_of(c->self), &b, 1); }
 }
 static void MD_update1(tl_jcall *c)
@@ -10484,7 +10557,7 @@ static void MD_updateRange(tl_jcall *c)
     if (a && a->kind == TL_K_PRIM_ARRAY) {
         int off = c->args[1].i, n = c->args[2].i;
         if (off < 0) off = 0;
-        if (off + n > (int)a->arr.len) n = (int)a->arr.len - off;
+        if ((size_t)off + (size_t)n > arr_bytes(a)) n = (int)arr_bytes(a) - off;
         if (n > 0) dg_upd(dg_of(c->self), (char *)a->arr.data + off, (size_t)n);
     }
 }
@@ -10493,7 +10566,7 @@ static jobj *md_digest_of(jobj *o)
     uint8_t out[64];
     int n = dg_fin(dg_of(o), out);
     jobj *a = tl_jni_new_prim_array('B', (uint32_t)n);
-    memcpy(a->arr.data, out, (size_t)n);
+    if (a && a->arr.data) memcpy(a->arr.data, out, (size_t)n);
     return a;
 }
 static void MD_digest(tl_jcall *c) { c->ret = vl(md_digest_of(c->self)); }
@@ -10502,7 +10575,8 @@ static void MD_digestIn(tl_jcall *c)
     jobj *a = c->args[0].l;
     uint8_t out[64];
     int n = dg_fin(dg_of(c->self), out);
-    if (a && a->kind == TL_K_PRIM_ARRAY) memcpy(a->arr.data, out, a->arr.len < (uint32_t)n ? a->arr.len : (uint32_t)n);
+    if (a && a->kind == TL_K_PRIM_ARRAY && a->arr.data)
+        memcpy(a->arr.data, out, arr_bytes(a) < (size_t)n ? arr_bytes(a) : (size_t)n);
     c->ret = vi(n);
 }
 static void MD_digestOf(tl_jcall *c)
@@ -10584,7 +10658,7 @@ static void Mac_updateRange(tl_jcall *c)
     if (a && a->kind == TL_K_PRIM_ARRAY) {
         int off = c->args[1].i, n = c->args[2].i;
         if (off < 0) off = 0;
-        if (off + n > (int)a->arr.len) n = (int)a->arr.len - off;
+        if ((size_t)off + (size_t)n > arr_bytes(a)) n = (int)arr_bytes(a) - off;
         if (n > 0) sb_add_n(&mac_of(c->self)->data, (char *)a->arr.data + off, (size_t)n);
     }
 }
@@ -10604,7 +10678,7 @@ static jobj *mac_result(jobj *o)
     memcpy(out, &h, 8); memcpy(out + 8, &h, 8); memcpy(out + 16, &h, 4); n = 20;
 #endif
     jobj *a = tl_jni_new_prim_array('B', (uint32_t)n);
-    memcpy(a->arr.data, out, n);
+    if (a && a->arr.data) memcpy(a->arr.data, out, n);
     return a;
 }
 static void Mac_doFinal(tl_jcall *c) { c->ret = vl(mac_result(c->self)); }
@@ -10644,8 +10718,11 @@ static void SKS_init2(tl_jcall *c)
     jobj *a = c->args[0].l;
     if (a && a->kind == TL_K_PRIM_ARRAY) {
         int off = c->args[1].i, n = c->args[2].i;
-        jobj *sub = tl_jni_new_prim_array('B', (uint32_t)(n > 0 ? n : 0));
-        memcpy(sub->arr.data, (char *)a->arr.data + off, (size_t)(n > 0 ? n : 0));
+        if (off < 0) off = 0;
+        if ((size_t)off + (size_t)n > arr_bytes(a)) n = (int)arr_bytes(a) - off;
+        if (n < 0) n = 0;
+        jobj *sub = tl_jni_new_prim_array('B', (uint32_t)n);
+        if (sub && sub->arr.data && n) memcpy(sub->arr.data, (char *)a->arr.data + off, (size_t)n);
         tl_jni_set_field(c->self, "encoded", "[B", vl(sub));
     }
     if (c->args[3].l) tl_jni_set_field(c->self, "algo", "Ljava/lang/String;", c->args[3]);
@@ -10666,7 +10743,8 @@ static void KG_generateKey(tl_jcall *c)
     int n = get_int(c->self, "ksize") / 8;
     if (n <= 0) n = 16;
     jobj *b = tl_jni_new_prim_array('B', (uint32_t)n);
-    arc4random_buf(b->arr.data, b->arr.len);
+    if (!b) { c->ret = vl(NULL); return; }
+    if (b->arr.data) arc4random_buf(b->arr.data, b->arr.len);
     tl_jni_set_field(k, "encoded", "[B", vl(b));
     jobj *a = tl_jni_get_field(c->self, "algo", "Ljava/lang/String;").l;
     if (a) tl_jni_set_field(k, "algo", "Ljava/lang/String;", vl(a));
@@ -10675,7 +10753,7 @@ static void KG_generateKey(tl_jcall *c)
 static void SR_nextBytes(tl_jcall *c)
 {
     jobj *a = c->args[0].l;
-    if (a && a->kind == TL_K_PRIM_ARRAY) arc4random_buf(a->arr.data, a->arr.len);
+    if (a && a->kind == TL_K_PRIM_ARRAY && a->arr.data) arc4random_buf(a->arr.data, arr_bytes(a));
 }
 static void SR_setSeedB(tl_jcall *c) { (void)c; }
 static void SR_setSeedJ(tl_jcall *c) { (void)c; }
@@ -10684,8 +10762,9 @@ static void SR_nextLong(tl_jcall *c) { c->ret = vj(((int64_t)arc4random() << 32)
 static void SR_getInstance(tl_jcall *c) { c->ret = vl(make("java/security/SecureRandom")); }
 static void SR_getSeed(tl_jcall *c)
 {
-    jobj *a = tl_jni_new_prim_array('B', (uint32_t)c->args[0].i);
-    arc4random_buf(a->arr.data, a->arr.len);
+    jobj *a = tl_jni_new_prim_array('B', (uint32_t)(c->args[0].i > 0 ? c->args[0].i : 0));
+    if (!a) { c->ret = vl(NULL); return; }
+    if (a->arr.data) arc4random_buf(a->arr.data, a->arr.len);
     c->ret = vl(a);
 }
 static void SR_generateSeed(tl_jcall *c) { SR_getSeed(c); }
@@ -10771,11 +10850,12 @@ static jobj *cipher_run(ciph *p, const uint8_t *in, size_t inn, bool final, bool
     *ok = true;
     if (p->passthrough || !p->cr) {
         jobj *a = tl_jni_new_prim_array('B', (uint32_t)inn);
-        if (inn) memcpy(a->arr.data, in, inn);
+        if (a && a->arr.data && inn) memcpy(a->arr.data, in, inn);
         return a;
     }
     size_t cap = inn + 32;
     uint8_t *out = malloc(cap);
+    if (!out) { *ok = false; return NULL; }
     size_t total = 0, n1 = 0;
     if (inn && CCCryptorUpdate(p->cr, in, inn, out, cap, &n1)) { *ok = false; free(out); return NULL; }
     total += n1;
@@ -10786,14 +10866,14 @@ static jobj *cipher_run(ciph *p, const uint8_t *in, size_t inn, bool final, bool
         CCCryptorRelease(p->cr); p->cr = NULL;
     }
     jobj *a = tl_jni_new_prim_array('B', (uint32_t)total);
-    memcpy(a->arr.data, out, total); free(out);
+    if (a && a->arr.data) memcpy(a->arr.data, out, total); free(out);
     return a;
 }
 static void Cipher_update(tl_jcall *c)
 {
     jobj *a = c->args[0].l;
     const uint8_t *in = a && a->kind == TL_K_PRIM_ARRAY ? a->arr.data : NULL;
-    size_t inn = in ? a->arr.len : 0;
+    size_t inn = in ? arr_bytes(a) : 0;
     bool ok;
     jobj *r = cipher_run(ciph_of(c->self), in, inn, false, &ok);
     if (!ok) { tl_jni_throw("javax/crypto/BadPaddingException", "cipher update failed"); return; }
@@ -10805,7 +10885,7 @@ static void Cipher_updateRange(tl_jcall *c)
     if (!a || a->kind != TL_K_PRIM_ARRAY) { c->ret = vl(NULL); return; }
     int off = c->args[1].i, n = c->args[2].i;
     if (off < 0) off = 0;
-    if (off + n > (int)a->arr.len) n = (int)a->arr.len - off;
+    if ((size_t)off + (size_t)n > arr_bytes(a)) n = (int)arr_bytes(a) - off;
     if (n < 0) n = 0;
     bool ok;
     jobj *r = cipher_run(ciph_of(c->self), (uint8_t *)a->arr.data + off, (size_t)n, false, &ok);
@@ -10816,7 +10896,7 @@ static void Cipher_doFinal(tl_jcall *c)
 {
     jobj *a = c->args[0].l;
     const uint8_t *in = a && a->kind == TL_K_PRIM_ARRAY ? a->arr.data : NULL;
-    size_t inn = in ? a->arr.len : 0;
+    size_t inn = in ? arr_bytes(a) : 0;
     bool ok;
     jobj *r = cipher_run(ciph_of(c->self), in, inn, true, &ok);
     if (!ok) { tl_jni_throw("javax/crypto/BadPaddingException", "decrypt failed"); return; }
@@ -10828,7 +10908,7 @@ static void Cipher_doFinalRange(tl_jcall *c)
     if (!a || a->kind != TL_K_PRIM_ARRAY) { c->ret = vl(NULL); return; }
     int off = c->args[1].i, n = c->args[2].i;
     if (off < 0) off = 0;
-    if (off + n > (int)a->arr.len) n = (int)a->arr.len - off;
+    if ((size_t)off + (size_t)n > arr_bytes(a)) n = (int)arr_bytes(a) - off;
     if (n < 0) n = 0;
     bool ok;
     jobj *r = cipher_run(ciph_of(c->self), (uint8_t *)a->arr.data + off, (size_t)n, true, &ok);
@@ -10865,8 +10945,11 @@ static void IvPS_init2(tl_jcall *c)
     jobj *a = c->args[0].l;
     if (a && a->kind == TL_K_PRIM_ARRAY) {
         int off = c->args[1].i, n = c->args[2].i;
-        jobj *sub = tl_jni_new_prim_array('B', (uint32_t)(n > 0 ? n : 0));
-        memcpy(sub->arr.data, (char *)a->arr.data + off, (size_t)(n > 0 ? n : 0));
+        if (off < 0) off = 0;
+        if ((size_t)off + (size_t)n > arr_bytes(a)) n = (int)arr_bytes(a) - off;
+        if (n < 0) n = 0;
+        jobj *sub = tl_jni_new_prim_array('B', (uint32_t)n);
+        if (sub && sub->arr.data && n) memcpy(sub->arr.data, (char *)a->arr.data + off, (size_t)n);
         tl_jni_set_field(c->self, "iv", "[B", vl(sub));
     }
 }
@@ -11753,7 +11836,7 @@ static void AD_getListView(tl_jcall *c) { c->ret = vl(make("android/widget/ListV
 static float *glmat(jobj *a, int off)
 {
     if (!a || a->kind != TL_K_PRIM_ARRAY || !a->arr.data) return NULL;
-    if (off < 0 || off + 16 > (int)a->arr.len) return NULL;
+    if (off < 0 || (size_t)(off + 16) * 4 > arr_bytes(a)) return NULL;
     return (float *)a->arr.data + off;
 }
 static void GM_multiplyMM(tl_jcall *c)
@@ -11775,11 +11858,13 @@ static void GM_multiplyMV(tl_jcall *c)
 {
     float *r = NULL;
     jobj *ra = c->args[0].l;
-    if (ra && ra->kind == TL_K_PRIM_ARRAY && c->args[1].i + 4 <= (int)ra->arr.len) r = (float *)ra->arr.data + c->args[1].i;
+    if (ra && ra->kind == TL_K_PRIM_ARRAY && ra->arr.data && c->args[1].i >= 0 &&
+        (size_t)(c->args[1].i + 4) * 4 <= arr_bytes(ra)) r = (float *)ra->arr.data + c->args[1].i;
     float *m = glmat(c->args[2].l, c->args[3].i);
     float *v = NULL;
     jobj *va = c->args[4].l;
-    if (va && va->kind == TL_K_PRIM_ARRAY && c->args[5].i + 4 <= (int)va->arr.len) v = (float *)va->arr.data + c->args[5].i;
+    if (va && va->kind == TL_K_PRIM_ARRAY && va->arr.data && c->args[5].i >= 0 &&
+        (size_t)(c->args[5].i + 4) * 4 <= arr_bytes(va)) v = (float *)va->arr.data + c->args[5].i;
     if (!r || !m || !v) return;
     float t[4];
     for (int i = 0; i < 4; i++) {
@@ -12315,9 +12400,12 @@ static void Ed_getChars(tl_jcall *c) /* (int start, int end, char[] dst, int dst
     edit *d = edit_of(c->self);
     int a = c->args[0].i, b = c->args[1].i, off = c->args[3].i;
     jobj *arr = c->args[2].l;
-    if (!arr || arr->kind != TL_K_PRIM_ARRAY) return;
+    if (!arr || arr->kind != TL_K_PRIM_ARRAY || !arr->arr.data) return;
+    if (a < 0) a = 0;
+    if (off < 0 || (size_t)off >= arr->arr.len) return;
     uint16_t *dst = arr->arr.data;
-    for (int i = a; i < b && (size_t)i < d->b.n; i++) dst[off + i - a] = (uint8_t)d->b.p[i];
+    for (int i = a; i < b && (size_t)i < d->b.n && (size_t)(off + i - a) < arr->arr.len; i++)
+        dst[off + i - a] = (uint8_t)d->b.p[i];
 }
 static void SS_init_str(tl_jcall *c)  /* SpannableString(CharSequence) — immutable view of text */
 {
@@ -12950,7 +13038,7 @@ static void MCI_isEncoder(tl_jcall *c) { c->ret = vz(false); }
 static void MCI_getSupportedTypes(tl_jcall *c)
 {
     jobj *arr = tl_jni_new_obj_array(C("java/lang/String"), 2);
-    arr->oarr.v[0] = STR("video/avc"); arr->oarr.v[1] = STR("audio/mp4a-latm");
+    if (arr && arr->oarr.v) { arr->oarr.v[0] = STR("video/avc"); arr->oarr.v[1] = STR("audio/mp4a-latm"); }
     c->ret = vl(arr);
 }
 
@@ -13855,7 +13943,7 @@ static void PM2_getNameForUid(tl_jcall *c)
 static void PM2_getPackagesForUid(tl_jcall *c)
 {
     jobj *a = tl_jni_new_obj_array(C("java/lang/String"), 1);
-    a->oarr.v[0] = STR("");
+    if (a && a->oarr.v) a->oarr.v[0] = STR("");
     c->ret = vl(a);
 }
 static void PM2_getLaunchIntentForPackage(tl_jcall *c)
@@ -13960,10 +14048,11 @@ static void MC_init_cols(tl_jcall *c)
 {
     jcur *x = cur_of(c->self);
     jobj *names = c->args[0].l;
-    if (names && names->kind == TL_K_OBJ_ARRAY) {
+    if (names && names->kind == TL_K_OBJ_ARRAY && names->oarr.v) {
         x->ncols = (int)names->oarr.len;
-        x->cols = calloc(x->ncols, sizeof(char *));
-        for (int i = 0; i < x->ncols; i++) x->cols[i] = strdup(S(names->oarr.v[i]));
+        x->cols = calloc(x->ncols ? x->ncols : 1, sizeof(char *));
+        if (!x->cols) { x->ncols = 0; return; }
+        for (int i = 0; i < x->ncols; i++) x->cols[i] = strdup(names->oarr.v[i] ? S(names->oarr.v[i]) : "");
     }
 }
 static void MC_addRow_arr(tl_jcall *c)
@@ -13984,6 +14073,7 @@ static void MC_addRow_iter(tl_jcall *c)
     jvalue jv = tl_jni_call(it, "iterator", "()Ljava/util/Iterator;", NULL);
     if (!jv.l) return;
     jobj *cells = tl_jni_new_obj_array(C("java/lang/Object"), x->ncols);
+    if (!cells || !cells->oarr.v) return;
     int n = 0;
     while (n < x->ncols) {
         jvalue h = tl_jni_call(jv.l, "hasNext", "()Z", NULL);
@@ -14285,7 +14375,7 @@ static jobj *hc_bais(hconn *h)
 {
     jobj *s = make("java/io/ByteArrayInputStream");
     jobj *a = tl_jni_new_prim_array('B', (uint32_t)h->body_len);
-    memcpy(a->arr.data, h->body, h->body_len);
+    if (a && a->arr.data && h->body) memcpy(a->arr.data, h->body, h->body_len);
     jvalue arg = { .j = 0, .l = a };
     tl_jni_call(s, "<init>", "([B)V", &arg);
     return s;
@@ -14779,6 +14869,7 @@ static void sis_read(tl_jcall *c, int off, int len)
     if (f->fd < 0) { tl_jni_throw("java/net/SocketException", "socket closed"); c->ret = vi(-1); return; }
     jobj *arr = c->args[0].l;
     if (!arr || arr->kind != TL_K_PRIM_ARRAY || len <= 0) { c->ret = vi(len == 0 ? 0 : -1); return; }
+    if (off < 0 || (size_t)off + (size_t)len > arr_bytes(arr)) { tl_jni_throw("java/lang/IndexOutOfBoundsException", ""); c->ret = vi(-1); return; }
     ssize_t n = recv(f->fd, (uint8_t *)arr->arr.data + off, (size_t)len, 0);
     if (n == 0) { c->ret = vi(-1); return; }
     if (n < 0) {
@@ -14787,7 +14878,7 @@ static void sis_read(tl_jcall *c, int off, int len)
     }
     c->ret = vi((int)n);
 }
-static void SIS_read_buf(tl_jcall *c)  { sis_read(c, 0, c->args[0].l && ((jobj *)c->args[0].l)->kind == TL_K_PRIM_ARRAY ? (int)((jobj *)c->args[0].l)->arr.len : 0); }
+static void SIS_read_buf(tl_jcall *c)  { sis_read(c, 0, c->args[0].l && ((jobj *)c->args[0].l)->kind == TL_K_PRIM_ARRAY ? (int)arr_bytes((jobj *)c->args[0].l) : 0); }
 static void SIS_read_off(tl_jcall *c)  { sis_read(c, c->args[1].i, c->args[2].i); }
 static void SIS_available(tl_jcall *c)
 {
@@ -14819,6 +14910,7 @@ static void sos_write(tl_jcall *c, int off, int len)
     if (f->fd < 0) { tl_jni_throw("java/net/SocketException", "socket closed"); return; }
     jobj *arr = c->args[0].l;
     if (!arr || arr->kind != TL_K_PRIM_ARRAY || len <= 0) return;
+    if (off < 0 || (size_t)off + (size_t)len > arr_bytes(arr)) { tl_jni_throw("java/lang/IndexOutOfBoundsException", ""); return; }
     size_t done = 0;
     while (done < (size_t)len) {
         ssize_t n = send(f->fd, (const uint8_t *)arr->arr.data + off + done, (size_t)len - done, 0);
@@ -14826,7 +14918,7 @@ static void sos_write(tl_jcall *c, int off, int len)
         done += (size_t)n;
     }
 }
-static void SOS_write_buf(tl_jcall *c) { sos_write(c, 0, c->args[0].l && ((jobj *)c->args[0].l)->kind == TL_K_PRIM_ARRAY ? (int)((jobj *)c->args[0].l)->arr.len : 0); }
+static void SOS_write_buf(tl_jcall *c) { sos_write(c, 0, c->args[0].l && ((jobj *)c->args[0].l)->kind == TL_K_PRIM_ARRAY ? (int)arr_bytes((jobj *)c->args[0].l) : 0); }
 static void SOS_write_off(tl_jcall *c) { sos_write(c, c->args[1].i, c->args[2].i); }
 static void SOS_flush(tl_jcall *c) { (void)c; }
 static void SOS_close(tl_jcall *c) { SIS_close(c); }
@@ -14938,13 +15030,13 @@ static void tsis_read(tl_jcall *c, int off, int len)
     jobj *a = c->args[0].l;
     if (!s || !s->h) { tl_jni_throw("java/net/SocketException", "socket closed"); c->ret = vi(-1); return; }
     if (!a || a->kind != TL_K_PRIM_ARRAY || len <= 0) { c->ret = vi(len == 0 ? 0 : -1); return; }
-    if (off < 0 || (size_t)(off + len) > a->arr.len) { tl_jni_throw("java/lang/IndexOutOfBoundsException", ""); c->ret = vi(-1); return; }
+    if (off < 0 || (size_t)off + (size_t)len > arr_bytes(a)) { tl_jni_throw("java/lang/IndexOutOfBoundsException", ""); c->ret = vi(-1); return; }
     int r = tl_tls_read(s->h, (uint8_t *)a->arr.data + off, len, s->timeout_ms);
     if (r == 0) { tl_jni_throw("java/net/SocketTimeoutException", "read timed out"); c->ret = vi(-1); return; }
     if (r < 0) { if (r == -2) tl_jni_throw("javax/net/ssl/SSLException", "connection failed"); c->ret = vi(-1); return; }
     c->ret = vi(r);
 }
-static void TSIS_read_buf(tl_jcall *c) { tsis_read(c, 0, c->args[0].l && ((jobj *)c->args[0].l)->kind == TL_K_PRIM_ARRAY ? (int)((jobj *)c->args[0].l)->arr.len : 0); }
+static void TSIS_read_buf(tl_jcall *c) { tsis_read(c, 0, c->args[0].l && ((jobj *)c->args[0].l)->kind == TL_K_PRIM_ARRAY ? (int)arr_bytes((jobj *)c->args[0].l) : 0); }
 static void TSIS_read_off(tl_jcall *c) { tsis_read(c, c->args[1].i, c->args[2].i); }
 static void TSIS_available(tl_jcall *c)
 {
@@ -14974,6 +15066,7 @@ static void tsos_write(tl_jcall *c, int off, int len)
     jobj *a = c->args[0].l;
     if (!s || !s->h) { tl_jni_throw("java/net/SocketException", "socket closed"); return; }
     if (!a || a->kind != TL_K_PRIM_ARRAY || len <= 0) return;
+    if (off < 0 || (size_t)off + (size_t)len > arr_bytes(a)) { tl_jni_throw("java/lang/IndexOutOfBoundsException", ""); return; }
     size_t done = 0;
     while (done < (size_t)len) {
         int w = tl_tls_write(s->h, (const uint8_t *)a->arr.data + off + done, len - (int)done);
@@ -14981,7 +15074,7 @@ static void tsos_write(tl_jcall *c, int off, int len)
         done += (size_t)w;
     }
 }
-static void TSOS_write_buf(tl_jcall *c) { tsos_write(c, 0, c->args[0].l && ((jobj *)c->args[0].l)->kind == TL_K_PRIM_ARRAY ? (int)((jobj *)c->args[0].l)->arr.len : 0); }
+static void TSOS_write_buf(tl_jcall *c) { tsos_write(c, 0, c->args[0].l && ((jobj *)c->args[0].l)->kind == TL_K_PRIM_ARRAY ? (int)arr_bytes((jobj *)c->args[0].l) : 0); }
 static void TSOS_write_off(tl_jcall *c) { tsos_write(c, c->args[1].i, c->args[2].i); }
 static void TSOS_write_i(tl_jcall *c)
 {
@@ -15144,7 +15237,8 @@ static void DSock_send(tl_jcall *c)
     struct sockaddr_in sa = { .sin_family = AF_INET, .sin_port = htons((uint16_t)port) };
     inet_pton(AF_INET, host, &sa.sin_addr);
     int on = 1; setsockopt(d->fd, SOL_SOCKET, SO_BROADCAST, &on, sizeof(on));
-    if (data && data->kind == TL_K_PRIM_ARRAY)
+    if (data && data->kind == TL_K_PRIM_ARRAY && off >= 0 && len >= 0 &&
+        (size_t)off + (size_t)len <= arr_bytes(data))
         sendto(d->fd, (const uint8_t *)data->arr.data + off, (size_t)len, 0, (struct sockaddr *)&sa, sizeof(sa));
 }
 static void DSock_receive(tl_jcall *c)
@@ -15154,8 +15248,10 @@ static void DSock_receive(tl_jcall *c)
     jobj *p = c->args[0].l; if (!p) return;
     jobj *data = tl_jni_get_field(p, "data", "[B").l;
     int off = get_int(p, "offset"), len = get_int(p, "length");
-    if (len <= 0 && data) len = (int)data->arr.len;
     if (!data || data->kind != TL_K_PRIM_ARRAY) return;
+    if (len <= 0) len = (int)arr_bytes(data);
+    if (off < 0 || (size_t)off >= arr_bytes(data)) return;
+    if ((size_t)off + (size_t)len > arr_bytes(data)) len = (int)arr_bytes(data) - off;
     struct sockaddr_in sa; socklen_t sl = sizeof(sa);
     ssize_t n = recvfrom(d->fd, (uint8_t *)data->arr.data + off, (size_t)len, 0, (struct sockaddr *)&sa, &sl);
     if (n < 0) {
@@ -15557,8 +15653,9 @@ static void BF_decodeFile(tl_jcall *c)
 static void BF_decodeByteArray(tl_jcall *c)   /* (byte[], off, len [, opts]) */
 {
     jobj *a = c->args[0].l;
-    if (!a || a->kind != TL_K_PRIM_ARRAY) { c->ret = vl(NULL); return; }
     int off = c->args[1].i, len = c->args[2].i;
+    if (!a || a->kind != TL_K_PRIM_ARRAY || off < 0 || len < 0 ||
+        (size_t)off + (size_t)len > arr_bytes(a)) { c->ret = vl(NULL); return; }
     void *px = NULL; int w = 0, h = 0;
     c->ret = vl(tl_more_decode_image_mem((const uint8_t *)a->arr.data + off, (size_t)len, &w, &h, &px) ? bitmap_from_decoded(px, w, h) : NULL);
 }
@@ -15568,12 +15665,19 @@ static void BF_decodeStream(tl_jcall *c)
     jobj *in = c->args[0].l;
     if (!in) { c->ret = vl(NULL); return; }
     jobj *arr = tl_jni_new_prim_array('B', 1 << 16);
+    if (!arr) { c->ret = vl(NULL); return; }
     sbuf b = { 0 };
     for (;;) {
         jvalue a[3] = { { .j = 0, .l = arr }, { .i = 0 }, { .i = 1 << 16 } };
         jvalue n = tl_jni_call(in, "read", "([BII)I", a);
         if (n.i <= 0) break;
-        if (b.n + (size_t)n.i + 1 > b.cap) { b.cap = (b.cap + (size_t)n.i + 64) * 2; b.p = realloc(b.p, b.cap); }
+        if ((size_t)n.i > arr_bytes(arr)) n.i = (int32_t)arr_bytes(arr); /* hostile stream overreporting */
+        if (b.n + (size_t)n.i + 1 > b.cap) {
+            size_t nc = (b.cap + (size_t)n.i + 64) * 2;
+            char *np = realloc(b.p, nc);
+            if (!np) { free(b.p); c->ret = vl(NULL); tl_jni_throw("java/lang/OutOfMemoryError", "decode buffer"); return; }
+            b.p = np; b.cap = nc;
+        }
         memcpy(b.p + b.n, arr->arr.data, (size_t)n.i); b.n += (size_t)n.i;
     }
     void *px = NULL; int w = 0, h = 0;
@@ -15610,16 +15714,19 @@ static void BM_hasAlpha(tl_jcall *c)     { c->ret = vz(1); }
 static void BM_getPixels(tl_jcall *c)    /* getPixels(int[] pixels, off, stride, x, y, w, h) */
 {
     bmpx *p = bmpx_of(c->self); jobj *dst = c->args[0].l;
-    if (!p->px || !dst || dst->kind != TL_K_PRIM_ARRAY) return;
+    if (!p->px || !dst || dst->kind != TL_K_PRIM_ARRAY || !dst->arr.data) return;
     int off = c->args[1].i, stride = c->args[2].i, x = c->args[3].i, y = c->args[4].i, w = c->args[5].i, h = c->args[6].i;
     uint32_t *d = (uint32_t *)dst->arr.data;
+    if (x < 0) x = 0; if (y < 0) y = 0;
     for (int row = 0; row < h && y + row < p->h; row++)
         for (int col = 0; col < w && x + col < p->w; col++) {
+            int64_t di = (int64_t)off + (int64_t)row * stride + col;
+            if (di < 0 || di >= (int64_t)(arr_bytes(dst) / 4)) continue;
             const uint8_t *s = p->px + ((size_t)(y + row) * p->w + x + col) * 4;
             uint32_t r = s[0], g = s[1], b2 = s[2], a2 = s[3];
             /* unpremultiply for Java ints (ARGB_8888 non-premul) */
             if (a2 && a2 < 255) { r = r * 255 / a2; g = g * 255 / a2; b2 = b2 * 255 / a2; }
-            d[off + row * stride + col] = (a2 << 24) | (r << 16) | (g << 8) | b2;
+            d[di] = (a2 << 24) | (r << 16) | (g << 8) | b2;
         }
 }
 static void BM_copyPixelsToBuffer(tl_jcall *c)
@@ -15629,7 +15736,9 @@ static void BM_copyPixelsToBuffer(tl_jcall *c)
     /* nio Buffer: addr pointer + position..limit window (matches new_bb) */
     uint8_t *addr = (uint8_t *)(uintptr_t)get_lng(buf, "addr");
     int pos = get_int(buf, "pos"), lim = get_int(buf, "lim");
-    if (!addr || lim <= pos) return;
+    int64_t cap = get_lng(buf, "cap");
+    if (lim > cap) lim = (int)cap;
+    if (!addr || pos < 0 || lim <= pos) return;
     size_t room = (size_t)(lim - pos), need = (size_t)p->w * p->h * 4;
     memcpy(addr + pos, p->px, need < room ? need : room);
     set_int(buf, "pos", pos + (int)(need < room ? need : room));
@@ -15652,16 +15761,20 @@ static void BM_createBitmap_wh(tl_jcall *c)   /* createBitmap(w, h, Config) */
 static void BM_createBitmap_src(tl_jcall *c)  /* createBitmap(Bitmap) */
 {
     bmpx *p = bmpx_of(c->args[0].l);
-    if (!p->px) { c->ret = vl(NULL); return; }
-    void *px = malloc((size_t)p->w * p->h * 4); memcpy(px, p->px, (size_t)p->w * p->h * 4);
+    if (!p || !p->px) { c->ret = vl(NULL); return; }
+    size_t np = (size_t)p->w * (size_t)p->h * 4;
+    void *px = malloc(np);
+    if (!px) { c->ret = vl(NULL); return; }
+    memcpy(px, p->px, np);
     c->ret = vl(bitmap_from_decoded(px, p->w, p->h));
 }
 static void BM_createScaled(tl_jcall *c)      /* createScaledBitmap(src, w, h, filter) — nearest-neighbour */
 {
     bmpx *p = bmpx_of(c->args[0].l);
     int w = c->args[1].i, h = c->args[2].i;
-    if (!p->px || w <= 0 || h <= 0) { c->ret = vl(NULL); return; }
+    if (!p || !p->px || w <= 0 || h <= 0 || w > 16384 || h > 16384) { c->ret = vl(NULL); return; }
     uint8_t *px = malloc((size_t)w * h * 4);
+    if (!px) { c->ret = vl(NULL); return; }
     for (int y = 0; y < h; y++)
         for (int x = 0; x < w; x++)
             memcpy(px + ((size_t)y * w + x) * 4,
@@ -15942,9 +16055,13 @@ static void Cvs_drawTextChars(tl_jcall *c) /* (char[], idx, count, x, y, Paint) 
 {
     cvx *v = cvx_of(c->self); if (!v->cg || !c->args[0].l) return;
     jobj *a = c->args[0].l;
-    if (a->kind != TL_K_PRIM_ARRAY) return;
+    if (a->kind != TL_K_PRIM_ARRAY || !a->arr.data) return;
     int idx = c->args[1].i, cnt = c->args[2].i;
+    if (idx < 0) idx = 0;
+    if (cnt < 0 || (size_t)(idx + cnt) > a->arr.len) cnt = (int)a->arr.len - idx;
+    if (cnt <= 0) return;
     char *s = malloc((size_t)cnt + 1);
+    if (!s) return;
     uint16_t *ch = a->arr.data;
     for (int i = 0; i < cnt; i++) s[i] = (char)(ch[idx + i] < 128 ? ch[idx + i] : '?');
     s[cnt] = 0;
@@ -16014,9 +16131,11 @@ static int zin_pull(zin *z)   /* returns bytes available in zs.avail_in, or -1 o
 {
     if (z->zs.avail_in == 0 && !z->eof) {
         jobj *arr = tl_jni_new_prim_array('B', sizeof(z->ibuf));
+        if (!arr || !arr->arr.data) { z->eof = true; return -1; }
         jvalue a[3] = { { .j = 0, .l = arr }, { .i = 0 }, { .i = sizeof(z->ibuf) } };
         jvalue n = tl_jni_call(z->in, "read", "([BII)I", a);
         if (n.i <= 0) { z->eof = true; return -1; }
+        if ((size_t)n.i > sizeof(z->ibuf)) n.i = (int32_t)sizeof(z->ibuf); /* stream overreported */
         memcpy(z->ibuf, arr->arr.data, (size_t)n.i);
         z->zs.next_in = z->ibuf; z->zs.avail_in = (uInt)n.i;
     }
@@ -16058,15 +16177,16 @@ static void IIS_read_arr(tl_jcall *c)
 {
     jobj *a = c->args[0].l;
     if (!a || a->kind != TL_K_PRIM_ARRAY) { c->ret = vi(-1); return; }
-    int n = zis_read(zin_of(c->self), a->arr.data, (int)a->arr.len);
+    int n = zis_read(zin_of(c->self), a->arr.data, (int)arr_bytes(a));
     if (n == -2) { tl_jni_throw("java/util/zip/ZipException", "bad deflate data"); c->ret = vi(-1); return; }
     c->ret = vi(n);
 }
 static void IIS_read_range(tl_jcall *c)
 {
-    jobj *a = c->args[0].l;
-    if (!a || a->kind != TL_K_PRIM_ARRAY) { c->ret = vi(-1); return; }
-    int n = zis_read(zin_of(c->self), (uint8_t *)a->arr.data + c->args[1].i, c->args[2].i);
+    int len = c->args[2].i;
+    void *w = arr_win(c, c->args[0].l, c->args[1].i, len);
+    if (!w) { c->ret = vi(-1); return; }
+    int n = zis_read(zin_of(c->self), w, len);
     if (n == -2) { tl_jni_throw("java/util/zip/ZipException", "bad deflate data"); c->ret = vi(-1); return; }
     c->ret = vi(n);
 }
@@ -16109,26 +16229,28 @@ static void Inf_init_raw(tl_jcall *c)   /* Inflater(boolean nowrap) */
 }
 static void Inf_setInput(tl_jcall *c)
 {
-    zinf *z = zinf_of(c->self); jobj *a = c->args[0].l;
-    if (!a || a->kind != TL_K_PRIM_ARRAY) return;
+    zinf *z = zinf_of(c->self);
     int off = c->args[1].i, len = c->args[2].i;
-    z->zs.next_in = (uint8_t *)a->arr.data + off; z->zs.avail_in = (uInt)len;
+    uint8_t *w = arr_win(c, c->args[0].l, off, len);
+    if (!w) return;
+    z->zs.next_in = w; z->zs.avail_in = (uInt)len;
     z->need_in = false;
-    set_obj(c->self, "_buf", "[B", a);   /* keep the array alive while zlib points into it */
+    set_obj(c->self, "_buf", "[B", c->args[0].l);   /* keep the array alive while zlib points into it */
 }
 static void Inf_setInput_arr(tl_jcall *c)   /* setInput(byte[]) */
 {
     zinf *z = zinf_of(c->self); jobj *a = c->args[0].l;
     if (!a || a->kind != TL_K_PRIM_ARRAY) return;
-    z->zs.next_in = a->arr.data; z->zs.avail_in = (uInt)a->arr.len;
+    z->zs.next_in = a->arr.data; z->zs.avail_in = (uInt)arr_bytes(a);
     z->need_in = false;
     set_obj(c->self, "_buf", "[B", a);
 }
 static void inf_inflate(tl_jcall *c, int off, int len)
 {
-    zinf *z = zinf_of(c->self); jobj *a = c->args[0].l;
-    if (!a || a->kind != TL_K_PRIM_ARRAY) { c->ret = vi(0); return; }
-    z->zs.next_out = (uint8_t *)a->arr.data + off; z->zs.avail_out = (uInt)len;
+    zinf *z = zinf_of(c->self);
+    uint8_t *w = arr_win(c, c->args[0].l, off, len);
+    if (!w || len < 0) { c->ret = vi(0); return; }
+    z->zs.next_out = w; z->zs.avail_out = (uInt)len;
     int rc = inflate(&z->zs, Z_NO_FLUSH);
     int got = len - (int)z->zs.avail_out;
     if (rc == Z_STREAM_END) z->finished = true;
@@ -16165,9 +16287,10 @@ static void Def_setInput(tl_jcall *c)  { Inf_setInput(c); }
 static void Def_setInput_arr(tl_jcall *c) { Inf_setInput_arr(c); }
 static void def_deflate(tl_jcall *c, int off, int len)
 {
-    zinf *z = zinf_of(c->self); jobj *a = c->args[0].l;
-    if (!a || a->kind != TL_K_PRIM_ARRAY) { c->ret = vi(0); return; }
-    z->zs.next_out = (uint8_t *)a->arr.data + off; z->zs.avail_out = (uInt)len;
+    zinf *z = zinf_of(c->self);
+    uint8_t *w = arr_win(c, c->args[0].l, off, len);
+    if (!w || len < 0) { c->ret = vi(0); return; }
+    z->zs.next_out = w; z->zs.avail_out = (uInt)len;
     int rc = deflate(&z->zs, z->finishing ? Z_FINISH : Z_NO_FLUSH);
     int got = len - (int)z->zs.avail_out;
     if (rc == Z_STREAM_END) z->finished = true;
@@ -16187,6 +16310,7 @@ static void zos_flush_out(zout *z)
     size_t have = sizeof(z->buf) - z->zs.avail_out;
     if (have && z->out) {
         jobj *arr = tl_jni_new_prim_array('B', (uint32_t)have);
+        if (!arr) { z->zs.next_out = z->buf; z->zs.avail_out = sizeof(z->buf); return; }
         memcpy(arr->arr.data, z->buf, have);
         jvalue a[3] = { { .j = 0, .l = arr }, { .i = 0 }, { .i = (int)have } };
         tl_jni_call(z->out, "write", "([BII)V", a);
@@ -16220,12 +16344,12 @@ static void DOS_write0(tl_jcall *c)    { uint8_t b = (uint8_t)c->args[0].i; zos_
 static void DOS_write_arr(tl_jcall *c)
 {
     jobj *a = c->args[0].l;
-    if (a && a->kind == TL_K_PRIM_ARRAY) zos_write(zout_of(c->self), a->arr.data, a->arr.len);
+    if (a && a->kind == TL_K_PRIM_ARRAY) zos_write(zout_of(c->self), a->arr.data, arr_bytes(a));
 }
 static void DOS_write_range(tl_jcall *c)
 {
-    jobj *a = c->args[0].l;
-    if (a && a->kind == TL_K_PRIM_ARRAY) zos_write(zout_of(c->self), (uint8_t *)a->arr.data + c->args[1].i, (size_t)c->args[2].i);
+    void *w = arr_win(c, c->args[0].l, c->args[1].i, c->args[2].i);
+    if (w && c->args[2].i > 0) zos_write(zout_of(c->self), w, (size_t)c->args[2].i);
 }
 static void DOS_finish(tl_jcall *c)
 {

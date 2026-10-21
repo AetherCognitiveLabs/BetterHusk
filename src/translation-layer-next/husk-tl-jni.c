@@ -514,8 +514,15 @@ jobj *tl_jni_new_prim_array(char etype, uint32_t len)
     if (etype == 'Z' || etype == 'B' || etype == 'C' || etype == 'S' || etype == 'I' || etype == 'J' || etype == 'F' || etype == 'D') { /* ok */ }
     char cn[4] = { '[', etype, 0 };
     jobj *o = obj_alloc(TL_K_PRIM_ARRAY, tl_jni_class(cn));
+    if (!o) return NULL;
     o->arr.esz = esz_of(etype); o->arr.etype = etype; o->arr.len = len;
     o->arr.data = calloc(len ? len : 1, o->arr.esz);
+    if (!o->arr.data && len) {
+        /* keep the object consistent: a failed array has zero elements so
+         * bounds-checked paths see an empty buffer instead of a NULL len>0 */
+        o->arr.len = 0; o->arr.esz = 1;
+        tl_jni_throw("java/lang/OutOfMemoryError", "primitive array alloc");
+    }
     return o;
 }
 
@@ -524,8 +531,10 @@ jobj *tl_jni_new_obj_array(tl_jclass *elem, uint32_t len)
     char cn[1024];
     snprintf(cn, sizeof(cn), "[L%s;", elem ? elem->name : "java/lang/Object");
     jobj *o = obj_alloc(TL_K_OBJ_ARRAY, tl_jni_class(cn));
+    if (!o) return NULL;
     o->oarr.len = len;
     o->oarr.v = calloc(len ? len : 1, sizeof(jobj *));
+    if (!o->oarr.v && len) { o->oarr.len = 0; tl_jni_throw("java/lang/OutOfMemoryError", "object array alloc"); }
     return o;
 }
 
