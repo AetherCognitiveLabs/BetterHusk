@@ -64,6 +64,24 @@
       "iconURL": "https://f-droid.org/repo/icons-640/com.dozingcatsoftware.bouncy.43.png",
       "localizedDescription": "Pinball on a custom minimal engine — a good first test of the Translation Layer. Route: Translation Layer.",
       "route": "tl"
+    },
+    {
+      "name": "Mouse Pounce",
+      "bundleIdentifier": "com.dozingcatsoftware.mouse_pounce",
+      "version": "1.4.0",
+      "downloadURL": "https://f-droid.org/repo/com.dozingcatsoftware.mouse_pounce_10.apk",
+      "iconURL": "https://f-droid.org/repo/icons-640/com.dozingcatsoftware.mouse_pounce.10.png",
+      "localizedDescription": "Card game of quick paws by the Vector Pinball developer — pure Java, well inside the Translation Layer's coverage.",
+      "route": "tl"
+    },
+    {
+      "name": "PySolFC",
+      "bundleIdentifier": "org.lufebe16.pysolfc",
+      "version": "2.21.0",
+      "downloadURL": "https://f-droid.org/repo/org.lufebe16.pysolfc_102130601.apk",
+      "iconURL": "https://f-droid.org/repo/icons-640/org.lufebe16.pysolfc.102130601.png",
+      "localizedDescription": "Over a thousand solitaire variants in one collection — a large pure-Python/Java app exercising the Translation Layer deeply.",
+      "route": "tl"
     }
   ]
 }
