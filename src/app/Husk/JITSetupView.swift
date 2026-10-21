@@ -456,11 +456,13 @@ struct JITSetupFlow: View {
              subtitle: "BetterHusk is running inside LiveContainer. Both share one process, so JIT for one is JIT for "
                      + "the other -- it just has to be switched on from outside, the way LiveContainer does it.") {
             VStack(alignment: .leading, spacing: 14) {
-                point(1, "In **LiveContainer**, open BetterHusk's settings and turn on **JIT** for it (or launch it with JIT).",
+                point(1, "In **LiveContainer**, long-press BetterHusk, open **Settings** and turn on **Launch with JIT**.",
                       done: JITBootstrap.ready)
-                point(2, "Or attach **StikDebug** -- it marks the process LiveContainer and BetterHusk share.",
+                point(2, "On iOS 26+ also choose **husk-jit.js** as the JIT script -- the button below saves it to Files so LiveContainer can offer it.",
                       done: JITBootstrap.ready)
-                point(3, "Come back here. This page notices on its own.", done: JITBootstrap.ready)
+                point(3, "Or attach **StikDebug** -- it marks the process LiveContainer and BetterHusk share.",
+                      done: JITBootstrap.ready)
+                point(4, "Come back here. This page notices on its own.", done: JITBootstrap.ready)
             }
             .padding(16).huskCard()
             if JITBootstrap.ready || jit.attachGeneration > 0 {
@@ -472,13 +474,17 @@ struct JITSetupFlow: View {
             if JITBootstrap.ready || jit.attachGeneration > 0 {
                 Button("Done") { close() }.buttonStyle(PrimaryButtonStyle())
             } else {
-                if JITBootstrap.isStikDebugInstalled {
-                    Button {
-                        jit.method = .stikDebug
-                        jit.enable()
-                    } label: { Label("Attach with StikDebug", systemImage: "ant") }
-                        .buttonStyle(PrimaryButtonStyle())
+                if let script = JITBootstrap.scriptFileURL {
+                    HuskShareLink(item: script) {
+                        Label("Save husk-jit.js to Files", systemImage: "square.and.arrow.up")
+                    }
+                    .buttonStyle(PrimaryButtonStyle())
                 }
+                Button {
+                    jit.method = .stikDebug
+                    jit.enable()
+                } label: { Label("Attach with StikDebug", systemImage: "ant") }
+                    .buttonStyle(.bordered)
                 Button("Not now") { close() }
                     .font(.system(size: 15, weight: .medium))
                     .foregroundStyle(Theme.textDim)

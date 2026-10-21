@@ -56,7 +56,10 @@ struct JITCard: View {
                     ProgressView()
                 } else {
                     Button {
-                        if JITBootstrap.isInsideLiveContainer, !JITBootstrap.isStikDebugInstalled {
+                        // Inside LiveContainer the strip cannot enable anything itself:
+                        // the switch lives in the container's settings, which the
+                        // walkthrough's LiveContainer page lays out.
+                        if JITBootstrap.isInsideLiveContainer {
                             jit.showSetup = true
                         } else {
                             if offered == .builtIn, HuskBuiltInJIT.isAvailable { jit.method = .builtIn }
@@ -83,25 +86,25 @@ struct JITCard: View {
 
     private var explanation: String {
         if JITBootstrap.isInsideLiveContainer {
-            return "BetterHusk is running inside LiveContainer: turn JIT on for it in LiveContainer's app settings"
-                 + (JITBootstrap.isStikDebugInstalled ? ", or attach StikDebug to the process they share." : ".")
+            if JITBootstrap.canTryStikDebugAttach {
+                return "BetterHusk is running inside LiveContainer: turn JIT on for it in LiveContainer's app settings, or attach StikDebug to the process they share."
+            }
+            return "BetterHusk is running inside LiveContainer: turn JIT on for it in LiveContainer's app settings."
         }
         switch offered {
         case .trollStore:
-            return "TrollStore can turn JIT on for BetterHusk: it opens BetterHusk and enables it, with no computer. "
-                 + "In TrollStore's Settings, URL Scheme must be on."
+            return "TrollStore can turn JIT on for BetterHusk: it opens BetterHusk and enables it, with no computer. In TrollStore's Settings, URL Scheme must be on."
         case .jailbreak:
             return "On a jailbroken device JIT is a setting. In Dopamine, turn on Allow JIT in Apps, then open BetterHusk again."
         case .stikDebug:
             return "StikDebug is installed, so BetterHusk will open it to turn JIT on."
         default:
-            return "StikJIT is built into BetterHusk. You can turn JIT on right here — no computer and no other app. "
-                 + "Games and Android both need it."
+            return "StikJIT is built into BetterHusk. You can turn JIT on right here — no computer and no other app. Games and Android both need it."
         }
     }
 
     private var buttonTitle: String {
-        if JITBootstrap.isInsideLiveContainer, !JITBootstrap.isStikDebugInstalled { return "How to Get JIT" }
+        if JITBootstrap.isInsideLiveContainer { return "How to Get JIT" }
         switch offered {
         case .trollStore: return "Turn On JIT with TrollStore"
         case .jailbreak: return "How to Allow JIT"
@@ -154,9 +157,9 @@ struct JITCard: View {
                 }
             } else {
                 Button {
-                    // Inside LiveContainer without StikDebug there is nothing to enable from here -- the
-                    // switch lives in LiveContainer's settings, which the walkthrough explains.
-                    if JITBootstrap.isInsideLiveContainer, !JITBootstrap.isStikDebugInstalled {
+                    // Inside LiveContainer there is nothing to enable from here -- the
+                    // switch lives in the container's settings, which the walkthrough explains.
+                    if JITBootstrap.isInsideLiveContainer {
                         jit.showSetup = true
                     } else {
                         // The one this card offers, whatever "Automatic" would have picked.

@@ -47,6 +47,10 @@ bool husk_ios_jit_prewarm(size_t bytes);
 /* Mark that a brk from us is expected to be serviced (the chosen JIT method
    traps), so a failed launch-time prewarm may retry once a debugger appears. */
 void husk_ios_jit_expect_servicer(void);
+/* Clear the expectation when the announced attach never arrived (e.g. a stikjit:// open that failed inside LiveContainer). */
+void husk_ios_jit_unexpect_servicer(void);
+/* The pid tracing this process right now (0 nobody, -1 unknown). Inside LiveContainer CS_DEBUGGED cannot answer this. */
+int husk_ios_jit_tracer_pid(void);
 bool husk_ios_jit_is_available(void);
 /* Whether a plain MAP_JIT mapping executes in this process -- the second of the
  * two routes to executable memory, measured rather than predicted. */

@@ -93,12 +93,25 @@ enum JITBootstrap {
         }
         HuskLog.log("jit", "claiming \(jitBytes / (1024 * 1024)) MiB of JIT memory now, "
                          + "before the guest download -- StikDebug does not stay attached")
-        husk_ios_jit_expect_servicer()
+        // Inside LiveContainer CS_DEBUGGED is set on the shared process whether or not
+        // a servicer exists. Arm the trap only when a real ptrace attach holds us --
+        // the flag alone must never send a brk to a debugger that forwards it.
+        if !isInsideLiveContainer || husk_ios_jit_tracer_pid() > 0 {
+            husk_ios_jit_expect_servicer()
+        }
         let ok = husk_ios_jit_prewarm(jitBytes)
         if ok {
             prewarmed = true
             lastFailure = nil
             detachIfDone()
+        }
+        if isInsideLiveContainer {
+            // The question is answered now: either the attach held us but serviced
+            // nothing (it is LiveContainer's own debugger, not a servicer), or the
+            // region is held and no probe is left that needs the expectation.
+            // Leaving it armed would send a later guarded fault to a tracer that
+            // forwards stops instead of answering them -- that is a freeze.
+            husk_ios_jit_unexpect_servicer()
         }
         else if mapJITWorks {
             // Not a failure worth reporting: this is the ordinary shape of an
@@ -279,6 +292,21 @@ enum JITBootstrap {
         URL(string: "stikjit://").map(UIApplication.shared.canOpenURL) ?? false
     }
 
+    /// Whether asking StikDebug to attach is worth trying. Inside LiveContainer
+    /// canOpenURL answers for the container's Info.plist, not ours -- StikDebug
+    /// may well be installed where the query says it is not, so the attach is
+    /// always worth an open() there.
+    static var canTryStikDebugAttach: Bool {
+        isStikDebugInstalled || isInsideLiveContainer
+    }
+
+    /// husk-jit.js as it sits in the bundle, for the walkthrough's "save it to
+    /// Files so LiveContainer can offer it as a JIT script" step.
+    static var scriptFileURL: URL? {
+        Bundle.main.url(forResource: "husk-jit", withExtension: "js")
+            ?? Bundle.main.url(forResource: "husk-jit", withExtension: "js", subdirectory: "Resources")
+    }
+
     /// Whether TrollStore is on this device. It answers enable-jit on the `apple-magnifier` scheme, but that scheme is also the
     /// Magnifier app's, on every iPhone, so whether it opens says nothing. A Husk TrollStore installed knows from its marker file;
     /// otherwise SpringBoard is asked to open TrollStore, suspended, which an ordinary app is refused (9) when it exists and told
@@ -410,10 +438,31 @@ enum JITBootstrap {
             return false
         }
 
+        if isInsideLiveContainer {
+            // Inside LiveContainer, canOpenURL consults the container's
+            // LSApplicationQueriesSchemes, not ours -- a false there says nothing
+            // about whether StikDebug is really installed. open() is the only
+            // honest answer, and its completion handler tells us whether the
+            // armed servicer expectation has to come back down.
+            HuskLog.log("jit", "inside LiveContainer: opening stikjit:// for bundle "
+                             + "\(bundleID) without the canOpenURL gate")
+            UIApplication.shared.open(launchURL, options: [:]) { opened in
+                if !opened {
+                    HuskLog.log("jit", "stikjit:// did not open -- StikDebug is not "
+                                     + "installed after all; LiveContainer's own "
+                                     + "launch option is the route")
+                    husk_ios_jit_unexpect_servicer()
+                    Task { @MainActor in JITCoordinator.shared.noteStikDebugOpenFailed() }
+                }
+            }
+            return true
+        }
+
         guard UIApplication.shared.canOpenURL(launchURL) else {
             HuskLog.log("jit", "FAIL: cannot open stikjit:// -- StikDebug is not "
                              + "installed, or LSApplicationQueriesSchemes is missing "
                              + "the 'stikjit' entry in Info.plist")
+            husk_ios_jit_unexpect_servicer()
             return false
         }
 

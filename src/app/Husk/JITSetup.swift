@@ -138,10 +138,21 @@ final class JITCoordinator: ObservableObject {
 
     var resolvedMethod: JITMethod {
         guard method == .automatic else { return method }
+        // Inside LiveContainer the built-in helper cannot run and canOpenURL
+        // lies, so the attach attempt is always the right first answer.
+        if JITBootstrap.isInsideLiveContainer { return .stikDebug }
         if JITBootstrap.isStikDebugInstalled { return .stikDebug }
         if JITBootstrap.isTrollStoreInstalled { return .trollStore }
         if JITBootstrap.isJailbroken { return .jailbreak }
         return .builtIn
+    }
+
+    /// stikjit:// refused to open inside LiveContainer: the app is not there.
+    /// Point the user at the way that works there instead.
+    func noteStikDebugOpenFailed() {
+        guard JITBootstrap.isInsideLiveContainer, !JITBootstrap.ready else { return }
+        error = "StikDebug is not installed. Enable JIT for BetterHusk in LiveContainer's settings, then come back."
+        showSetup = true
     }
 
     var automaticDescription: String {
@@ -219,7 +230,9 @@ final class JITCoordinator: ObservableObject {
             assertionFailure("Automatic must resolve to a concrete JIT method")
         case .stikDebug:
             if !JITBootstrap.requestAttach(), !JITBootstrap.requestTrollStoreAttach() {
-                error = "StikDebug is not installed. Install it, or set up Built-in StikJIT."
+                error = JITBootstrap.isInsideLiveContainer
+                    ? "StikDebug could not be opened. Enable JIT for BetterHusk in LiveContainer's app settings, then come back."
+                    : "StikDebug is not installed. Install it, or set up Built-in StikJIT."
                 showSetup = true
             }
         case .trollStore:
@@ -234,6 +247,9 @@ final class JITCoordinator: ObservableObject {
             error = "Turn on Allow JIT in Apps in Dopamine's settings, then open BetterHusk again."
             showSetup = true
         case .builtIn:
+            // The helper extension cannot be started inside LiveContainer; its
+            // own settings (or StikDebug on the shared process) are the way.
+            if JITBootstrap.isInsideLiveContainer { showSetup = true; return }
             guard HuskBuiltInJIT.isAvailable, hasPairing else {
                 log("built-in JIT is not set up; opening the walkthrough")
                 showSetup = true

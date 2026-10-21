@@ -313,8 +313,11 @@ static bool husk_kernel_debugged(void)
 static bool husk_page_is_executable(void *p);
 static bool husk_may_fault_now(void);
 
-static sigjmp_buf g_self_jump;
-static volatile sig_atomic_t g_self_running;
+/* Thread-local, not global: a fault on a different thread while this probe is
+ * up must fall through to the re-raise, not longjmp into another thread's
+ * frame. */
+static _Thread_local sigjmp_buf g_self_jump;
+static _Thread_local volatile sig_atomic_t g_self_running;
 
 static void husk_self_fault(int sig)
 {
@@ -484,9 +487,20 @@ static atomic_bool husk_prewarm_retried;
 static atomic_bool g_servicer_expected;
 
 HUSK_EXPORT void husk_ios_jit_expect_servicer(void) { atomic_store(&g_servicer_expected, true); }
+/* Clear the expectation again: the attach that was announced never came, so an
+ * unserviced fault from here on should be answered by the guards below, not
+ * waited on. Inside LiveContainer an attach that fails to open StikDebug must
+ * not leave a brk probe expecting a servicer that does not exist. */
+HUSK_EXPORT void husk_ios_jit_unexpect_servicer(void) { atomic_store(&g_servicer_expected, false); }
+
+/* Region size every JIT request is held to: what JITBootstrap's prewarm asks
+ * for, so a smaller request (the translation layer asking for its own region)
+ * still leaves QEMU's half available. */
+#define HUSK_JIT_REGION_BYTES ((size_t)512 << 20)
 
 HUSK_EXPORT bool husk_ios_jit_prewarm(size_t bytes)
 {
+    if (bytes < HUSK_JIT_REGION_BYTES) bytes = HUSK_JIT_REGION_BYTES;
     if (husk_prewarm_done) {
         /* Done is not dead: a NEW attach after a flag-only failure (LiveContainer, StikDebug arriving late) still
          * earns its one retry here, not only inside get_mapping. */
@@ -501,11 +515,6 @@ HUSK_EXPORT bool husk_ios_jit_prewarm(size_t bytes)
             husk_prewarmed.rw_addr ? "OK" : "FAILED", bytes);
     return husk_prewarmed.rw_addr != NULL;
 }
-
-/* Region size a late allocation asks for: the same 512 MiB JITBootstrap's
- * prewarm requests, so a retry inside get_mapping hands the runtime what the
- * early path would have. */
-#define HUSK_JIT_REGION_BYTES ((size_t)512 << 20)
 
 /* The trap is worth one more attempt once a debugger shows up where none was
  * when the earlier try ran -- or once a DIFFERENT attach does. Inside
@@ -531,6 +540,11 @@ static pid_t husk_tracer_pid(void)
     if (!(info.kp_proc.p_flag & P_TRACED)) return 0;
     return (pid_t)info.kp_eproc.e_ppid;
 }
+
+/* For the UI side: whether a real ptrace attach holds this process right now
+ * (0 nobody, -1 unknown). CS_DEBUGGED cannot answer this inside LiveContainer,
+ * which sets the flag on the shared process whether or not a servicer exists. */
+HUSK_EXPORT int husk_ios_jit_tracer_pid(void) { return (int)husk_tracer_pid(); }
 
 /*
  * May this code fault right now, at all?
@@ -844,8 +858,10 @@ static bool husk_page_is_executable(void *p)
     return (info.protection & VM_PROT_EXECUTE) != 0;
 }
 
-static sigjmp_buf g_probe_jump;
-static volatile sig_atomic_t g_probe_running;
+/* Thread-local for the same reason as the self-test guard: a fault on an
+ * unrelated thread during the probe is a real crash, not a probe answer. */
+static _Thread_local sigjmp_buf g_probe_jump;
+static _Thread_local volatile sig_atomic_t g_probe_running;
 
 static void husk_probe_handler(int sig)
 {
@@ -973,6 +989,8 @@ HuskDualMapping husk_ios_jit_allocate(size_t bytes)
     return husk_ios_jit_allocate_real(bytes);
 }
 bool husk_ios_jit_prewarm(size_t bytes) { (void)bytes; return false; }
+int husk_ios_jit_tracer_pid(void) { return 0; }
+void husk_ios_jit_unexpect_servicer(void) {}
 bool husk_ios_jit_reserve_bottom(size_t end) { (void)end; return true; }
 void husk_ios_jit_release(HuskDualMapping *m) { (void)m; }
 void husk_ios_jit_detach(void) {}

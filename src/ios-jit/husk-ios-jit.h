@@ -85,6 +85,12 @@ HuskDualMapping husk_ios_jit_allocate(size_t bytes);
  */
 HUSK_EXPORT bool husk_ios_jit_prewarm(size_t bytes);
 
+/* The pid tracing this process (0 nobody, -1 unknown) -- the check LiveContainer needs, whose CS_DEBUGGED flag is set whether or not a servicer exists. */
+HUSK_EXPORT int husk_ios_jit_tracer_pid(void);
+
+/* Clear what husk_ios_jit_expect_servicer set, when the announced attach never arrives. */
+HUSK_EXPORT void husk_ios_jit_unexpect_servicer(void);
+
 /*
  * The native runtime shares the prewarmed region with QEMU: it takes bytes from the bottom, QEMU the top. Call before
  * writing anything below `end` (an offset from the region's start); false means QEMU holds that part.
