@@ -9,6 +9,8 @@ public final class TextLanguage implements android.os.Parcelable {
     public android.os.Bundle getExtras() { return (android.os.Bundle) huskProps.get("Extras"); }
     public java.lang.String getId() { return (java.lang.String) huskProps.get("Id"); }
     public int getLocaleHypothesisCount() { return (huskProps.get("LocaleHypothesisCount") instanceof Integer ? (Integer) huskProps.get("LocaleHypothesisCount") : 0); }
+    public android.icu.util.ULocale getLocale(int hypothesisIndex) { return null; }
+    public float getConfidenceScore(android.icu.util.ULocale locale) { return 0f; }
     public void writeToParcel(android.os.Parcel p0, int p1) {}
     protected TextLanguage() {}
     public static final class Builder {

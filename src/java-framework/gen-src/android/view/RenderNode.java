@@ -18,6 +18,7 @@ public class RenderNode {
     public DisplayListCanvas start(int width, int height) { return new DisplayListCanvas(); }
     public void end(DisplayListCanvas c) {}
     public void discardDisplayList() {}
+    public void destroyDisplayListData() {}
     public boolean isValid() { return true; }
     public boolean hasOverlappingRendering() { return mOverlapping; }
     public boolean hasIdentityMatrix() { return true; }

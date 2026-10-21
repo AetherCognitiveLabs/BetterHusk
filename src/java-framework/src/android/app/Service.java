@@ -5,6 +5,9 @@ import android.content.Intent;
 public abstract class Service extends android.content.ContextWrapper implements android.content.ComponentCallbacks2 {
     public static final int START_CONTINUATION_MASK = 15, START_STICKY_COMPATIBILITY = 0, START_STICKY = 1, START_NOT_STICKY = 2, START_REDELIVER_INTENT = 3,
         START_FLAG_REDELIVERY = 1, START_FLAG_RETRY = 2, STOP_FOREGROUND_REMOVE = 1, STOP_FOREGROUND_DETACH = 2, STOP_FOREGROUND_LEGACY = 0;
+    /* a real static keeps a <clinit> on the class: subclass clinits (including bundled
+       framework stubs like quicksettings.TileService) resolve their chain through it */
+    private static final java.lang.Object sRegistry = new java.lang.Object();
     public Service() { super(null); }
     public final void huskAttach(android.content.Context base) { attachBaseContext(base); }
     public final Application getApplication() { return Application.huskGet(); }
