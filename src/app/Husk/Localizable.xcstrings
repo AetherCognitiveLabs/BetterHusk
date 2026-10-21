@@ -17896,6 +17896,23 @@
           }
         }
       }
+    },
+    "Could not store the downloaded file": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法保存已下载的文件"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Die geladene Datei konnte nicht abgelegt werden"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

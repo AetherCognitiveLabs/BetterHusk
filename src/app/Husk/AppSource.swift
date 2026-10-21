@@ -230,15 +230,20 @@ final class SourceManager: ObservableObject {
                     // A source may declare the route; otherwise the APK's own
                     // game flag decides. Games go to the Translation Layer
                     // (natively faster, no guest boot), the rest needs the
-                    // full Android system.
+                    // full Android system. Anything that is not an explicit
+                    // "android" -- nil, "heuristic", a future value -- lets the
+                    // APK decide rather than silently landing in the guest.
                     let toLayer = app.route == "tl"
-                        || (app.route == nil && husk_apk_is_game(dest.path) != 0)
+                        || (app.route != "android" && husk_apk_is_game(dest.path) != 0)
                     if toLayer {
                         HuskLog.log("sources", "\(app.name): to the Translation Layer")
                         TranslationLayerStore.shared.add([dest], move: true)
                     } else {
                         AndroidHost.shared.install([dest])
                     }
+                } else {
+                    self.downloadErrors[app.bundleIdentifier] = String(localized: "Could not store the downloaded file")
+                    HuskLog.log("sources", "\(app.name): could not move the download into place")
                 }
             }
         }
