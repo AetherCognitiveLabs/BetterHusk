@@ -26,6 +26,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Validate seeded source catalog
+        run: python3 tools/precheck/catalog.py
+
       - name: Syntax-check native sources
         run: ./tools/precheck/check.sh
 
