@@ -64,6 +64,10 @@ final class SourceManager: ObservableObject {
     @Published var loadingSources: Set<String> = Set<String>()
     @Published var fetchErrors: [String: String] = [String: String]()
     @Published var downloadProgress: [String: Double] = [String: Double]()
+    /// Per-app install failures, so a dead URL or refused package does not
+    /// just clear the progress ring and pretend nothing happened.
+    @Published var downloadErrors: [String: String] = [String: String]()
+    private var downloadTasks: [String: URLSessionDownloadTask] = [:]
 
     var isLoading: Bool { !loadingSources.isEmpty }
 
@@ -194,16 +198,27 @@ final class SourceManager: ObservableObject {
 
     // MARK: - APK Download + Install
 
+    /// Cancel a download in flight; the partial file is discarded.
+    func cancelDownload(bundleIdentifier: String) {
+        downloadTasks.removeValue(forKey: bundleIdentifier)?.cancel()
+        downloadProgress.removeValue(forKey: bundleIdentifier)
+    }
+
     func downloadAndInstall(app: SourceApp) {
         guard let url = URL(string: app.downloadURL) else { return }
         downloadProgress[app.bundleIdentifier] = 0.01
+        downloadErrors.removeValue(forKey: app.bundleIdentifier)
         HuskLog.log("sources", "Downloading \(app.name)")
 
         let task = URLSession.shared.downloadTask(with: url) { localURL, _, error in
             Task { @MainActor in
                 self.downloadProgress.removeValue(forKey: app.bundleIdentifier)
+                self.downloadTasks.removeValue(forKey: app.bundleIdentifier)
                 guard let localURL, error == nil else {
-                    HuskLog.log("sources", "Download failed: \(String(describing: error))")
+                    if (error as? URLError)?.code != .cancelled {
+                        self.downloadErrors[app.bundleIdentifier] = error?.localizedDescription ?? "Download failed"
+                        HuskLog.log("sources", "Download failed: \(String(describing: error))")
+                    }
                     return
                 }
                 let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -230,6 +245,7 @@ final class SourceManager: ObservableObject {
         task.progress.observe(\.fractionCompleted) { progress, _ in
             Task { @MainActor in self.downloadProgress[app.bundleIdentifier] = progress.fractionCompleted }
         }
+        downloadTasks[app.bundleIdentifier] = task
         task.resume()
     }
 }

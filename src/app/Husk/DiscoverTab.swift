@@ -5,12 +5,15 @@ import SwiftUI
 struct DiscoverView: View {
     @ObservedObject private var manager = SourceManager.shared
     @ObservedObject private var host = AndroidHost.shared
+    @ObservedObject private var tlStore = TranslationLayerStore.shared
 
     @State private var showingSources = false
     @State private var showingAddSource = false
     @State private var newSourceURL = ""
     @State private var searchText = ""
     @State private var debouncedSearchText = ""
+    /// The Translation Layer app the Open button is about to play.
+    @State private var playing: TLApp?
 
     var body: some View {
         Group {
@@ -49,6 +52,8 @@ struct DiscoverView: View {
         }
         .sheet(isPresented: $showingSources) { sourcesSheet }
         .sheet(isPresented: $showingAddSource) { addSourceSheet }
+        // A route:tl install opens in the same game screen the Library uses.
+        .fullScreenCover(item: $playing) { app in TLAttemptView(app: app) }
         .onAppear {
             if manager.sources.isEmpty && !manager.isLoading {
                 Task { await manager.fetchSources() }
@@ -132,15 +137,25 @@ struct DiscoverView: View {
                 Text(app.name).font(.body.weight(.medium)).lineLimit(1)
                 Text(app.localizedDescription)
                     .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                if let error = manager.downloadErrors[app.bundleIdentifier] {
+                    Text(error).font(.caption2).foregroundStyle(.red).lineLimit(2)
+                }
             }
 
             Spacer(minLength: 8)
 
-            let isInstalled = host.packages.contains { $0.id == app.bundleIdentifier }
+            // "Installed" means either place an install can land: the guest's
+            // package list, or the Translation Layer's library.
+            let tlApp = tlStore.apps.first { $0.packageName == app.bundleIdentifier }
+            let isInstalled = host.packages.contains { $0.id == app.bundleIdentifier } || tlApp != nil
             let progress = manager.downloadProgress[app.bundleIdentifier]
 
             if isInstalled {
                 Button("Open") {
+                    if let tlApp {
+                        playing = tlApp
+                        return
+                    }
                     // The identifier came from a remote repo index: it reaches a
                     // shell inside the guest, so only a real package name may go.
                     let pkg = app.bundleIdentifier
@@ -152,14 +167,18 @@ struct DiscoverView: View {
                 .buttonStyle(.bordered)
                 .buttonBorderShape(.capsule)
             } else if let progress = progress {
-                ZStack {
-                    Circle().stroke(Color(uiColor: .tertiarySystemFill), lineWidth: 3)
-                    Circle().trim(from: 0, to: progress)
-                        .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 3, lineCap: .round))
-                        .rotationEffect(.degrees(-90))
-                    Image(systemName: "stop.fill").font(.system(size: 9)).foregroundStyle(.secondary)
+                // The stop glyph always suggested a cancel; now it is one.
+                Button { manager.cancelDownload(bundleIdentifier: app.bundleIdentifier) } label: {
+                    ZStack {
+                        Circle().stroke(Color(uiColor: .tertiarySystemFill), lineWidth: 3)
+                        Circle().trim(from: 0, to: progress)
+                            .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                            .rotationEffect(.degrees(-90))
+                        Image(systemName: "stop.fill").font(.system(size: 9)).foregroundStyle(.secondary)
+                    }
+                    .frame(width: 28, height: 28)
                 }
-                .frame(width: 28, height: 28)
+                .accessibilityLabel("Cancel Download")
             } else {
                 Button("Get") { manager.downloadAndInstall(app: app) }
                     .buttonStyle(.borderedProminent)
