@@ -26,6 +26,7 @@ public final class RemoteInput implements android.os.Parcelable {
     public java.util.Set getAllowedDataTypes() { return new java.util.HashSet(); }
     public java.lang.CharSequence[] getChoices() { return null; }
     public int getEditChoicesBeforeSending() { return 0; }
+    public android.os.Bundle getExtras() { return null; }
     public java.lang.CharSequence getLabel() { return null; }
     public boolean isDataOnly() { return false; }
     // ---- end of generated members

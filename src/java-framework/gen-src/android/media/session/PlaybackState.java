@@ -68,5 +68,15 @@ public final class PlaybackState implements android.os.Parcelable {
     }
     public static abstract class CustomAction implements android.os.Parcelable {
         protected CustomAction() {}
+        public java.lang.String getAction() { return null; }
+        public android.os.Bundle getExtras() { return null; }
+        public int getIcon() { return 0; }
+        public java.lang.CharSequence getName() { return null; }
+
+        public static final class Builder {
+            public Builder(java.lang.String action, java.lang.CharSequence name, int icon) {}
+            public Builder setExtras(android.os.Bundle extras) { return this; }
+            public CustomAction build() { return null; }
+        }
     }
 }

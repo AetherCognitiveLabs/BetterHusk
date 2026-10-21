@@ -159,9 +159,8 @@ public class IntentFilter implements android.os.Parcelable {
         public java.lang.String getHost() { return (java.lang.String) huskProps.get("Host"); }
         public int getPort() { return (huskProps.get("Port") instanceof Integer ? (Integer) huskProps.get("Port") : 0); }
         public int match(android.net.Uri p0) { return 0; }
-        public int match(android.net.Uri p0, boolean p1) { return 0; }
-        public boolean match(android.content.IntentFilter.AuthorityEntry p0) { return false; }
         AuthorityEntry() { this((java.lang.String) null, (java.lang.String) null); }
+        public int match(android.net.Uri p0, boolean p1) { return 0; }
     }
     // ---- end of generated nested classes
 }

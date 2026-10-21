@@ -35,6 +35,38 @@ public class ViewDebug {
     public static void stopRecyclerTracing() {}
     public static void trace(android.view.View p0, android.view.ViewDebug.HierarchyTraceType p1) {}
     public static void trace(android.view.View p0, android.view.ViewDebug.RecyclerTraceType p1, int[] p2) {}
+    @java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy.RUNTIME)
+    @java.lang.annotation.Target({java.lang.annotation.ElementType.FIELD, java.lang.annotation.ElementType.METHOD})
+    public @interface CapturedViewProperty {
+        boolean retrieveReturn() default false;
+    }
+    @java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy.RUNTIME)
+    @java.lang.annotation.Target({java.lang.annotation.ElementType.FIELD, java.lang.annotation.ElementType.METHOD})
+    public @interface ExportedProperty {
+        java.lang.String category() default "";
+        boolean deepExport() default false;
+        android.view.ViewDebug.FlagToString[] flagMapping() default {};
+        boolean formatToHexString() default false;
+        boolean hasAdjacentMapping() default false;
+        android.view.ViewDebug.IntToString[] indexMapping() default {};
+        android.view.ViewDebug.IntToString[] mapping() default {};
+        java.lang.String prefix() default "";
+        boolean resolveId() default false;
+    }
+    @java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy.RUNTIME)
+    @java.lang.annotation.Target({java.lang.annotation.ElementType.FIELD, java.lang.annotation.ElementType.METHOD})
+    public @interface FlagToString {
+        int equals();
+        int mask();
+        java.lang.String name();
+        boolean outputIf();
+    }
+    @java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy.RUNTIME)
+    @java.lang.annotation.Target({java.lang.annotation.ElementType.FIELD, java.lang.annotation.ElementType.METHOD})
+    public @interface IntToString {
+        int from();
+        java.lang.String to();
+    }
     public interface CanvasProvider {
         android.graphics.Bitmap createBitmap();
         android.graphics.Canvas getCanvas(android.view.View p0, int p1, int p2);

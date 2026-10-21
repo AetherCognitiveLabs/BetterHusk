@@ -3059,6 +3059,10 @@ public final class R {
         private final java.util.HashMap<String, Object> huskProps = new java.util.HashMap<>();
         public plurals() {}
     }
+    public static final class xml {
+        private final java.util.HashMap<String, Object> huskProps = new java.util.HashMap<>();
+        public xml() {}
+    }
     public static final class styleable {
         private final java.util.HashMap<String, Object> huskProps = new java.util.HashMap<>();
         public static int[] AbsListView;
@@ -5755,10 +5759,6 @@ public final class R {
         public static final int Window_windowTranslucentNavigation = 24;
         public static final int Window_windowTranslucentStatus = 23;
         public styleable() {}
-    }
-    public static final class xml {
-        private final java.util.HashMap<String, Object> huskProps = new java.util.HashMap<>();
-        public xml() {}
     }
     // ---- end of generated nested classes
 }

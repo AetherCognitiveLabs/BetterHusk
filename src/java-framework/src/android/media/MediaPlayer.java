@@ -338,9 +338,9 @@ public class MediaPlayer implements AudioRouting {
         public static final java.lang.String WIDTH = "android.media.mediaplayer.width";
         protected MetricsConstants() {}
     }
-    public static final class NoDrmSchemeException extends android.media.MediaDrmException {
+    public static abstract class NoDrmSchemeException extends android.media.MediaDrmException {
         private final java.util.HashMap<String, Object> huskProps = new java.util.HashMap<>();
-        public NoDrmSchemeException(java.lang.String p0) { super(p0); }
+        public NoDrmSchemeException(java.lang.String p0) { super(); }
         NoDrmSchemeException() { this((java.lang.String) null); }
     }
     public interface OnDrmConfigHelper {
@@ -355,24 +355,24 @@ public class MediaPlayer implements AudioRouting {
     public interface OnMediaTimeDiscontinuityListener {
         void onMediaTimeDiscontinuity(android.media.MediaPlayer p0, android.media.MediaTimestamp p1);
     }
-    public interface OnRtpRxNoticeListener {
-        void onRtpRxNotice(android.media.MediaPlayer p0, int p1, int[] p2);
-    }
     public interface OnSubtitleDataListener {
         void onSubtitleData(android.media.MediaPlayer p0, android.media.SubtitleData p1);
     }
     public interface OnTimedMetaDataAvailableListener {
         void onTimedMetaDataAvailable(android.media.MediaPlayer p0, android.media.TimedMetaData p1);
     }
-    public static final class ProvisioningNetworkErrorException extends android.media.MediaDrmException {
+    public static abstract class ProvisioningNetworkErrorException extends android.media.MediaDrmException {
         private final java.util.HashMap<String, Object> huskProps = new java.util.HashMap<>();
-        public ProvisioningNetworkErrorException(java.lang.String p0) { super(p0); }
+        public ProvisioningNetworkErrorException(java.lang.String p0) { super(); }
         ProvisioningNetworkErrorException() { this((java.lang.String) null); }
     }
-    public static final class ProvisioningServerErrorException extends android.media.MediaDrmException {
+    public static abstract class ProvisioningServerErrorException extends android.media.MediaDrmException {
         private final java.util.HashMap<String, Object> huskProps = new java.util.HashMap<>();
-        public ProvisioningServerErrorException(java.lang.String p0) { super(p0); }
+        public ProvisioningServerErrorException(java.lang.String p0) { super(); }
         ProvisioningServerErrorException() { this((java.lang.String) null); }
+    }
+    public interface OnRtpRxNoticeListener {
+        void onRtpRxNotice(android.media.MediaPlayer p0, int p1, int[] p2);
     }
     // ---- end of generated nested classes
 }

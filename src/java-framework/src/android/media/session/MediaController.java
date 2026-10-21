@@ -43,7 +43,6 @@ public final class MediaController { public MediaController(android.content.Cont
         public static android.os.Parcelable.Creator CREATOR;
         public static final int PLAYBACK_TYPE_LOCAL = 1;
         public static final int PLAYBACK_TYPE_REMOTE = 2;
-        public PlaybackInfo(int p0, int p1, int p2, int p3, android.media.AudioAttributes p4, java.lang.String p5) {}
         public int describeContents() { return 0; }
         public android.media.AudioAttributes getAudioAttributes() { return (android.media.AudioAttributes) huskProps.get("AudioAttributes"); }
         public int getCurrentVolume() { return (huskProps.get("CurrentVolume") instanceof Integer ? (Integer) huskProps.get("CurrentVolume") : 0); }
@@ -52,7 +51,8 @@ public final class MediaController { public MediaController(android.content.Cont
         public int getVolumeControl() { return (huskProps.get("VolumeControl") instanceof Integer ? (Integer) huskProps.get("VolumeControl") : 0); }
         public java.lang.String getVolumeControlId() { return (java.lang.String) huskProps.get("VolumeControlId"); }
         public void writeToParcel(android.os.Parcel p0, int p1) {}
-        PlaybackInfo() { this((int) 0, (int) 0, (int) 0, (int) 0, (android.media.AudioAttributes) null, (java.lang.String) null); }
+        protected PlaybackInfo() {}
+        public PlaybackInfo(int p0, int p1, int p2, int p3, android.media.AudioAttributes p4, java.lang.String p5) {}
     }
     public static final class TransportControls {
         private final java.util.HashMap<String, Object> huskProps = new java.util.HashMap<>();
