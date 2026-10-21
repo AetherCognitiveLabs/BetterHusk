@@ -1,0 +1,298 @@
+{
+  " and loads its %@ arm64 libraries itself.": {
+    "de": " und lädt seine %@ arm64-Bibliotheken selbst.",
+    "zh-Hans": "，并自行加载其 %@ 个 arm64 库。"
+  },
+  " · %@%": {
+    "de": " · %@ %",
+    "zh-Hans": " · %@%"
+  },
+  " · %@/%@ files": {
+    "de": " · %@/%@ Dateien",
+    "zh-Hans": " · %@/%@ 个文件"
+  },
+  "%@": {
+    "de": "%@",
+    "zh-Hans": "%@"
+  },
+  "%@ (%@/%@)": {
+    "de": "%@ (%@/%@)",
+    "zh-Hans": "%@（%@/%@）"
+  },
+  "%@ (HTTP %@). %@": {
+    "de": "%@ (HTTP %@). %@",
+    "zh-Hans": "%@（HTTP %@）。%@"
+  },
+  "%@ APKs (%@)": {
+    "de": "%@ APKs (%@)",
+    "zh-Hans": "%@ 个 APK（%@）"
+  },
+  "%@ DEX file%@": {
+    "de": "%@ DEX-Datei%@",
+    "zh-Hans": "%@ 个 DEX 文件%@"
+  },
+  "%@ Trying again continues where it stopped.": {
+    "de": "%@ Ein erneuter Versuch macht dort weiter, wo es aufgehört hat.",
+    "zh-Hans": "%@ 重试将从中断处继续。"
+  },
+  "%@ after sending %@ bytes": {
+    "de": "%@ nach dem Senden von %@ Bytes",
+    "zh-Hans": "%@（已发送 %@ 字节后）"
+  },
+  "%@ apps in DeveloperTesting.": {
+    "de": "%@ Apps in DeveloperTesting.",
+    "zh-Hans": "DeveloperTesting 中有 %@ 个应用。"
+  },
+  "%@ controllers": {
+    "de": "%@ Controller",
+    "zh-Hans": "%@ 个手柄"
+  },
+  "%@ downloading": {
+    "de": "%@ laden gerade",
+    "zh-Hans": "正在下载 %@ 项"
+  },
+  "%@ downloads": {
+    "de": "%@ Downloads",
+    "zh-Hans": "%@ 个下载"
+  },
+  "%@ files": {
+    "de": "%@ Dateien",
+    "zh-Hans": "%@ 个文件"
+  },
+  "%@ files sent": {
+    "de": "%@ Dateien gesendet",
+    "zh-Hans": "已发送 %@ 个文件"
+  },
+  "%@ frame(s) drawn · native runtime": {
+    "de": "%@ Frame(s) gezeichnet · native Laufzeit",
+    "zh-Hans": "已绘制 %@ 帧 · 原生运行时"
+  },
+  "%@ frame(s) posted · driving lifecycle": {
+    "de": "%@ Frame(s) übergeben · treibt den Lebenszyklus an",
+    "zh-Hans": "已提交 %@ 帧 · 正在驱动生命周期"
+  },
+  "%@ min · first boot takes 5–15 min": {
+    "de": "%@ Min. · der erste Start dauert 5–15 Min.",
+    "zh-Hans": "%@ 分钟 · 首次启动需 5–15 分钟"
+  },
+  "%@ of them use tricks the older loader could not handle; the native runtime handles those too, except for optional anti-tamper code, which it leaves out.": {
+    "de": "%@ davon nutzen Tricks, die der ältere Loader nicht bewältigen konnte; die native Laufzeit schafft auch diese, bis auf optionalen Anti-Tamper-Code, den sie auslässt.",
+    "zh-Hans": "其中 %@ 个使用了旧版加载器无法处理的技巧；原生运行时也能处理这些，但可选的防篡改代码除外，那部分会被跳过。"
+  },
+  "%@ relocations": {
+    "de": "%@ Relokationen",
+    "zh-Hans": "%@ 次重定位"
+  },
+  "%@ shared code/data pages": {
+    "de": "%@ gemeinsame Code-/Datenseiten",
+    "zh-Hans": "%@ 个共享代码/数据页"
+  },
+  "%@ system calls": {
+    "de": "%@ Systemaufrufe",
+    "zh-Hans": "%@ 次系统调用"
+  },
+  "%@ thread-register reads": {
+    "de": "%@ Thread-Register-Lesevorgänge",
+    "zh-Hans": "%@ 次线程寄存器读取"
+  },
+  "%@%": {
+    "de": "%@ %",
+    "zh-Hans": "%@%"
+  },
+  "%@%  ·  %@  ·  %@ elapsed": {
+    "de": "%@ %  ·  %@  ·  %@ vergangen",
+    "zh-Hans": "%@% · %@ · 已用 %@"
+  },
+  "%@… %@%": {
+    "de": "%@… %@ %",
+    "zh-Hans": "%@… %@%"
+  },
+  "A %@ game. It runs through BetterHusk's native runtime, which loads its %@ arm64 libraries itself.": {
+    "de": "Ein %@-Spiel. Es läuft über BetterHusks native Laufzeit, die seine %@ arm64-Bibliotheken selbst lädt.",
+    "zh-Hans": "一个 %@ 游戏。它通过 BetterHusk 的原生运行时运行，运行时自行加载其 %@ 个 arm64 库。"
+  },
+  "A Flutter app. Its engine and its compiled Dart run natively through BetterHusk's translation layer, which loads its %@ arm64 libraries itself.": {
+    "de": "Eine Flutter-App. Ihre Engine und ihr kompilierter Dart-Code laufen nativ über BetterHusks Übersetzungsschicht, die ihre %@ arm64-Bibliotheken selbst lädt.",
+    "zh-Hans": "一个 Flutter 应用。其引擎和编译后的 Dart 代码通过 BetterHusk 翻译层原生运行，翻译层自行加载其 %@ 个 arm64 库。"
+  },
+  "Adding %@ APKs…": {
+    "de": "%@ APKs werden hinzugefügt…",
+    "zh-Hans": "正在添加 %@ 个 APK…"
+  },
+  "Copying %@ — %@%": {
+    "de": "Kopiere %@ — %@ %",
+    "zh-Hans": "正在复制 %@ — %@%"
+  },
+  "Default (%@": {
+    "de": "Standard (%@",
+    "zh-Hans": "默认（%@"
+  },
+  "Download failed (HTTP %@).": {
+    "de": "Download fehlgeschlagen (HTTP %@).",
+    "zh-Hans": "下载失败（HTTP %@）。"
+  },
+  "Downloading %@ items": {
+    "de": "%@ Elemente werden geladen",
+    "zh-Hans": "正在下载 %@ 项"
+  },
+  "Downloading… %@%": {
+    "de": "Laden… %@ %",
+    "zh-Hans": "下载中… %@%"
+  },
+  "Exit code %@ · %@ frame(s) drawn": {
+    "de": "Exit-Code %@ · %@ Frame(s) gezeichnet",
+    "zh-Hans": "退出代码 %@ · 已绘制 %@ 帧"
+  },
+  "Failed to download %@ (HTTP %@)": {
+    "de": "%@ konnte nicht geladen werden (HTTP %@)",
+    "zh-Hans": "下载 %@ 失败（HTTP %@）"
+  },
+  "Google Play would not open a session (%@": {
+    "de": "Google Play konnte keine Sitzung öffnen (%@",
+    "zh-Hans": "Google Play 无法打开会话（%@"
+  },
+  "Google did not accept the sign-in (%@": {
+    "de": "Google hat die Anmeldung nicht akzeptiert (%@",
+    "zh-Hans": "Google 未接受登录（%@"
+  },
+  "Google did not register the device (HTTP %@).": {
+    "de": "Google hat das Gerät nicht registriert (HTTP %@).",
+    "zh-Hans": "Google 未注册设备（HTTP %@）。"
+  },
+  "HTTP %@": {
+    "de": "HTTP %@",
+    "zh-Hans": "HTTP %@"
+  },
+  "HTTP %@ fetching %@": {
+    "de": "HTTP %@ beim Abrufen von %@",
+    "zh-Hans": "HTTP %@（获取 %@）"
+  },
+  "HTTP %@ from %@%@": {
+    "de": "HTTP %@ von %@%@",
+    "zh-Hans": "来自 %@%@ 的 HTTP %@"
+  },
+  "If there is no \\\"Pair with\\\" row in Settings, Developer Mode is off: enable it first (Settings › Privacy & Security) -- it restarts the %@ once.": {
+    "de": "Gibt es in den Einstellungen keine Zeile „Pair with“, ist der Entwicklermodus aus: erst aktivieren (Einstellungen › Datenschutz & Sicherheit) – dabei startet das %@ einmal neu.",
+    "zh-Hans": "如果“设置”中没有“配对”行，说明开发者模式已关闭：请先开启（设置 › 隐私与安全性）——首次开启会重启 %@。"
+  },
+  "Importing %@ PS4 games…": {
+    "de": "%@ PS4-Spiele werden importiert…",
+    "zh-Hans": "正在导入 %@ 个 PS4 游戏…"
+  },
+  "In progress: %@ of %@ done.": {
+    "de": "Läuft: %@ von %@ erledigt.",
+    "zh-Hans": "进行中：已完成 %@ / %@。"
+  },
+  "Installed %@ PS4 packages": {
+    "de": "%@ PS4-Pakete installiert",
+    "zh-Hans": "已安装 %@ 个 PS4 包"
+  },
+  "Installing %@ (%@ of %@)": {
+    "de": "%@ wird installiert (%@ von %@)",
+    "zh-Hans": "正在安装 %@（%@/%@）"
+  },
+  "Last test: %@ of %@ done.": {
+    "de": "Letzter Test: %@ von %@ erledigt.",
+    "zh-Hans": "上次测试：已完成 %@ / %@。"
+  },
+  "Never started (%@ s)": {
+    "de": "Nie gestartet (%@ s)",
+    "zh-Hans": "从未启动（%@ 秒）"
+  },
+  "Preparing %@ files…": {
+    "de": "%@ Dateien werden vorbereitet…",
+    "zh-Hans": "正在准备 %@ 个文件…"
+  },
+  "Restored %@ file%@": {
+    "de": "%@ Datei%@ wiederhergestellt",
+    "zh-Hans": "已恢复 %@ 个文件%@"
+  },
+  "Runs, but drew few frames (%@)": {
+    "de": "Läuft, zeichnete aber wenige Frames (%@)",
+    "zh-Hans": "运行了，但只绘制了少量帧（%@）"
+  },
+  "Sending %@": {
+    "de": "Sende %@",
+    "zh-Hans": "正在发送 %@"
+  },
+  "Sending %@ — %@%": {
+    "de": "Sende %@ — %@ %",
+    "zh-Hans": "正在发送 %@ — %@%"
+  },
+  "Starting · %@%": {
+    "de": "Starten · %@ %",
+    "zh-Hans": "正在启动 · %@%"
+  },
+  "Still loading after %@ s": {
+    "de": "Lädt noch nach %@ s",
+    "zh-Hans": "%@ 秒后仍在加载"
+  },
+  "Testing %@ of %@: %@": {
+    "de": "Teste %@ von %@: %@",
+    "zh-Hans": "正在测试第 %@/%@ 项：%@"
+  },
+  "That backup is of %@": {
+    "de": "Das Backup ist von %@",
+    "zh-Hans": "该备份属于 %@"
+  },
+  "Waiting for Android (%@s)…": {
+    "de": "Warte auf Android (%@ s)…",
+    "zh-Hans": "正在等待 Android（%@ 秒）…"
+  },
+  "about %@ minutes remaining": {
+    "de": "noch etwa %@ Minuten",
+    "zh-Hans": "约剩 %@ 分钟"
+  },
+  "about %@ seconds remaining": {
+    "de": "noch etwa %@ Sekunden",
+    "zh-Hans": "约剩 %@ 秒"
+  },
+  "connect failed (errno %@)": {
+    "de": "Verbindung fehlgeschlagen (errno %@)",
+    "zh-Hans": "连接失败（errno %@）"
+  },
+  "connected, then read failed (errno %@)": {
+    "de": "verbunden, dann Lesefehler (errno %@)",
+    "zh-Hans": "已连接，随后读取失败（errno %@）"
+  },
+  "copied %@ of %@ bytes of %@": {
+    "de": "%@ von %@ Bytes von %@ kopiert",
+    "zh-Hans": "已复制 %@ 的 %@/%@ 字节"
+  },
+  "could not join snapshot part %@: %@": {
+    "de": "Snapshot-Teil %@ konnte nicht zusammengefügt werden: %@",
+    "zh-Hans": "无法合并快照第 %@ 部分：%@"
+  },
+  "read failed (errno %@)": {
+    "de": "Lesen fehlgeschlagen (errno %@)",
+    "zh-Hans": "读取失败（errno %@）"
+  },
+  "sent %@ of %@ bytes": {
+    "de": "%@ von %@ Bytes gesendet",
+    "zh-Hans": "已发送 %@/%@ 字节"
+  },
+  "sent %@ of %@ bytes; the stream is out of step": {
+    "de": "%@ von %@ Bytes gesendet; der Stream ist aus dem Takt",
+    "zh-Hans": "已发送 %@/%@ 字节；流不同步"
+  },
+  "socket() failed (errno %@)": {
+    "de": "socket() fehlgeschlagen (errno %@)",
+    "zh-Hans": "socket() 失败（errno %@）"
+  },
+  "the server answered %@": {
+    "de": "der Server antwortete %@",
+    "zh-Hans": "服务器返回 %@"
+  },
+  "unsupported qcow2 version %@": {
+    "de": "nicht unterstützte qcow2-Version %@",
+    "zh-Hans": "不支持的 qcow2 版本 %@"
+  },
+  "userdata image declares only %@ bytes of disk": {
+    "de": "userdata-Image deklariert nur %@ Bytes Speicherplatz",
+    "zh-Hans": "userdata 镜像仅声明了 %@ 字节磁盘空间"
+  },
+  "write failed (errno %@)": {
+    "de": "Schreiben fehlgeschlagen (errno %@)",
+    "zh-Hans": "写入失败（errno %@）"
+  }
+}

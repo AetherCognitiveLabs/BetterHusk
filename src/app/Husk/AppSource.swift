@@ -17,8 +17,9 @@ struct SourceApp: Identifiable, Equatable {
     let localizedDescription: String
     /// Where an install should land: "tl" for the Translation Layer,
     /// "android" for the full guest, nil to let the APK's own game flag
-    /// decide (downloadAndInstall).
-    let route: String? = nil
+    /// decide (downloadAndInstall). A `let` with a default would drop out
+    /// of the memberwise init entirely, so it is a var.
+    var route: String? = nil
     var id: String { bundleIdentifier }
 }
 

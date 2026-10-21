@@ -83,6 +83,31 @@ EXTRA = {
                "guest-serial.log mit dem Bericht."),
         'zh-Hans': ("Android 数据分区无法自动修复。请移除 Android 并重新安装——如果同样失败，"
                     "请在报告中附上 guest-serial.log。")},
+
+    # Download rate/ETA tail on the Android page (ItemPages.downloadETA).
+    'Downloading \u00b7 %@ of %@ \u00b7 %@': {
+        'de': 'L\u00e4dt \u00b7 %@ von %@ \u00b7 %@',
+        'zh-Hans': '下载中 \u00b7 %@ / %@ \u00b7 %@'},
+    '>1 h': {
+        'de': '>1 Std.',
+        'zh-Hans': '>1 小时'},
+    '~%@ min': {
+        'de': '~%@ Min.',
+        'zh-Hans': '约 %@ 分钟'},
+    '~%@ s': {
+        'de': '~%@ s',
+        'zh-Hans': '约 %@ 秒'},
+    '%@/s \u00b7 %@': {
+        'de': '%@/s \u00b7 %@',
+        'zh-Hans': '%@/秒 \u00b7 %@'},
+
+    # Guest-download row on the Downloads tab.
+    'Android system': {
+        'de': 'Android-System',
+        'zh-Hans': 'Android 系统'},
+    'Installing Android\u2026': {
+        'de': 'Android wird installiert\u2026',
+        'zh-Hans': '正在安装 Android\u2026'},
 }
 
 PH = re.compile(r'%(?:\d+\$)?[-+#0-9.]*(?:ll|l|hh|h)?[dfuixX@csp]|\(%([0-9]+)\)')
@@ -125,6 +150,14 @@ def main():
     if joined:
         print(f'multi-line keys rebuilt from fragments: {joined}')
 
+    # The interpolated-pattern translations (String(localized:) calls harvest
+    # cannot see): key -> {de, zh-Hans}, folded into EXTRA below.
+    interp_path = os.path.join(ROOT, 'tools/i18n/interp_translated.json')
+    interp = {}
+    if os.path.exists(interp_path):
+        interp = json.load(io.open(interp_path, encoding='utf-8'))
+        print(f'interpolated pattern translations loaded: {len(interp)}')
+
     missing_keys = [k for k in de if k not in strings]
     untranslated = [k for k in strings if k not in de]
     bad_ph = []
@@ -148,7 +181,9 @@ def main():
             continue
         strings[k].setdefault('localizations', {})['de'] = unit(v)
 
-    for k, langs in EXTRA.items():
+    merged_extra = dict(EXTRA)
+    merged_extra.update(interp)
+    for k, langs in merged_extra.items():
         entry = strings.setdefault(k, {'localizations': {}})
         for lang, v in langs.items():
             # Keep a hand-written translation if one is already there.

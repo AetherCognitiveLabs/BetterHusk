@@ -16515,6 +16515,1302 @@
           }
         }
       }
+    },
+    "Downloading · %@ of %@ · %@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lädt · %@ von %@ · %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下载中 · %@ / %@ · %@"
+          }
+        }
+      }
+    },
+    ">1 h": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": ">1 Std."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": ">1 小时"
+          }
+        }
+      }
+    },
+    "~%@ min": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "~%@ Min."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "约 %@ 分钟"
+          }
+        }
+      }
+    },
+    "~%@ s": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "~%@ s"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "约 %@ 秒"
+          }
+        }
+      }
+    },
+    "%@/s · %@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@/s · %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@/秒 · %@"
+          }
+        }
+      }
+    },
+    "Android system": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Android-System"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Android 系统"
+          }
+        }
+      }
+    },
+    "Installing Android…": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Android wird installiert…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在安装 Android…"
+          }
+        }
+      }
+    },
+    " and loads its %@ arm64 libraries itself.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": " und lädt seine %@ arm64-Bibliotheken selbst."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "，并自行加载其 %@ 个 arm64 库。"
+          }
+        }
+      }
+    },
+    " · %@%": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": " · %@ %"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": " · %@%"
+          }
+        }
+      }
+    },
+    " · %@/%@ files": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": " · %@/%@ Dateien"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": " · %@/%@ 个文件"
+          }
+        }
+      }
+    },
+    "%@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@"
+          }
+        }
+      }
+    },
+    "%@ (%@/%@)": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ (%@/%@)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@（%@/%@）"
+          }
+        }
+      }
+    },
+    "%@ (HTTP %@). %@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ (HTTP %@). %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@（HTTP %@）。%@"
+          }
+        }
+      }
+    },
+    "%@ APKs (%@)": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ APKs (%@)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 个 APK（%@）"
+          }
+        }
+      }
+    },
+    "%@ DEX file%@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ DEX-Datei%@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 个 DEX 文件%@"
+          }
+        }
+      }
+    },
+    "%@ Trying again continues where it stopped.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ Ein erneuter Versuch macht dort weiter, wo es aufgehört hat."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 重试将从中断处继续。"
+          }
+        }
+      }
+    },
+    "%@ after sending %@ bytes": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ nach dem Senden von %@ Bytes"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@（已发送 %@ 字节后）"
+          }
+        }
+      }
+    },
+    "%@ apps in DeveloperTesting.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ Apps in DeveloperTesting."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DeveloperTesting 中有 %@ 个应用。"
+          }
+        }
+      }
+    },
+    "%@ controllers": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ Controller"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 个手柄"
+          }
+        }
+      }
+    },
+    "%@ downloading": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ laden gerade"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在下载 %@ 项"
+          }
+        }
+      }
+    },
+    "%@ downloads": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ Downloads"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 个下载"
+          }
+        }
+      }
+    },
+    "%@ files": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ Dateien"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 个文件"
+          }
+        }
+      }
+    },
+    "%@ files sent": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ Dateien gesendet"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已发送 %@ 个文件"
+          }
+        }
+      }
+    },
+    "%@ frame(s) drawn · native runtime": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ Frame(s) gezeichnet · native Laufzeit"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已绘制 %@ 帧 · 原生运行时"
+          }
+        }
+      }
+    },
+    "%@ frame(s) posted · driving lifecycle": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ Frame(s) übergeben · treibt den Lebenszyklus an"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已提交 %@ 帧 · 正在驱动生命周期"
+          }
+        }
+      }
+    },
+    "%@ min · first boot takes 5–15 min": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ Min. · der erste Start dauert 5–15 Min."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 分钟 · 首次启动需 5–15 分钟"
+          }
+        }
+      }
+    },
+    "%@ of them use tricks the older loader could not handle; the native runtime handles those too, except for optional anti-tamper code, which it leaves out.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ davon nutzen Tricks, die der ältere Loader nicht bewältigen konnte; die native Laufzeit schafft auch diese, bis auf optionalen Anti-Tamper-Code, den sie auslässt."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "其中 %@ 个使用了旧版加载器无法处理的技巧；原生运行时也能处理这些，但可选的防篡改代码除外，那部分会被跳过。"
+          }
+        }
+      }
+    },
+    "%@ relocations": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ Relokationen"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 次重定位"
+          }
+        }
+      }
+    },
+    "%@ shared code/data pages": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ gemeinsame Code-/Datenseiten"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 个共享代码/数据页"
+          }
+        }
+      }
+    },
+    "%@ system calls": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ Systemaufrufe"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 次系统调用"
+          }
+        }
+      }
+    },
+    "%@ thread-register reads": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ Thread-Register-Lesevorgänge"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 次线程寄存器读取"
+          }
+        }
+      }
+    },
+    "%@%": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ %"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@%"
+          }
+        }
+      }
+    },
+    "%@%  ·  %@  ·  %@ elapsed": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ %  ·  %@  ·  %@ vergangen"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@% · %@ · 已用 %@"
+          }
+        }
+      }
+    },
+    "%@… %@%": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@… %@ %"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@… %@%"
+          }
+        }
+      }
+    },
+    "A %@ game. It runs through BetterHusk's native runtime, which loads its %@ arm64 libraries itself.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ein %@-Spiel. Es läuft über BetterHusks native Laufzeit, die seine %@ arm64-Bibliotheken selbst lädt."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "一个 %@ 游戏。它通过 BetterHusk 的原生运行时运行，运行时自行加载其 %@ 个 arm64 库。"
+          }
+        }
+      }
+    },
+    "A Flutter app. Its engine and its compiled Dart run natively through BetterHusk's translation layer, which loads its %@ arm64 libraries itself.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Eine Flutter-App. Ihre Engine und ihr kompilierter Dart-Code laufen nativ über BetterHusks Übersetzungsschicht, die ihre %@ arm64-Bibliotheken selbst lädt."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "一个 Flutter 应用。其引擎和编译后的 Dart 代码通过 BetterHusk 翻译层原生运行，翻译层自行加载其 %@ 个 arm64 库。"
+          }
+        }
+      }
+    },
+    "Adding %@ APKs…": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ APKs werden hinzugefügt…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在添加 %@ 个 APK…"
+          }
+        }
+      }
+    },
+    "Copying %@ — %@%": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kopiere %@ — %@ %"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在复制 %@ — %@%"
+          }
+        }
+      }
+    },
+    "Default (%@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Standard (%@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "默认（%@"
+          }
+        }
+      }
+    },
+    "Download failed (HTTP %@).": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Download fehlgeschlagen (HTTP %@)."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下载失败（HTTP %@）。"
+          }
+        }
+      }
+    },
+    "Downloading %@ items": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ Elemente werden geladen"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在下载 %@ 项"
+          }
+        }
+      }
+    },
+    "Downloading… %@%": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Laden… %@ %"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下载中… %@%"
+          }
+        }
+      }
+    },
+    "Exit code %@ · %@ frame(s) drawn": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Exit-Code %@ · %@ Frame(s) gezeichnet"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "退出代码 %@ · 已绘制 %@ 帧"
+          }
+        }
+      }
+    },
+    "Failed to download %@ (HTTP %@)": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ konnte nicht geladen werden (HTTP %@)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下载 %@ 失败（HTTP %@）"
+          }
+        }
+      }
+    },
+    "Google Play would not open a session (%@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Google Play konnte keine Sitzung öffnen (%@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Google Play 无法打开会话（%@"
+          }
+        }
+      }
+    },
+    "Google did not accept the sign-in (%@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Google hat die Anmeldung nicht akzeptiert (%@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Google 未接受登录（%@"
+          }
+        }
+      }
+    },
+    "Google did not register the device (HTTP %@).": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Google hat das Gerät nicht registriert (HTTP %@)."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Google 未注册设备（HTTP %@）。"
+          }
+        }
+      }
+    },
+    "HTTP %@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "HTTP %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "HTTP %@"
+          }
+        }
+      }
+    },
+    "HTTP %@ fetching %@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "HTTP %@ beim Abrufen von %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "HTTP %@（获取 %@）"
+          }
+        }
+      }
+    },
+    "HTTP %@ from %@%@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "HTTP %@ von %@%@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "来自 %@%@ 的 HTTP %@"
+          }
+        }
+      }
+    },
+    "If there is no \\\"Pair with\\\" row in Settings, Developer Mode is off: enable it first (Settings › Privacy & Security) -- it restarts the %@ once.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gibt es in den Einstellungen keine Zeile „Pair with“, ist der Entwicklermodus aus: erst aktivieren (Einstellungen › Datenschutz & Sicherheit) – dabei startet das %@ einmal neu."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "如果“设置”中没有“配对”行，说明开发者模式已关闭：请先开启（设置 › 隐私与安全性）——首次开启会重启 %@。"
+          }
+        }
+      }
+    },
+    "Importing %@ PS4 games…": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ PS4-Spiele werden importiert…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在导入 %@ 个 PS4 游戏…"
+          }
+        }
+      }
+    },
+    "In progress: %@ of %@ done.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Läuft: %@ von %@ erledigt."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "进行中：已完成 %@ / %@。"
+          }
+        }
+      }
+    },
+    "Installed %@ PS4 packages": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ PS4-Pakete installiert"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已安装 %@ 个 PS4 包"
+          }
+        }
+      }
+    },
+    "Installing %@ (%@ of %@)": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ wird installiert (%@ von %@)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在安装 %@（%@/%@）"
+          }
+        }
+      }
+    },
+    "Last test: %@ of %@ done.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Letzter Test: %@ von %@ erledigt."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "上次测试：已完成 %@ / %@。"
+          }
+        }
+      }
+    },
+    "Never started (%@ s)": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nie gestartet (%@ s)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "从未启动（%@ 秒）"
+          }
+        }
+      }
+    },
+    "Preparing %@ files…": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ Dateien werden vorbereitet…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在准备 %@ 个文件…"
+          }
+        }
+      }
+    },
+    "Restored %@ file%@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ Datei%@ wiederhergestellt"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已恢复 %@ 个文件%@"
+          }
+        }
+      }
+    },
+    "Runs, but drew few frames (%@)": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Läuft, zeichnete aber wenige Frames (%@)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "运行了，但只绘制了少量帧（%@）"
+          }
+        }
+      }
+    },
+    "Sending %@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sende %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在发送 %@"
+          }
+        }
+      }
+    },
+    "Sending %@ — %@%": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sende %@ — %@ %"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在发送 %@ — %@%"
+          }
+        }
+      }
+    },
+    "Starting · %@%": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Starten · %@ %"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在启动 · %@%"
+          }
+        }
+      }
+    },
+    "Still loading after %@ s": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lädt noch nach %@ s"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 秒后仍在加载"
+          }
+        }
+      }
+    },
+    "Testing %@ of %@: %@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Teste %@ von %@: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在测试第 %@/%@ 项：%@"
+          }
+        }
+      }
+    },
+    "That backup is of %@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Das Backup ist von %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该备份属于 %@"
+          }
+        }
+      }
+    },
+    "Waiting for Android (%@s)…": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Warte auf Android (%@ s)…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在等待 Android（%@ 秒）…"
+          }
+        }
+      }
+    },
+    "about %@ minutes remaining": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "noch etwa %@ Minuten"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "约剩 %@ 分钟"
+          }
+        }
+      }
+    },
+    "about %@ seconds remaining": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "noch etwa %@ Sekunden"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "约剩 %@ 秒"
+          }
+        }
+      }
+    },
+    "connect failed (errno %@)": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verbindung fehlgeschlagen (errno %@)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接失败（errno %@）"
+          }
+        }
+      }
+    },
+    "connected, then read failed (errno %@)": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "verbunden, dann Lesefehler (errno %@)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已连接，随后读取失败（errno %@）"
+          }
+        }
+      }
+    },
+    "copied %@ of %@ bytes of %@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ von %@ Bytes von %@ kopiert"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已复制 %@ 的 %@/%@ 字节"
+          }
+        }
+      }
+    },
+    "could not join snapshot part %@: %@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Snapshot-Teil %@ konnte nicht zusammengefügt werden: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法合并快照第 %@ 部分：%@"
+          }
+        }
+      }
+    },
+    "read failed (errno %@)": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lesen fehlgeschlagen (errno %@)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "读取失败（errno %@）"
+          }
+        }
+      }
+    },
+    "sent %@ of %@ bytes": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ von %@ Bytes gesendet"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已发送 %@/%@ 字节"
+          }
+        }
+      }
+    },
+    "sent %@ of %@ bytes; the stream is out of step": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ von %@ Bytes gesendet; der Stream ist aus dem Takt"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已发送 %@/%@ 字节；流不同步"
+          }
+        }
+      }
+    },
+    "socket() failed (errno %@)": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "socket() fehlgeschlagen (errno %@)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "socket() 失败（errno %@）"
+          }
+        }
+      }
+    },
+    "the server answered %@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "der Server antwortete %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "服务器返回 %@"
+          }
+        }
+      }
+    },
+    "unsupported qcow2 version %@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "nicht unterstützte qcow2-Version %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "不支持的 qcow2 版本 %@"
+          }
+        }
+      }
+    },
+    "userdata image declares only %@ bytes of disk": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "userdata-Image deklariert nur %@ Bytes Speicherplatz"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "userdata 镜像仅声明了 %@ 字节磁盘空间"
+          }
+        }
+      }
+    },
+    "write failed (errno %@)": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Schreiben fehlgeschlagen (errno %@)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "写入失败（errno %@）"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

@@ -32,9 +32,12 @@ def swift_files():
                 if f.endswith('.swift'):
                     yield os.path.join(dirpath, f)
 
+UNICODE_ESC = re.compile(r'\\u\{([0-9A-Fa-f]+)\}')
+
 def unescape(s):
     # Swift string escapes close enough for keys (no interpolated strings
     # survive the regex anyway -- those are excluded on purpose).
+    s = UNICODE_ESC.sub(lambda m: chr(int(m.group(1), 16)), s)
     return s.replace('\\"', '"').replace("\\'", "'").replace('\\n', '\n').replace('\\\\', '\\')
 
 def main():

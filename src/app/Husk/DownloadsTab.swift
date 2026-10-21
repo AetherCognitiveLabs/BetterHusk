@@ -23,6 +23,34 @@ struct DownloadsTab: View {
                         }
                         .padding(.vertical, 6)
                     }
+                    // The guest system's own ~1 GB fetch lives in GuestImage,
+                    // not in jobs -- surface it here so every download a user
+                    // started shows up in the same list.
+                    if case .downloading(let p, let received, let total) = guest.state {
+                        HStack(spacing: 10) {
+                            Image(systemName: "shippingbox.fill").foregroundStyle(Color.accentColor)
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Android system").font(.headline)
+                                ProgressView(value: p)
+                                Text(String(localized: "\(Downloads.bytes(received)) of \(total > 0 ? Downloads.bytes(total) : "…")"))
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Button(role: .destructive) { guest.cancel() } label: {
+                                Image(systemName: "xmark.circle.fill").font(.title2)
+                            }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel("Cancel Download")
+                        }
+                        .padding(.vertical, 4)
+                    }
+                    if case .installing = guest.state {
+                        HStack(spacing: 10) {
+                            Image(systemName: "shippingbox.fill").foregroundStyle(Color.accentColor)
+                            ProgressView()
+                            Text("Installing Android…").font(.headline)
+                        }
+                        .padding(.vertical, 4)
+                    }
                     ForEach(store.downloadProgress.keys.sorted(), id: \.self) { pkg in
                         HStack(spacing: 10) {
                             Image(systemName: "bag.fill").foregroundStyle(Color.accentColor)
