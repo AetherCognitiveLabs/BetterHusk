@@ -1,0 +1,38 @@
+{
+ "1280": [
+  "src\\app\\Husk\\SettingsTab.swift"
+ ],
+ "720": [
+  "src\\app\\Husk\\SettingsTab.swift"
+ ],
+ "Anonymous": [
+  "src\\app\\Husk\\Compatibility.swift"
+ ],
+ "Diagnostics": [
+  "src\\app\\Husk\\TLAppSettings.swift"
+ ],
+ "For a game that runs in BetterHusk's own Java runtime: every touch writes the window it went to and the view that answered, and the view tree is printed every few seconds — all into the run log, which Technical Details can share. Leave it off while playing normally; the writes cost a little speed.": [
+  "src\\app\\Husk\\TLAppSettings.swift"
+ ],
+ "Name": [
+  "src\\app\\Husk\\TLAppSettings.swift"
+ ],
+ "Save husk-jit.js to Files": [
+  "src\\app\\Husk\\JITSetupView.swift"
+ ],
+ "Sign Out": [
+  "src\\app\\Husk\\Play\\StoreView.swift"
+ ],
+ "Use Guest Account (Aurora)": [
+  "src\\app\\Husk\\Play\\StoreView.swift"
+ ],
+ "What worked, what didn\\u{2019}t, how far you got": [
+  "src\\app\\Husk\\Compatibility.swift"
+ ],
+ "https://f-droid.org/repo/index-v1.json": [
+  "src\\app\\Husk\\DiscoverTab.swift"
+ ],
+ "https://… or http://192.168.1.20:8642/": [
+  "src\\app\\Husk\\DownloadsTab.swift"
+ ]
+}

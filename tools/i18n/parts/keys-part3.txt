@@ -1,0 +1,254 @@
+Loading the engine…
+Logs
+Low
+MAP_JIT
+Mac
+Made by BetterHusk
+Make a folder named DeveloperTesting in BetterHusk's folder (Files > On My iPhone > BetterHusk) and put the APKs to test in it: an APK each, or a folder per app with its base and split APKs.
+Manage Repositories
+Mass Test
+Medium
+Menu
+Metadata Updated
+Metadata for %lld of your app%@
+Method
+Minecraft / GameActivity
+Missing game data
+Mods
+More for %@
+Most apps and games run directly on your iPhone, the way native apps do. The full Android system is a separate, slower option for anything that only runs inside real Android.
+Multitasking
+My pairing file stopped working
+Names and icons come from Android's own launcher, which keeps 
+Names and icons come from Android's own launcher, which keeps the version it draws. Re-fetching throws away BetterHusk's copies and asks again.
+Native
+Native Libraries (%lld)
+Native runtime
+NativeActivity
+Needs Google Play services
+Needs JIT to start
+Needs a Google account
+Network
+Never
+Never started (%lld s)
+No %@ machine is saved, so nothing was deleted.
+No Repositories
+No Results
+No apps found for "%@".
+No apps found for \"%@\".
+No download URLs available for %@.
+No downloads
+No failures to retest.
+No featured apps available. Try searching above.
+No jailbreak was found on this %@.
+No log yet. It is written the first time the game runs.
+None
+Not Now
+Not downloaded yet
+Not enough JIT memory
+Not enough free space for the pre-booted snapshot: %@.
+Not now
+Not on the list yet. Be the first to say how it runs.
+Not started
+Not started: %@
+Not supported: wrong kind of CPU code
+Not yet
+Notes
+Nothing here is called “%@”.
+Nothing is in this folder yet.
+Nothing matches “%@”. Open Settings › About › Open Console to see what BetterHusk is doing.
+Nothing was recorded, which usually means iOS ended BetterHusk for using too much memory, or BetterHusk was closed from the app switcher.
+Noto Sans CJK, the font Android uses for these languages. Games and apps that draw their own text (Unity, Flutter, 
+Noto Sans CJK, the font Android uses for these languages. Games and apps that draw their own text (Unity, Flutter, cocos2d-x) show empty boxes for these characters without it. Takes effect the next time an app opens.
+Now
+OK
+Off by default. BetterHusk detaches StikDebug as soon as the 
+Off by default. BetterHusk detaches StikDebug as soon as the JIT region is held, because a debugger that iOS has suspended stops the whole app the next time it is needed. Turn this on only to collect StikDebug's own logs.
+Off by default. The full Android emulator is experimental: starting it on launch can cause unwanted bugs, freezes and crashes, and slows every launch. Games and apps don't need it.
+On a computer, make this %@'s pairing file with the [StikDebug pairing-file guide](https://github.com/StikDebug/StikDebug-Guide/blob/main/pairing_file.md).
+On a device jailbroken with Dopamine, JIT is a setting: the jailbreak marks every app as debugged when it opens, and a debugged app may run code it wrote. BetterHusk needs nothing else.
+On a jailbroken device JIT is a setting. In Dopamine, turn on Allow JIT in Apps, then open BetterHusk again.
+On-screen controller
+Opacity
+Open
+Open **Settings › Privacy & Security › Developer Mode**, scroll down and tap **Pair with %@**.
+Open **Settings › Privacy & Security › Developer Mode**, scroll down and tap **Pair with this %@**.
+Open Android
+Open Apps in Windows
+Open BetterHusk to retry
+Open Console
+Open Dopamine and go to its Settings.
+Open In
+Open Settings
+Open StikDebug on its own and check that it has your pairing file and that LocalDevVPN is connected. Update StikDebug to the latest release. BetterHusk sends StikDebug its script itself, so nothing needs setting up for BetterHusk inside StikDebug.
+Open in Files
+Open its page in the Library. BetterHusk says why it stopped:
+• **Protected app:** it checks that it is on a real Android phone, or uses anti-cheat or DRM. BetterHusk does not get around these.
+• **Wrong kind of CPU code:** the APK only has 32-bit code. Find an arm64 (arm64-v8a) version.
+• **Incomplete app or missing game data:** the APK needs its split files or an OBB. Import the full .apks, .xapk or .apkm.
+• **Needs Google:** the app requires a Google account or Play services BetterHusk cannot provide.
+• **Uses something BetterHusk does not have yet:** share the report so it can be added.
+Open on antiweb.lol
+Open the Library
+Open the app's page in your Library and tap **Share Report**. For BetterHusk's own log, go to Settings › About › **Open Console**. Turning on **Developer Info** there adds more detail.
+OpenGL ES
+Opening apps
+Opening…
+Opens
+Opens, but Has Problems
+Or attach **StikDebug** -- it marks the process LiveContainer and BetterHusk share.
+Orientation
+Other
+Other Ways to Turn On JIT
+PS4 games
+Package
+Pad
+Pair on this %@
+Paired on this %@.
+Paired on this device.
+Paired with %@
+Paired with BetterHusk
+Pairing code %@
+Pairing failed. Try again.
+Pairing failed: %@
+Pairing file imported.
+Pairing files stop working when the iPhone's trust settings are reset, and sometimes after an iOS update. Make a new one, or pair on the iPhone itself if you are on iOS 27, then import it again in Settings › JIT.
+Pairing finished, but BetterHusk could not save the pairing file.
+Pairing with BetterHusk
+Partly
+Pass
+Paste any F-Droid-compatible repository index URL.
+Paused · %@ of %@
+Performance
+Performance readout
+Pick an APK or a bundle (.xapk, .apkm, .apks), or share one to BetterHusk from Files or Safari. Games run 
+Pick an APK or a bundle (.xapk, .apkm, .apks), or share one to BetterHusk from Files or Safari. Games run straight on your iPhone. Other apps run inside Android. PS4 games are extracted folders put in BetterHusk's PS4 Games folder.
+Play
+PlayStation 4
+Player Reports
+Plays
+Portrait
+Preparing %@…
+Preparing %lld files…
+Preset
+Presets
+Preview
+Protected
+Protected app
+Protected video is not supported
+Put APKs in the DeveloperTesting folder first.
+Puts %@ on your Home Screen with its own icon. Tapping it opens BetterHusk straight into the game. BetterHusk downloads a profile: open Settings, tap Profile Downloaded, then Install.
+Puts %@ on your Home Screen. It opens in BetterHusk.
+Rating
+Re-fetch icons
+Reading…
+Ready
+Ready to start
+Recently added
+Recommended
+Refresh
+Refresh from Android
+Refreshing…
+Refused: Could not execute
+Refuses to run outside a real Android phone (anti-cheat, anti-tamper or DRM). BetterHusk does not get around that.
+Region
+Remove
+Remove %@?
+Remove Android
+Remove Android?
+Remove Game
+Removes %@ from Android
+Removing %@…
+Renderer
+Repacks from sites like APKVISION often turn the app's code into their own library or add tamper checks, and these break more often. Try the original APK from the developer or from APKMirror.
+Replace
+Replace %@'s saves?
+Report How It Ran
+Report to the Compatibility List
+Repositories
+Reset
+Reset All
+Reset Developer Disk Image
+Reset Game Data
+Reset the data of %@?
+Resetting the Developer Disk Image cache…
+Resize
+Resolution
+Restore Saves
+Retest %lld Failures
+Return to BetterHusk to finish setting up JIT.
+Rockstar
+Rotate picture
+Run Again
+Running
+Running Attempt...
+Running now
+Runs Linux programs as separate processes
+Runs With
+Runs and plays or works normally.
+Runs as
+Runs the game directly on your iPhone, without starting Android. Best for games.
+Runs, but drew few frames (%lld)
+Runtime
+SDL
+Save Android
+Save Android Automatically
+Save Android Now
+Save automatically
+Save it to Files, or AirDrop it to this %@.
+Save now
+Saved Machine
+Saved by the game
+Saved machine
+Saves
+Saves and Storage
+Saves the emulator once it settles, so later starts take seconds.
+Saves, settings and caches the game made here are deleted.
+Saving Android — the screen will freeze briefly
+Saving keeps Android exactly as it is, so the next start skips booting.
+Saving…
+Screen
+Screenshots
+Search
+Search %lld apps
+Search Google Play
+Search Results
+Search games and apps
+Search problems
+Search to see %lld more apps.
+Search to see %lld more apps. 
+Send
+Sending %@ — %lld%
+Sending %lld
+Sent with it: %@, iOS %@, BetterHusk build %@, JIT from %@. It shows on antiweb.lol for everyone.
+Set Up JIT
+Set Up StikJIT Now
+Set up JIT
+Settings
+Settings & JIT
+Settings › Privacy & Security › Developer Mode
+Share Log
+Share Report
+Share Results
+Show
+Show All
+Show Me Around
+Show in Android Settings
+Sideloading
+Sign In
+Sign In with Google
+Sign in with Google
+Sign in with a Google account instead, or try again later.
+Sign-in with Google does not work
+Size
+Skipped
+Software machine
+Something went wrong
+Sound
+Source URL
+Start
+Start Android When BetterHusk Opens
+Start Android on launch
+Start Android to uninstall or look inside the app.
+Start Android?
+Start Mass Test

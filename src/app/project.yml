@@ -7,6 +7,10 @@ options:
     # iOS 16 SwiftUI the screens use.
     iOS: "15.5"
   createIntermediateGroups: true
+  # English source plus the two shipped translations. XcodeGen would pick the
+  # same set up from Localizable.xcstrings anyway; pinning it keeps
+  # knownRegions stable when the catalog is regenerated.
+  knownRegions: [en, de, zh-Hans]
 
 settings:
   base:

@@ -1,0 +1,249 @@
+Come back to BetterHusk.
+Compatibility
+Compatibility List
+Complete Store downloads
+Connect LocalDevVPN
+Console
+Continue
+Continue with the current pairing
+Controller
+Controls
+Copy
+Copy Package Name
+Copying %@ — %lld%
+Could Not Load
+Could not add %@: %@
+Could not install %@
+Could not install %@ 
+Could not send %@: %@
+Could not start — see the log
+Could not unpack the snapshot: %@
+Crash Report
+Crashed in %@
+Crashed last time
+Crashes or closes while starting.
+Custom
+Custom Colour
+Custom resolution
+Dark
+Data
+Debugger
+Debugger after setup
+Default
+Default (%@)
+Delete saved machine
+Deleted the %@ machine. The next launch boots from cold.
+Details
+Developer Info
+Device Checks
+Device checks
+Did not start
+Discover
+Display
+Doesn’t Work
+Done
+Download
+Download (19.5 MB)
+Download Android
+Download Geode
+Download did not produce a disk image: %@
+Download failed (HTTP %lld).
+Download finished
+Download pre-booted snapshot
+Download stopped
+Download the fonts in Settings › Fonts, and games stop showing empty boxes.
+Downloading %@
+Downloading %lld items
+Downloading Geode %@…
+Downloading it replaces the Android system and its pre-booted snapshot (%@), and with them everything inside Android — installed apps included. A snapshot only restores against the image it was saved on, so the two cannot be updated separately.
+Downloading · %@ of %@
+Downloading…
+Downloading… %lld%
+Downloads
+Drag a control to move it, or tap one to resize or hide it.
+Each app is played once JIT is on, watched for 15 seconds, and written down; then BetterHusk closes. Open BetterHusk again for the next one. At the end the results file is offered to share.
+Each app keeps its data inside BetterHusk. On an app's page, **Back Up Saves** exports them and **Restore Saves** brings them back, including onto another iPhone.
+Each time BetterHusk opens without JIT, it asks TrollStore to turn it on. TrollStore's URL Scheme setting must be on.
+Edit pad
+Empty
+Emulator
+Enable JIT
+Enable JIT with %@
+Enable JIT with TrollStore
+Engine
+Enter Text
+Enter it on this %@ to pair with BetterHusk
+Enter the code BetterHusk shows. It also appears in a banner and a notification, so you don't have to switch back.
+Enter this code on your %@
+Enter this code on your %@ to finish pairing.
+Error
+Every pixel the screen has. Sharpest, and heaviest.
+Everything installed or saved inside Android is deleted. Translation layer apps keep their data.
+Everything is up to date
+Everything you have added, by platform. Use All, Android and PS4 to filter, search by name, and long-press any game for its options. The dot shows how it runs: green plays, orange opens, red is broken.
+Executable memory
+Exit code %lld · %lld frame(s) drawn
+Fail
+Failed to download %@ (HTTP %lld)
+Failed to download %@: %@
+Featured Apps
+File sent
+Files
+First time? See the setup, or use StikDebug or TrollStore instead
+Fixes
+Flutter
+Folder
+Fonts
+For apps that ask for your country.
+For apps that show local times.
+For the Android emulator: games fill a landscape screen, portrait apps get letterboxed.
+Frame rate
+Freed %@.
+From the Store
+Full Android emulation is experimental. It is slow, takes minutes to start, and can freeze or crash BetterHusk. 
+Full Android emulation is experimental. It is slow, takes minutes to start, and can freeze or crash BetterHusk. Games and apps run much better in the Translation Layer.
+Full Android runs in an emulator, for the apps the Translation Layer can't run yet. It is experimental: slow, 
+Full Android runs in an emulator, for the apps the Translation Layer can't run yet. It is experimental: slow, and it can freeze or crash.
+Full Screen
+GPU
+GPU machine
+Game
+Game Settings
+Game pages and the Store show how each app runs for everyone, from antiweb.lol. Your reports go there 
+Game pages and the Store show how each app runs for everyone, from antiweb.lol. Your reports go there with your device, iOS version, BetterHusk build and JIT method.
+GameMaker
+Games
+Games and Android can run.
+Games need JIT, which iOS only grants to an attached debugger. BetterHusk runs inside LiveContainer, so JIT is LiveContainer's to give -- its own launch options, or an attached debugger.
+Games need JIT. Turn it on from Home or Settings › JIT & Sideload. Settings also has performance, appearance, input, and the optional full Android emulator.
+Games need it. %@
+Games need it. Tap to turn it on.
+Games or Apps
+Games that keep their data in expansion files get them with the download, and games split into many pieces load.
+General
+Generate App Clip
+Geode
+Geode is the mod loader for Geometry Dash. With it on, BetterHusk downloads Geode for this version of the 
+Geode is the mod loader for Geometry Dash. With it on, BetterHusk downloads Geode for this version of the game, and mods are found and installed in the game itself, from Geode's button on the main menu. Applies the next time the game starts.
+Get
+Get Android First
+Godot
+Google Play Store
+Google Play said no: %@
+Google Play's session has ended; signing in again.
+Google did not register the device (HTTP %lld).
+Graphics
+Guest image
+Guest screen
+HTTP %lld
+HTTP %lld from %@%@
+HUSK
+Height
+Help
+Hide
+Hide pad
+Hide the interface
+High
+Holiday Decorations
+Home
+Home Screen
+How did %@ run?
+How do I add a PS4 game?
+How do I get logs to report a problem?
+How do I update BetterHusk?
+How does %@ run?
+How each 64-bit library maps onto the iPhone: its relocations, the instructions BetterHusk rewrites, and anything the loader works around.
+How it connects
+How it works
+How to Allow JIT
+How to Get JIT
+How to enable JIT in LiveContainer
+Hundreds more Android games
+Hundreds of newly working games on the compatibility list, unofficial ports like Sonic Robo Blast 2, Ring Racers, NetHack and PokeWilds, Flutter games that showed a blank screen draw again, Godot 4 games run, and Python games get online.
+Import
+Import Files
+Import this %@'s pairing file into StikDebug.
+Imported apps and their data live in BetterHusk's folder. Remove games you no longer play from their page. The full Android system download is about 2 GB more and is only needed for Android itself.
+Importing %@…
+Importing %lld PS4 games…
+In **LiveContainer**, open BetterHusk's settings and turn on **JIT** for it (or launch it with JIT).
+In Android's %@ folder.
+In TrollStore's Settings, turn on URL Scheme. TrollStore ignores enable-jit requests without it.
+In a window, %@ runs over BetterHusk: move it by its title bar, resize it from the corner, and minimise it to the dock at the edge of the screen while you use the rest of BetterHusk.
+In progress: %lld of %lld done.
+Incomplete app
+Info
+Input
+Install
+Install %@
+Install %@?
+Install BetterHusk.ipa through TrollStore, on an iOS version TrollStore supports. It carries the entitlements TrollStore keeps, so the same file works there and in a sideloader.
+Install [LocalDevVPN](%@) from the App Store.
+Install [StikDebug](https://github.com/StikDebug/StikDebug/releases/latest).
+Install and connect [LocalDevVPN](%@).
+Install failed
+Install failed: %@
+Installed
+Installed %@
+Installed %lld PS4 packages
+Installed with TrollStore
+Installed, but not saved
+Installing %@
+Installing %@ (%lld of %lld)
+Installing %@…
+Installing…
+Installs it into Android once Android is downloaded and started.
+Installs it into Android the next time Android starts.
+Installs it into Android, where any app can run.
+Invalid dispenser URL: %@
+It is a landscape game: BetterHusk turns the screen for it.
+It is uninstalled from Android, with its data.
+It opens as soon as Android answers.
+It stopped with %@. The report has the full log of that run.
+It stopped with %@. The report has the full log of that run. 
+It stopped with %@. The report has the full log of the run.
+It's connected
+It's in your library.
+Its code stopped with %@
+Its data goes with it.
+Its data goes with it. Save Android afterwards or the change is 
+Its data goes with it. Save Android afterwards or the change is lost on the next launch.
+Its files and saved progress are deleted from BetterHusk.
+JIT
+JIT & sideload
+JIT On (%@)
+JIT is not enabled
+JIT is off
+JIT is on
+JIT is on.
+JIT is on. Android can start.
+JIT is on. Games and Android can start.
+JIT lasts as long as BetterHusk is running. When iOS closes BetterHusk in the background, or you swipe it away, the next launch needs JIT again. With Pair on this iPhone or a pairing file it is one tap.
+JIT on its own
+Jailbreak
+Jailbreak (Dopamine)
+Java app
+Keep debugger attached
+Keep the network across saves
+Keep the screen on
+Landscape
+Landscape Android Screen
+Language
+Last Played
+Last Result
+Last Run
+Last Used
+Last lines
+Last test: %lld of %lld done.
+Launch
+Leave it connected whenever you turn JIT on.
+Library
+Library loader
+Light
+Live Activities are off for BetterHusk, so downloads don't show on the Lock Screen or in the Dynamic Island. Turn them on in Settings › BetterHusk › Live Activities.
+LiveContainer
+LiveContainer detected
+LiveContainer owns JIT here. Tap for options.
+LiveContainer — JIT is on
+Loaded: Native libraries loaded (no draw)
+Loading libraries and starting the engine

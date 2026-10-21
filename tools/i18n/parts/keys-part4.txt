@@ -1,0 +1,253 @@
+Start pairing
+Starting
+Starting %@…
+Starting Android…
+Starting BetterHusk's JIT helper…
+Starting · %lld%
+Starting…
+Starts and shows its screens, but has not been fully tested or has problems.
+StikDebug
+StikDebug is a separate app that attaches to BetterHusk. BetterHusk sends it the JIT script itself, so nothing needs configuring for BetterHusk inside StikDebug.
+StikDebug is installed, so BetterHusk will open it to turn JIT on.
+StikDebug is installed, so BetterHusk will open it.
+StikDebug opens but JIT stays off
+StikDebug, TrollStore and a jailbreak were not found, so BetterHusk will use its built-in helper.
+StikJIT (built in)
+StikJIT is built into BetterHusk. You can turn JIT on right here — no computer and no other app. Games and Android both need it.
+StikJIT says it cannot connect, or Enable JIT fails
+Still loading after %lld s
+Stop
+Stop Download
+Stopped: %@
+Storage
+Store
+Stuck? Settings › Help answers the common problems, and a game that crashes BetterHusk leaves a report to share.
+Success: The guest drew frames!
+System
+System follows the phone: light by day, dark by night. The guest's own 
+System follows the phone: light by day, dark by night. The guest's own screen stays dark either way — it is a picture of another phone. Holiday decorations appear from December to early January.
+Tap **Check setup**. BetterHusk checks LocalDevVPN and prepares the Developer Disk Image.
+Tap **Choose pairing file** and pick it.
+Tap **Connect LocalDevVPN**. It switches the VPN on and comes straight back to BetterHusk.
+Tap **Enable JIT**. BetterHusk's helper attaches and Android can start.
+Tap **Start pairing** in BetterHusk first and allow **Local Network** access when asked. If you said no earlier, turn it on in Settings › Privacy & Security › Local Network › BetterHusk. Wi-Fi has to be on. Developer Mode must already be enabled, which restarts the iPhone the first time.
+Tap + and pick a fake package (.pkg), a folder of packages, or an extracted game folder (eboot.bin and sce_sys). BetterHusk installs it into PS4 Games in Files, and an update package goes beside the game it updates. Retail packages are locked to a PS4 and do not install. PS4 games need iOS 17.4 or later.
+Tap + to add an Android APK or bundle (.xapk, .apkm, .apks), or a PS4 game: a fake package (.pkg), a folder of them, or an extracted game folder. You can also share files to BetterHusk from Files or Safari.
+Tap with three fingers to show the interface
+Technical Details
+Technical detail in the Android Translation Layer screens: 
+Technical detail in the Android Translation Layer screens: library reports, device checks and run logs.
+Tested by the BetterHusk team on an iPhone.
+Testing %lld of %lld: %@
+Text fields in Unity, Java, Flutter, cocos2d-x and SDL games bring up the keyboard.
+That file is not a bundle BetterHusk can read.
+The DeveloperTesting folder is empty.
+The anonymous login service (Aurora's token dispenser) is not working right now
+The app called %@, a system function BetterHusk does not provide yet.
+The app crashed
+The app needs a part of Android that BetterHusk's runtime does not provide yet: %@.
+The app refused to run here
+The app's own native code (%@) stopped with %@. It most likely needs something from Android that BetterHusk does not provide yet, or does something iOS does not allow.
+The app's video is DRM-protected (Widevine), which only certified Android devices can decrypt. Unprotected video plays; protected video stays black.
+The download failed: %@
+The downloaded image did not match the release. Tap to retry.
+The emulator ended before the guest finished booting. The log (Settings › Technical details) has the last lines.
+The end of the log from the last time the game started. Share it when reporting a problem.
+The first check downloads and mounts Apple's Developer Disk Image, which can take a minute.
+The first launch of a big game prepares its code and data, and can take up to a minute. If it is still black after that, close it, open it once more and share the report if nothing changes.
+The first start downloads the Android image and boots it from cold, which takes a few minutes. After that BetterHusk restores a saved machine, which is much faster.
+The game and everything it saved here are deleted from BetterHusk.
+The game could not start
+The game could not start. Its log is in the game's Technical Details.
+The game crashed
+The game exited
+The game has ended.
+The game starts with nothing over it: no bar, no controller, no readout. Tap with three fingers at once to bring 
+The game starts with nothing over it: no bar, no controller, no readout. Tap with three fingers at once to bring the bar back, and again to hide it. The Hide button in the bar does the same while playing.
+The game stopped
+The language apps and games inside BetterHusk see. BetterHusk itself follows your iPhone.
+The language apps and games inside BetterHusk see. BetterHusk itself follows your iPhone. Takes effect the next time an app opens.
+The list is written to disk, so it is on screen before Android 
+The list is written to disk, so it is on screen before Android has finished starting.
+The pairing file stays in BetterHusk's Documents folder and is only sent to BetterHusk's own helper.
+The panel is built when the machine starts, so a change costs 
+The panel is built when the machine starts, so a change costs one cold boot, and the next save replaces the machine saved at the old size — changing back costs another. Sizes are rounded to a multiple of eight. Bigger is slower: every pixel is drawn by an emulated phone. Android's density does not change with the panel, so a larger one shows more rather than bigger.
+The plan, in order, is docs/04-translation-layer.md in BetterHusk's source.
+The report holds the full log of that run and which device and build it was on. Nothing is sent anywhere unless you share it.
+The request for BetterHusk's JIT helper could not be encoded.
+The runtime could not start it. The report says which part was missing.
+The runtime on disk is not a valid image (%@). Tap to retry.
+The screen stays black
+The snapshot did not match the release (sha256 %@, expected %@).
+Theme
+They go to %@. Unmodified APKs install from here too.
+This APK has no 64-bit code BetterHusk can run, so it will probably not start.
+This app carries anti-tamper protection (%@). Such protection checks that it runs on a certified Android phone and closes the app otherwise, so it may not start in BetterHusk.
+This app does its main work in Linux programs it starts as processes of their own (here %@). Its own screens run in BetterHusk, but iOS does not let an app start other processes, so those programs, and the games or tools they run, can not start yet.
+This app is published in several pieces (split APKs) and only its base was imported, so its libraries or resources are missing. Import the whole bundle (.apks, .xapk or .apkm), or get it from BetterHusk's store.
+This app only works signed in to a Google account. It asked Android to pick one, and BetterHusk has no Google accounts to offer, so the app closed.
+This app relies on Google Play services (Google sign-in, Google's account and device checks) for more than BetterHusk can answer for. Apps that only use Google's libraries run; this one stops without the real services.
+This device closed the connection, which usually means it no longer accepts BetterHusk's pairing. Pair again, and check that LocalDevVPN is connected.
+This device is jailbroken, so JIT comes from the jailbreak's Allow JIT in Apps setting.
+This file is not an app BetterHusk can read
+This game keeps most of its data in an expansion file (OBB) that the Play Store downloads separately from the app. BetterHusk installed the app itself but not that file, so the game cannot load.
+This iPhone
+This iPhone only lets an app run translated code while a debugger enables JIT for it. Open BetterHusk through StikDebug, or tap Turn On JIT in BetterHusk, then start the app again.
+This installation can only wait about 30 seconds in the background, 
+This installation can only wait about 30 seconds in the background, so go to Settings straight away.
+This is Geode's Android launcher. On BetterHusk, Geode runs inside Geometry Dash instead: turn it on here 
+This is Geode's Android launcher. On BetterHusk, Geode runs inside Geometry Dash instead: turn it on here (or in Geometry Dash's settings, under Mods), then start Geometry Dash and use Geode's button on its main menu to get mods. This APK supplies a library Geode needs, so keep it.
+This needs %@ more and the device has %@ free.
+This was removed.
+Time Zone
+Tinted Dark
+Tinted Light
+Tints buttons, switches and selected states throughout the app.
+Title ID
+To send a whole folder from a computer on the same Wi‑Fi, run this on it and enter the address it shows:
+Tool
+Touch always works. A gamepad and a pointer are not wired 
+Touch always works. A gamepad and a pointer are not wired through to Android yet.
+Touch is always on. The keyboard and the rotate control are 
+Touch is always on. The keyboard and the rotate control are in the pill at the bottom of the guest's screen; a gamepad and a pointer are not wired through yet.
+Translation Layer
+Trap servicer
+TrollStore
+TrollStore can enable JIT for apps it installed, with no pairing file, VPN or computer.
+TrollStore can turn JIT on for BetterHusk: it opens BetterHusk and enables it, with no computer. In TrollStore's Settings, URL Scheme must be on.
+TrollStore installs turn JIT on at launch, and BetterHusk says on screen when something can't start without it.
+TrollStore is installed, so BetterHusk will ask it to enable JIT.
+TrollStore was not found on this %@. It installs on iOS 14.0 to 17.0.
+Try Again
+Turn On
+Turn On JIT
+Turn On JIT at Launch
+Turn On JIT to Play
+Turn On JIT with StikDebug
+Turn On JIT with TrollStore
+Turn On JIT with TrollStore at Launch
+Turn on **Open Apps in Windows** in Settings. Apps then open in a window you can move, resize and minimise.
+Turn on Allow JIT in Apps.
+Turn on JIT
+Turn on Wi-Fi, tap **Start pairing** below and allow Local Network access.
+Turning on JIT…
+Turning on…
+Typing everywhere
+Uninstall
+Uninstall %@?
+Unity
+Unity, cocos2d-x, GameActivity, SDL3
+Unity, cocos2d-x, Minecraft and SDL3 games
+Unreal Engine (Vulkan)
+Unrotate picture
+Updates
+Use BetterHusk while an app runs
+Use BetterHusk while it starts
+Use Guest Account
+Use StikDebug
+Use TrollStore
+Use a jailbreak
+Use a pairing file
+Use the jailbreak
+Uses something BetterHusk does not have yet
+Version
+Version %@
+Version %@ · %@
+Vibrate on a press
+View
+View Release
+Vulkan
+Waiting for Android (%llds)…
+Waiting for TrollStore to enable JIT…
+Waiting for the helper to attach…
+Waiting for your %@…
+Watch It Start
+Welcome to BetterHusk
+What %@ has saved now is replaced by the backup. Back up first if you want to keep it.
+What apps and games inside BetterHusk speak
+What is JIT, and why does BetterHusk need it?
+What is the difference between apps and Android?
+What the game is called in BetterHusk. The game itself is not changed.
+What's New in BetterHusk %@
+When BetterHusk opens again it shows what happened, with a report you can share. Usually the game ran out of memory or hit something BetterHusk does not support yet. Close other apps, and share the report if it keeps happening.
+When a new Android image or snapshot is published, BetterHusk asks once whether to download it. 
+When a new Android image or snapshot is published, BetterHusk asks once whether to download it. Never asked before Android has been downloaded.
+Whenever Android or a game starts, BetterHusk asks TrollStore to enable JIT. TrollStore opens BetterHusk, attaches to it for a moment and lets go, which leaves it allowed to run code it wrote.
+Whenever Android starts, BetterHusk opens StikDebug, which attaches and comes back.
+Where are my saves?
+Where it stands
+Which files can I import?
+Which saved machine?
+Which way of turning on JIT should I use?
+Why do I have to turn JIT on again?
+Width
+Window
+With icons
+Without it Android boots from cold, which takes several minutes. The download is %@, and it replaces what is inside Android now, including installed apps.
+Works
+Yes. Connect it to your iPhone in Bluetooth settings, and games that support controllers see it.
+You can browse and import apps, but nothing Android can run. Every game and app needs JIT.
+You can skip this: BetterHusk asks again when a game needs it, and it is in Settings › JIT & Sideload.
+You have %@. The new version's IPA is on its release page.
+Your BetterHusk log helps the developer see what went wrong. Only moderators can read it.
+Your Name
+Your games on a shelf, the last one played first. Tap a game to pick it and its artwork fills the screen; tap it again, or press Play, to start it. The ⋯ button has its settings and more.
+about %lld minutes remaining
+about %lld seconds remaining
+answered: %@
+cannot write: %@
+connect failed (errno %lld)
+connected
+connected, then read failed (errno %lld)
+connected, then silence until timeout (packets dropped rather than refused)
+connected, then the guest closed it at once (the port is refused inside the guest)
+copied %lld of %lld bytes of %@
+could not join snapshot part %lld: %@
+could not open the userdata image
+could not stage download: %@
+ctrl
+file imported
+first boot takes 5–15 min
+guest closed the connection -- %@
+hosting BetterHusk
+iOS 15
+iOS did not provide the extension API BetterHusk's JIT helper needs.
+it needs %@ free and the device has %@
+needs %@ free
+not a qcow2 image (header was %@, expected 51 46 49 fb)
+not set up
+not started
+paired on this device
+python3 serve-folder.py <folder>
+read failed (errno %lld)
+sent %lld of %lld bytes
+sent %lld of %lld bytes; the stream is out of step
+serve-folder.py is in BetterHusk's repository, under tools. The folder's contents land at the top of Shared Storage, so serve the folder that holds what a game expects there.
+socket() failed (errno %lld)
+starting
+the guest closed it
+the server answered %lld
+this %@
+timed out %@
+unsupported qcow2 version %lld
+userdata image declares only %lld bytes of disk
+userdata image has a backing file, which BetterHusk never ships
+userdata image is not qcow2
+userdata image is truncated (header is incomplete)
+userdata image needs qcow2 features QEMU cannot use (incompatible_features 0x%@)
+v%@, ready
+waiting for `%@`
+waiting for the guest to finish writing %@
+waiting for the guest to write %@
+web (%@)
+working
+write failed (errno %lld)
+“Pair with BetterHusk” does not appear in Developer Mode
+• **Opens and closes instantly:** the signing certificate has probably expired. Free Apple accounts last 7 days. Re-sign or reinstall BetterHusk with your sideloader; your apps and saves stay.
+• **“Untrusted Developer”:** go to Settings › General › VPN & Device Management and trust your certificate.
+• **Asks for Developer Mode:** turn it on in Settings › Privacy & Security.
+• **iOS 27 or later:** Settings › JIT › Pair on this iPhone. No computer needed.
+• **iOS 26:** StikJIT (built in) with a pairing file made on a computer, plus LocalDevVPN.
+• **Older iOS, or BetterHusk inside LiveContainer:** the StikDebug app.
+• **Installed with TrollStore:** TrollStore, with its URL Scheme setting on.
+• **Jailbroken with Dopamine:** turn on JIT for apps in the jailbreak's settings.
