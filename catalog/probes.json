@@ -1,0 +1,18 @@
+{
+  "comment": "tools/compat/javagap.py results against build/husk-framework.dex for each catalogued app. tools/precheck/catalog.py requires a zero-gap entry here for every route:tl app (and records them for android apps too). Re-run javagap and update when bumping an app's pinned versionCode.",
+  "framework": "build/husk-framework.dex",
+  "apps": {
+    "com.dozingcatsoftware.bouncy": { "versionCode": 43, "missingClasses": 0, "missingMembers": 0 },
+    "com.dozingcatsoftware.mouse_pounce": { "versionCode": 10, "missingClasses": 0, "missingMembers": 0 },
+    "com.shatteredpixel.shatteredpixeldungeon": { "versionCode": 922, "missingClasses": 0, "missingMembers": 0 },
+    "io.anuke.mindustry": { "versionCode": 1115, "missingClasses": 0, "missingMembers": 0 },
+    "org.lufebe16.pysolfc": { "versionCode": 102130601, "missingClasses": 0, "missingMembers": 0 },
+    "org.fdroid.fdroid": { "versionCode": 2000052, "missingClasses": 0, "missingMembers": 0 },
+    "org.schabi.newpipe": { "versionCode": 1010, "missingClasses": 0, "missingMembers": 0 },
+    "de.danoeh.antennapod": { "versionCode": 3120395, "missingClasses": 0, "missingMembers": 0 },
+    "com.nononsenseapps.feeder": { "versionCode": 281, "missingClasses": 0, "missingMembers": 0 },
+    "org.videolan.vlc": { "versionCode": 13050404, "missingClasses": 0, "missingMembers": 0 },
+    "com.aurora.store": { "versionCode": 55, "missingClasses": 0, "missingMembers": 0 },
+    "com.termux": { "versionCode": 118, "missingClasses": 0, "missingMembers": 0 }
+  }
+}
