@@ -19,5 +19,5 @@ xcrun --sdk iphoneos swiftc -typecheck \
   -I src/ios-jit \
   -I src/translation-layer \
   -I src/translation-layer-next \
-  -idirafter tools/precheck/include \
+  -Xcc -idirafter -Xcc tools/precheck/include \
   $FILES
