@@ -128,6 +128,11 @@ final class GuestImage: ObservableObject {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
     }
     nonisolated var diskPath: String { documents.appendingPathComponent("lineage-vda.qcow2").path }
+    /// Resume data survives the app: a gigabyte download that the phone killed
+    /// overnight continues in the morning instead of restarting at zero.
+    nonisolated private var resumeDataPath: String {
+        documents.appendingPathComponent("lineage-guest.resume").path
+    }
     /// Present when userdata came from the shipped pre-booted snapshot.
     nonisolated var snapshotStampPath: String {
         documents.appendingPathComponent("husk-shipped-snapshot").path
@@ -497,7 +502,8 @@ final class GuestImage: ObservableObject {
         return [diskPath, userdataPath, userdataPath + ".seed", userdataBootedStampPath,
                 userdataBrokenStampPath, userdataReseedCountPath,
                 varsPath, varsPath + ".layout", firmwarePath, versionStampPath, imageDigestPath,
-                snapshotStampPath, snapshotDigestPath, snapshotPinsPath, runner.guestRamPath, runner.snapshotSizePath,
+                snapshotStampPath, snapshotDigestPath, snapshotPinsPath, resumeDataPath,
+                runner.guestRamPath, runner.snapshotSizePath,
                 runner.snapshotDisplayPath, runner.memoryStrategyPath]
     }
 
@@ -840,6 +846,12 @@ final class GuestImage: ObservableObject {
         // The manifest names the file, so publishing a new image needs no new
         // app build. The constant is only the fallback for a first run that
         // could not reach the release.
+        // Resume data left by a pause or a crash outlives the process; the
+        // digest check at the far end still decides whether the bytes are good.
+        if resumeData == nil,
+           let saved = try? Data(contentsOf: URL(fileURLWithPath: resumeDataPath)) {
+            resumeData = saved
+        }
         if let resumeData {
             task = session.downloadTask(withResumeData: resumeData)
             self.resumeData = nil
@@ -1151,10 +1163,34 @@ final class GuestImage: ObservableObject {
         }
     }
 
+    /// Stop the transfer without discarding it. Unlike cancel(), the bytes
+    /// already fetched are kept as resume data, so the next download() call
+    /// continues from where this one stopped. Only the single-file image
+    /// download can pause -- the snapshot fetch re-joins its staged parts on
+    /// restart, so pausing it would buy nothing over cancelling.
+    func pause() {
+        guard !isFetchingSnapshot, let task else { return }
+        task.cancel(byProducingResumeData: { [weak self] data in
+            Task { @MainActor in
+                guard let self else { return }
+                self.task = nil
+                self.resumeData = data
+                if let data {
+                    try? data.write(to: URL(fileURLWithPath: self.resumeDataPath))
+                }
+                HuskLog.log("guest", "download paused (\(data?.count ?? 0) bytes of resume data)")
+                self.state = .failed(data != nil
+                    ? String(localized: "Paused — starting again continues where it stopped.")
+                    : String(localized: "Paused — starting again begins at the beginning."))
+            }
+        })
+    }
+
     func cancel() {
         task?.cancel()
         task = nil
         resumeData = nil
+        try? FileManager.default.removeItem(atPath: resumeDataPath)
         // A snapshot fetch in flight holds part tasks on the same session -- "cancel" means those too.
         if fetcher != nil {
             imageSession?.getAllTasks { tasks in
@@ -1174,6 +1210,9 @@ final class GuestImage: ObservableObject {
     fileprivate func finished(tempURL: URL, digest: String?) {
         state = .installing
         HuskLog.log("guest", "download complete; installing")
+        // The transfer is done, so any saved resume data is spent either way.
+        resumeData = nil
+        try? FileManager.default.removeItem(atPath: resumeDataPath)
         // A download that arrived is not a download that arrived intact. When
         // the release says what the bytes should hash to, insist on it -- a
         // truncated image otherwise installs cleanly and fails much later,
@@ -1262,6 +1301,9 @@ final class GuestImage: ObservableObject {
     /// A download that stopped short of "cancelled": keep whatever iOS kept of it so the next try continues.
     fileprivate func downloadStopped(_ message: String, resumeData: Data?) {
         self.resumeData = resumeData
+        if let resumeData {
+            try? resumeData.write(to: URL(fileURLWithPath: resumeDataPath))
+        }
         failed(resumeData != nil
                ? String(localized: "\(message) Trying again continues where it stopped.")
                : message)

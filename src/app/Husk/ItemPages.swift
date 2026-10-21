@@ -637,10 +637,15 @@ struct AndroidSystemPage: View {
             }
         }
         .confirmationDialog("Cancel the download?", isPresented: $askCancelDownload, titleVisibility: .visible) {
+            if !guest.isFetchingSnapshot {
+                Button("Pause") { guest.pause() }
+            }
             Button("Cancel Download", role: .destructive) { guest.cancel() }
             Button("Keep Downloading", role: .cancel) {}
         } message: {
-            Text("The part already downloaded is discarded; starting again begins at the beginning.")
+            Text(guest.isFetchingSnapshot
+                 ? String(localized: "The part already downloaded is discarded; starting again begins at the beginning.")
+                 : String(localized: "Pausing keeps what has arrived so far; cancelling discards it."))
         }
         .confirmationDialog("Remove Android?", isPresented: $askRemoveAndroid, titleVisibility: .visible) {
             Button("Remove Android", role: .destructive) {

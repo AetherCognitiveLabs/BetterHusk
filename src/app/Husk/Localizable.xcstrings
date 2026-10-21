@@ -17811,6 +17811,91 @@
           }
         }
       }
+    },
+    "Pause": {
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pause"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂停"
+          }
+        }
+      }
+    },
+    "Pause Download": {
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Download pausieren"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂停下载"
+          }
+        }
+      }
+    },
+    "Paused — starting again continues where it stopped.": {
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pausiert – beim Fortsetzen geht es an derselben Stelle weiter."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已暂停——重新开始将从上次中断处继续。"
+          }
+        }
+      }
+    },
+    "Paused — starting again begins at the beginning.": {
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pausiert – beim Fortsetzen beginnt es von vorn."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已暂停——重新开始将从头开始。"
+          }
+        }
+      }
+    },
+    "Pausing keeps what has arrived so far; cancelling discards it.": {
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pausieren behält die bisher geladenen Daten; Abbrechen verwirft sie."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂停会保留已下载的部分；取消则将其丢弃。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

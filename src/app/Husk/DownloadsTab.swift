@@ -35,6 +35,13 @@ struct DownloadsTab: View {
                                 Text(String(localized: "\(Downloads.bytes(received)) of \(total > 0 ? Downloads.bytes(total) : "…")"))
                                     .font(.caption).foregroundStyle(.secondary)
                             }
+                            if !guest.isFetchingSnapshot {
+                                Button { guest.pause() } label: {
+                                    Image(systemName: "pause.circle.fill").font(.title2)
+                                }
+                                .buttonStyle(.borderless)
+                                .accessibilityLabel("Pause Download")
+                            }
                             Button(role: .destructive) { guest.cancel() } label: {
                                 Image(systemName: "xmark.circle.fill").font(.title2)
                             }
