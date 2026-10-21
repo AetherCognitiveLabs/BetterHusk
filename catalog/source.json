@@ -82,6 +82,33 @@
       "iconURL": "https://f-droid.org/repo/icons-640/org.lufebe16.pysolfc.102130601.png",
       "localizedDescription": "Over a thousand solitaire variants in one collection — a large pure-Python/Java app exercising the Translation Layer deeply.",
       "route": "tl"
+    },
+    {
+      "name": "NewPipe",
+      "bundleIdentifier": "org.schabi.newpipe",
+      "version": "0.28.5",
+      "downloadURL": "https://f-droid.org/repo/org.schabi.newpipe_1010.apk",
+      "iconURL": "https://f-droid.org/repo/icons-640/org.schabi.newpipe.1015.png",
+      "localizedDescription": "A lightweight streaming front-end for video services, with subscriptions and background playback — no account or proprietary client libraries needed.",
+      "route": "android"
+    },
+    {
+      "name": "AntennaPod",
+      "bundleIdentifier": "de.danoeh.antennapod",
+      "version": "3.12.3",
+      "downloadURL": "https://f-droid.org/repo/de.danoeh.antennapod_3120395.apk",
+      "iconURL": "https://f-droid.org/repo/icons-640/de.danoeh.antennapod.3120395.png",
+      "localizedDescription": "A podcast manager and player: subscriptions, downloads, and queueing in a polished open-source package.",
+      "route": "android"
+    },
+    {
+      "name": "Feeder",
+      "bundleIdentifier": "com.nononsenseapps.feeder",
+      "version": "2.4.19",
+      "downloadURL": "https://f-droid.org/repo/com.nononsenseapps.feeder_281.apk",
+      "iconURL": "https://f-droid.org/repo/icons-640/com.nononsenseapps.feeder.4158.png",
+      "localizedDescription": "A clean RSS/Atom feed reader — subscribe to sites and read everything in one timeline, no account required.",
+      "route": "android"
     }
   ]
 }
