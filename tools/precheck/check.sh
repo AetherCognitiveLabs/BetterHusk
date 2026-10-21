@@ -3,9 +3,9 @@
 # iPhone SDK. The error class this catches (C/ObjC compile breakage) used to
 # surface 40-110 minutes into the IPA build; here it fails in ~2 minutes.
 #
-# tools/precheck/include holds stub headers for what the iOS SDK lacks
-# (CommonCrypto, a few POSIX paths) -- last in -I order so real SDK and in-tree
-# headers always win.
+# tools/precheck/include holds stub headers for what the iOS SDK lacks -- it
+# goes through -idirafter so real SDK headers always win and a stub can never
+# shadow one (a shadowed mach/mach.h or zlib.h poisons the whole Darwin module).
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -15,18 +15,21 @@ INC=(
   "-I$PWD/src/translation-layer"
   "-I$PWD/src/translation-layer-next"
   "-I$PWD/src/ios-jit"
-  "-I$PWD/tools/precheck/include"
+  "-idirafter$PWD/tools/precheck/include"
 )
 COMMON=(-fsyntax-only -isysroot "$SDK" -target arm64-apple-ios15.5)
+
+# Include roots whose headers only exist after the dependency/QEMU build:
+# integrate_husk.sh injects those sources into the QEMU tree, where the real
+# qemurebuild step verifies them. Checking them here can only produce
+# false-positive "file not found" errors.
+SKIP_INCLUDE_RE='(qemu|qapi|qom|tcg|sysemu|exec|hw|ui|util|io|net|block|chardev|crypto|monitor|scsi|standard-headers|stubs|target|accel|audio|backends|disas|fpu|gdbstub|migration|replay|softmmu|semihosting|elf|host|nbd|fdt|glib|slirp|pixman|virgl|epoxy|EGL|GLES[0-9]?|vulkan|angle|moltenvk)/'
 
 fail=0
 checked=0
 skipped=0
 while IFS= read -r f; do
-  # Files integrate_husk.sh injects into the QEMU tree include QEMU/glib/slirp
-  # headers that do not exist until the dependency build -- they are verified
-  # by the qemurebuild step there, not here.
-  if grep -qE '#[[:space:]]*include[[:space:]]*[<"](qemu|glib|slirp|qapi|sysemu|ui|hw|exec|migration)' "$f"; then
+  if grep -qE "#[[:space:]]*include[[:space:]]*[<\"]${SKIP_INCLUDE_RE}" "$f"; then
     skipped=$((skipped + 1))
     continue
   fi
