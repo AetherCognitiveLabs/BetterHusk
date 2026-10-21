@@ -4064,6 +4064,24 @@ static void Cond_signalAll(tl_jcall *c) { (void)c; }
  * these give the concrete kinds real state: a host fd or a byte buffer. */
 
 typedef struct { int fd; bool own; } fdis;
+
+/* Byte capacity of a primitive array -- arr.len counts ELEMENTS, so every
+ * byte-windowed user (read/write/zlib/socket) must go through here or a
+ * non-byte array silently multiplies its own bound. arr_win answers the
+ * pointer the window starts at, or throws the exception Java promises for
+ * the bad call and answers NULL: nothing downstream of it may then touch
+ * memory. */
+static size_t arr_bytes(const jobj *a) { return (size_t)a->arr.len * a->arr.esz; }
+static void *arr_win(tl_jcall *c, jobj *a, int64_t off, int64_t len)
+{
+    if (!a) { tl_jni_throw("java/lang/NullPointerException", "array is null"); return NULL; }
+    if (a->kind != TL_K_PRIM_ARRAY) { tl_jni_throw("java/lang/IllegalArgumentException", "not a primitive array"); return NULL; }
+    if (off < 0 || len < 0 || (uint64_t)off + (uint64_t)len > arr_bytes(a)) {
+        tl_jni_throw("java/lang/ArrayIndexOutOfBoundsException", "offset/length out of range");
+        return NULL;
+    }
+    return (char *)a->arr.data + off;
+}
 static void FIS_init_file(tl_jcall *c)
 {
     const char *p = file_path(c->args[0].l);
@@ -4097,16 +4115,17 @@ static void FIS_read_arr(tl_jcall *c)
 {
     fdis *st = c->self->native;
     jobj *a = c->args[0].l;
-    if (!st || !a) { c->ret = vi(-1); return; }
-    c->ret = vi((int)read(st->fd, a->arr.data, a->arr.len));
+    if (!a) { tl_jni_throw("java/lang/NullPointerException", "buffer is null"); return; }
+    if (a->kind != TL_K_PRIM_ARRAY) { tl_jni_throw("java/lang/IllegalArgumentException", "not a primitive array"); return; }
+    if (!st) { c->ret = vi(-1); return; }
+    c->ret = vi((int)read(st->fd, a->arr.data, arr_bytes(a)));
 }
 static void FIS_read_range(tl_jcall *c)
 {
     fdis *st = c->self->native;
-    jobj *a = c->args[0].l;
-    int off = c->args[1].i, len = c->args[2].i;
-    if (!st || !a || off < 0 || len < 0 || off + len > (int)a->arr.len) { c->ret = vi(-1); return; }
-    c->ret = vi((int)read(st->fd, (char *)a->arr.data + off, (size_t)len));
+    void *w = arr_win(c, c->args[0].l, c->args[1].i, c->args[2].i);
+    if (!w || !st) { c->ret = vi(-1); return; }
+    c->ret = vi((int)read(st->fd, w, (size_t)c->args[2].i));
 }
 static void FIS_available(tl_jcall *c)
 {
@@ -4236,8 +4255,9 @@ static void BAOS_write_arr(tl_jcall *c)
 }
 static void BAOS_write_range(tl_jcall *c)
 {
-    jobj *a = c->args[0].l; int off = c->args[1].i, len = c->args[2].i;
-    if (a && a->kind == TL_K_PRIM_ARRAY) sb_add_n(sb_of(c->self), (char *)a->arr.data + off, (size_t)len);
+    int len = c->args[2].i;
+    void *w = arr_win(c, c->args[0].l, c->args[1].i, len);
+    if (w) sb_add_n(sb_of(c->self), w, (size_t)len);
 }
 static void BAOS_toByteArray(tl_jcall *c)
 {
@@ -4281,10 +4301,11 @@ static void ISR_read_chars(tl_jcall *c)
     jobj *dst = c->args[0].l;
     int off = c->args[1].i, len = c->args[2].i;
     int n = 0;
+    if (off < 0) off = 0;
     for (; n < len; n++) {
         int ch = isr_read(c->self);
         if (ch < 0) break;
-        if (dst && off + n < (int)dst->arr.len) ((uint16_t *)dst->arr.data)[off + n] = (uint16_t)ch;
+        if (dst && dst->kind == TL_K_PRIM_ARRAY && off + n < (int)dst->arr.len) ((uint16_t *)dst->arr.data)[off + n] = (uint16_t)ch;
     }
     c->ret = vi(n ? n : -1);
 }
@@ -4343,6 +4364,7 @@ static void ws_write_str(wst *w, const char *s)
 static void ws_write_carr(wst *w, jobj *a, int off, int len)
 {
     if (!a || a->kind != TL_K_PRIM_ARRAY) return;
+    if (off < 0) off = 0;
     uint16_t *u = a->arr.data;
     for (int i = off; i < off + len && i < (int)a->arr.len; i++) {
         uint8_t t[4]; int k = 0;
@@ -4390,7 +4412,11 @@ static void W_write_str_range(tl_jcall *c)
     char *t = malloc((size_t)n + 1); memcpy(t, s + off, (size_t)n); t[n] = 0;
     ws_write_str(ws_of(c->self), t); free(t);
 }
-static void W_write_carr(tl_jcall *c)  { ws_write_carr(ws_of(c->self), c->args[0].l, 0, c->args[0].l ? (int)((jobj *)c->args[0].l)->arr.len : 0); }
+static void W_write_carr(tl_jcall *c)
+{
+    jobj *a = c->args[0].l;
+    ws_write_carr(ws_of(c->self), a, 0, (a && a->kind == TL_K_PRIM_ARRAY) ? (int)a->arr.len : 0);
+}
 static void W_write_carr_range(tl_jcall *c) { ws_write_carr(ws_of(c->self), c->args[0].l, c->args[1].i, c->args[2].i); }
 static void W_flush(tl_jcall *c)       { wst *w = ws_of(c->self); ws_flush_buf(w); if (w->out) tl_jni_call(w->out, "flush", "()V", NULL); }
 static void W_close(tl_jcall *c)
@@ -4454,7 +4480,8 @@ static void SR_read_chars(tl_jcall *c)
     const char *s = S(tl_jni_get_field(c->self, "src", "Ljava/lang/String;").l);
     int pos = get_int(c->self, "pos"), off = c->args[1].i, len = c->args[2].i, n = 0;
     jobj *dst = c->args[0].l;
-    for (; n < len && s[pos + n]; n++) if (dst && off + n < (int)dst->arr.len) ((uint16_t *)dst->arr.data)[off + n] = (uint8_t)s[pos + n];
+    if (off < 0) off = 0;
+    for (; n < len && s[pos + n]; n++) if (dst && dst->kind == TL_K_PRIM_ARRAY && off + n < (int)dst->arr.len) ((uint16_t *)dst->arr.data)[off + n] = (uint8_t)s[pos + n];
     set_int(c->self, "pos", pos + n);
     c->ret = vi(n ? n : -1);
 }
@@ -4529,13 +4556,15 @@ static void RAF_read_range(tl_jcall *c) { FIS_read_range(c); }
 static void RAF_readFully(tl_jcall *c)
 {
     jobj *a = c->args[0].l;
-    if (!a) return;
+    if (!a) { tl_jni_throw("java/lang/NullPointerException", ""); return; }
+    if (a->kind != TL_K_PRIM_ARRAY) { tl_jni_throw("java/lang/IllegalArgumentException", "not a primitive array"); return; }
     fdis *st = c->self->native;
-    int off = 0, len = (int)a->arr.len;
+    if (!st) { tl_jni_throw("java/io/EOFException", ""); return; }
+    int64_t off = 0, len = (int64_t)arr_bytes(a);
     while (off < len) {
         ssize_t r = read(st->fd, (char *)a->arr.data + off, (size_t)(len - off));
         if (r <= 0) { tl_jni_throw("java/io/EOFException", ""); return; }
-        off += (int)r;
+        off += r;
     }
 }
 static void RAF_readByte(tl_jcall *c)
@@ -4595,6 +4624,7 @@ static void RAF_readDouble(tl_jcall *c)
 static void RAF_readLine(tl_jcall *c)
 {
     fdis *st = c->self->native;
+    if (!st) { c->ret = vl(NULL); return; }
     sbuf b = {0};
     for (;;) {
         char ch;
@@ -4638,12 +4668,15 @@ static void RAF_write_byte(tl_jcall *c)
 static void RAF_write_arr(tl_jcall *c)
 {
     fdis *st = c->self->native; jobj *a = c->args[0].l;
-    if (st && a) { ssize_t w = write(st->fd, a->arr.data, a->arr.len); (void)w; }
+    if (!a) { tl_jni_throw("java/lang/NullPointerException", ""); return; }
+    if (a->kind != TL_K_PRIM_ARRAY) { tl_jni_throw("java/lang/IllegalArgumentException", "not a primitive array"); return; }
+    if (st) { ssize_t w = write(st->fd, a->arr.data, arr_bytes(a)); (void)w; }
 }
 static void RAF_write_range(tl_jcall *c)
 {
-    fdis *st = c->self->native; jobj *a = c->args[0].l;
-    if (st && a) { ssize_t w = write(st->fd, (char *)a->arr.data + c->args[1].i, (size_t)c->args[2].i); (void)w; }
+    fdis *st = c->self->native;
+    void *w = arr_win(c, c->args[0].l, c->args[1].i, c->args[2].i);
+    if (w && st) { ssize_t wr = write(st->fd, w, (size_t)c->args[2].i); (void)wr; }
 }
 static void RAF_writeInt(tl_jcall *c)
 {
@@ -4942,7 +4975,9 @@ static void Files_readAllBytes(tl_jcall *c)
     FILE *f = fopen(p, "rb");
     if (!f) { tl_jni_throw("java/io/IOException", p); return; }
     fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
+    if (n < 0) { fclose(f); tl_jni_throw("java/io/IOException", "cannot size file"); return; }
     jobj *a = tl_jni_new_prim_array('B', (uint32_t)n);
+    if (!a) { fclose(f); return; }
     size_t rd = fread(a->arr.data, 1, (size_t)n, f); (void)rd;
     fclose(f);
     c->ret = vl(a);
@@ -4953,7 +4988,7 @@ static void Files_write(tl_jcall *c)
     jobj *a = c->args[1].l;
     FILE *f = fopen(p, "wb");
     if (!f) { tl_jni_throw("java/io/IOException", p); return; }
-    if (a && a->kind == TL_K_PRIM_ARRAY) fwrite(a->arr.data, 1, a->arr.len, f);
+    if (a && a->kind == TL_K_PRIM_ARRAY) fwrite(a->arr.data, 1, arr_bytes(a), f);
     fclose(f);
     c->ret = vl(c->args[0].l);
 }
@@ -5086,6 +5121,15 @@ static void Files_probeContentType(tl_jcall *c)
 static uint8_t *bb_addr(jobj *o) { return (uint8_t *)(uintptr_t)get_lng(o, "addr"); }
 static int bb_pos(jobj *o) { return get_int(o, "pos"); }
 static int bb_lim(jobj *o) { return get_int(o, "lim") ? get_int(o, "lim") : (int)get_lng(o, "cap"); }
+/* The most a buffer may touch: min(limit, capacity). position and limit are
+ * validated at set-time, but a stale field (or a view built before these
+ * checks existed) must still never reach past the backing store. */
+static int bb_span(jobj *o)
+{
+    int64_t cap = get_lng(o, "cap"), lim = bb_lim(o);
+    if (lim < cap) cap = lim;
+    return cap < 0 ? 0 : cap > INT32_MAX ? INT32_MAX : (int)cap;
+}
 static bool bb_le(jobj *o)
 {
     jobj *ord = tl_jni_get_field(o, "order", "Ljava/nio/ByteOrder;").l;
@@ -5096,6 +5140,7 @@ static uint64_t bb_read(jobj *o, int at, int n)
 {
     uint8_t *p = bb_addr(o);
     uint64_t v = 0;
+    if (!p || at < 0 || at > bb_span(o) - n) { tl_jni_throw("java/lang/IndexOutOfBoundsException", ""); return 0; }
     if (bb_le(o)) { for (int i = n - 1; i >= 0; i--) v = (v << 8) | p[at + i]; }
     else          { for (int i = 0; i < n; i++) v = (v << 8) | p[at + i]; }
     return v;
@@ -5103,8 +5148,20 @@ static uint64_t bb_read(jobj *o, int at, int n)
 static void bb_write(jobj *o, int at, uint64_t v, int n)
 {
     uint8_t *p = bb_addr(o);
+    if (!p || at < 0 || at > bb_span(o) - n) { tl_jni_throw("java/lang/IndexOutOfBoundsException", ""); return; }
     if (bb_le(o)) { for (int i = 0; i < n; i++) { p[at + i] = (uint8_t)v; v >>= 8; } }
     else          { for (int i = n - 1; i >= 0; i--) { p[at + i] = (uint8_t)v; v >>= 8; } }
+}
+/* Space for a relative get/put: underflow/overflow are the Java contract,
+ * the span check underneath is what keeps a stale pos from touching memory. */
+static bool bb_need(tl_jcall *c, int n, bool for_write)
+{
+    int p = bb_pos(c->self);
+    if (p < 0 || p > bb_span(c->self) - n) {
+        tl_jni_throw(for_write ? "java/nio/BufferOverflowException" : "java/nio/BufferUnderflowException", "");
+        return false;
+    }
+    return true;
 }
 static jobj *new_bb(uint8_t *addr, int64_t cap, bool direct)
 {
@@ -5145,8 +5202,9 @@ static void BB_wrap_range(tl_jcall *c)
 {
     jobj *a = c->args[0].l;
     if (!a || a->kind != TL_K_PRIM_ARRAY) { c->ret = vl(NULL); return; }
-    int off = c->args[1].i, len = c->args[2].i;
-    jobj *b = new_bb((uint8_t *)a->arr.data + off, len, false);
+    void *w = arr_win(c, a, c->args[1].i, c->args[2].i);
+    if (!w) { c->ret = vl(NULL); return; }
+    jobj *b = new_bb(w, c->args[2].i, false);
     set_obj(b, "array", "[B", a);
     set_int(b, "pos", 0);
     c->ret = vl(b);
@@ -5154,16 +5212,23 @@ static void BB_wrap_range(tl_jcall *c)
 static void BB_get(tl_jcall *c)
 {
     int pos = bb_pos(c->self);
-    if (pos >= bb_lim(c->self)) { tl_jni_throw("java/nio/BufferUnderflowException", ""); return; }
+    if (!bb_need(c, 1, false)) return;
     set_int(c->self, "pos", pos + 1);
     c->ret = vb((int8_t)bb_addr(c->self)[pos]);
 }
-static void BB_get_at(tl_jcall *c)   { c->ret = vb((int8_t)bb_addr(c->self)[c->args[0].i]); }
+static void BB_get_at(tl_jcall *c)
+{
+    int i = c->args[0].i;
+    if (i < 0 || i >= bb_span(c->self)) { tl_jni_throw("java/lang/IndexOutOfBoundsException", ""); return; }
+    c->ret = vb((int8_t)bb_addr(c->self)[i]);
+}
 static void BB_get_arr(tl_jcall *c)
 {
     jobj *a = c->args[0].l;
-    if (!a) return;
-    int pos = bb_pos(c->self), n = (int)a->arr.len;
+    if (!a) { tl_jni_throw("java/lang/NullPointerException", ""); return; }
+    if (a->kind != TL_K_PRIM_ARRAY) { tl_jni_throw("java/lang/IllegalArgumentException", "not a primitive array"); return; }
+    int pos = bb_pos(c->self), n = (int)arr_bytes(a);
+    if (!bb_need(c, n, false)) return;
     memcpy(a->arr.data, bb_addr(c->self) + pos, (size_t)n);
     set_int(c->self, "pos", pos + n);
     c->ret = vl(tl_jni_ref(c->self));
@@ -5171,9 +5236,11 @@ static void BB_get_arr(tl_jcall *c)
 static void BB_get_range(tl_jcall *c)
 {
     jobj *a = c->args[0].l; int off = c->args[1].i, len = c->args[2].i;
-    if (!a) return;
+    void *w = arr_win(c, a, off, len);
+    if (!w) return;
     int pos = bb_pos(c->self);
-    memcpy((char *)a->arr.data + off, bb_addr(c->self) + pos, (size_t)len);
+    if (!bb_need(c, len, false)) return;
+    memcpy(w, bb_addr(c->self) + pos, (size_t)len);
     set_int(c->self, "pos", pos + len);
     c->ret = vl(tl_jni_ref(c->self));
 }
@@ -5181,22 +5248,26 @@ static void BB_put_bb(tl_jcall *c)
 {
     jobj *src = c->args[0].l;
     if (!src) { c->ret = vl(tl_jni_ref(c->self)); return; }
-    int sp = bb_pos(src), rem = bb_lim(src) - sp, pos = bb_pos(c->self);
+    int sp = bb_pos(src), rem = bb_lim(src) - sp;
+    if (rem < 0) rem = 0;
+    if (!bb_need(c, rem, true)) return;
+    int pos = bb_pos(c->self);
     memcpy(bb_addr(c->self) + pos, bb_addr(src) + sp, (size_t)rem);
     set_int(src, "pos", sp + rem);
     set_int(c->self, "pos", pos + rem);
     c->ret = vl(tl_jni_ref(c->self));
 }
-static void BB_getChar(tl_jcall *c)   { int p = bb_pos(c->self); set_int(c->self, "pos", p + 2); c->ret = vc((uint16_t)bb_read(c->self, p, 2)); }
+static void BB_getChar(tl_jcall *c)   { if (!bb_need(c, 2, false)) return; int p = bb_pos(c->self); set_int(c->self, "pos", p + 2); c->ret = vc((uint16_t)bb_read(c->self, p, 2)); }
 static void BB_getCharAt(tl_jcall *c) { c->ret = vc((uint16_t)bb_read(c->self, c->args[0].i, 2)); }
-static void BB_getShort(tl_jcall *c)   { int p = bb_pos(c->self); set_int(c->self, "pos", p + 2); c->ret = vs((int16_t)bb_read(c->self, p, 2)); }
+static void BB_getShort(tl_jcall *c)   { if (!bb_need(c, 2, false)) return; int p = bb_pos(c->self); set_int(c->self, "pos", p + 2); c->ret = vs((int16_t)bb_read(c->self, p, 2)); }
 static void BB_getShortAt(tl_jcall *c) { c->ret = vs((int16_t)bb_read(c->self, c->args[0].i, 2)); }
-static void BB_getInt(tl_jcall *c)    { int p = bb_pos(c->self); set_int(c->self, "pos", p + 4); c->ret = vi((int32_t)bb_read(c->self, p, 4)); }
+static void BB_getInt(tl_jcall *c)    { if (!bb_need(c, 4, false)) return; int p = bb_pos(c->self); set_int(c->self, "pos", p + 4); c->ret = vi((int32_t)bb_read(c->self, p, 4)); }
 static void BB_getIntAt(tl_jcall *c)  { c->ret = vi((int32_t)bb_read(c->self, c->args[0].i, 4)); }
-static void BB_getLong(tl_jcall *c)   { int p = bb_pos(c->self); set_int(c->self, "pos", p + 8); c->ret = vj((int64_t)bb_read(c->self, p, 8)); }
+static void BB_getLong(tl_jcall *c)   { if (!bb_need(c, 8, false)) return; int p = bb_pos(c->self); set_int(c->self, "pos", p + 8); c->ret = vj((int64_t)bb_read(c->self, p, 8)); }
 static void BB_getLongAt(tl_jcall *c) { c->ret = vj((int64_t)bb_read(c->self, c->args[0].i, 8)); }
 static void BB_getFloat(tl_jcall *c)
 {
+    if (!bb_need(c, 4, false)) return;
     int p = bb_pos(c->self); set_int(c->self, "pos", p + 4);
     uint32_t u = (uint32_t)bb_read(c->self, p, 4); float f; memcpy(&f, &u, 4);
     c->ret = vf(f);
@@ -5208,6 +5279,7 @@ static void BB_getFloatAt(tl_jcall *c)
 }
 static void BB_getDouble(tl_jcall *c)
 {
+    if (!bb_need(c, 8, false)) return;
     int p = bb_pos(c->self); set_int(c->self, "pos", p + 8);
     uint64_t u = bb_read(c->self, p, 8); double d; memcpy(&d, &u, 8);
     c->ret = vd(d);
@@ -5217,18 +5289,20 @@ static void BB_getDoubleAt(tl_jcall *c)
     uint64_t u = bb_read(c->self, c->args[0].i, 8); double d; memcpy(&d, &u, 8);
     c->ret = vd(d);
 }
-static void BB_putChar(tl_jcall *c)   { int p = bb_pos(c->self); bb_write(c->self, p, c->args[0].c, 2); set_int(c->self, "pos", p + 2); c->ret = vl(tl_jni_ref(c->self)); }
-static void BB_putShort(tl_jcall *c)  { int p = bb_pos(c->self); bb_write(c->self, p, (uint16_t)c->args[0].s, 2); set_int(c->self, "pos", p + 2); c->ret = vl(tl_jni_ref(c->self)); }
-static void BB_putInt(tl_jcall *c)    { int p = bb_pos(c->self); bb_write(c->self, p, (uint32_t)c->args[0].i, 4); set_int(c->self, "pos", p + 4); c->ret = vl(tl_jni_ref(c->self)); }
-static void BB_putLong(tl_jcall *c)   { int p = bb_pos(c->self); bb_write(c->self, p, (uint64_t)c->args[0].j, 8); set_int(c->self, "pos", p + 8); c->ret = vl(tl_jni_ref(c->self)); }
+static void BB_putChar(tl_jcall *c)   { if (!bb_need(c, 2, true)) return; int p = bb_pos(c->self); bb_write(c->self, p, c->args[0].c, 2); set_int(c->self, "pos", p + 2); c->ret = vl(tl_jni_ref(c->self)); }
+static void BB_putShort(tl_jcall *c)  { if (!bb_need(c, 2, true)) return; int p = bb_pos(c->self); bb_write(c->self, p, (uint16_t)c->args[0].s, 2); set_int(c->self, "pos", p + 2); c->ret = vl(tl_jni_ref(c->self)); }
+static void BB_putInt(tl_jcall *c)    { if (!bb_need(c, 4, true)) return; int p = bb_pos(c->self); bb_write(c->self, p, (uint32_t)c->args[0].i, 4); set_int(c->self, "pos", p + 4); c->ret = vl(tl_jni_ref(c->self)); }
+static void BB_putLong(tl_jcall *c)   { if (!bb_need(c, 8, true)) return; int p = bb_pos(c->self); bb_write(c->self, p, (uint64_t)c->args[0].j, 8); set_int(c->self, "pos", p + 8); c->ret = vl(tl_jni_ref(c->self)); }
 static void BB_putFloat(tl_jcall *c)
 {
+    if (!bb_need(c, 4, true)) return;
     int p = bb_pos(c->self); uint32_t u; float f = c->args[0].f; memcpy(&u, &f, 4);
     bb_write(c->self, p, u, 4); set_int(c->self, "pos", p + 4);
     c->ret = vl(tl_jni_ref(c->self));
 }
 static void BB_putDouble(tl_jcall *c)
 {
+    if (!bb_need(c, 8, true)) return;
     int p = bb_pos(c->self); uint64_t u; double d = c->args[0].d; memcpy(&u, &d, 8);
     bb_write(c->self, p, u, 8); set_int(c->self, "pos", p + 8);
     c->ret = vl(tl_jni_ref(c->self));
@@ -5353,9 +5427,10 @@ static void CS_decode(tl_jcall *c)
 {
     jobj *bb = c->args[0].l;
     uint8_t *addr = bb ? bb_addr(bb) : NULL;
-    int pos = bb ? bb_pos(bb) : 0, lim = bb ? bb_lim(bb) : 0;
+    int pos = bb ? bb_pos(bb) : 0;
+    int64_t span = bb ? (int64_t)bb_span(bb) - pos : 0;
     char *out = NULL;
-    size_t n = addr ? cs_decode(addr + pos, (size_t)(lim - pos), cs_kind(cs_name_of(c->self)), &out) : 0;
+    size_t n = (addr && span > 0) ? cs_decode(addr + pos, (size_t)span, cs_kind(cs_name_of(c->self)), &out) : 0;
     jobj *cb = make("java/nio/CharBuffer");
     jobj *str = STR(out ? out : "");
     set_obj(cb, "str", "Ljava/lang/String;", str);
@@ -5390,9 +5465,10 @@ static void CSD_decode(tl_jcall *c)
     jobj *cs = tl_jni_get_field(c->self, "cs", "Ljava/nio/charset/Charset;").l;
     jobj *bb = c->args[0].l;
     uint8_t *addr = bb ? bb_addr(bb) : NULL;
-    int pos = bb ? bb_pos(bb) : 0, lim = bb ? bb_lim(bb) : 0;
+    int pos = bb ? bb_pos(bb) : 0;
+    int64_t span = bb ? (int64_t)bb_span(bb) - pos : 0;
     char *out = NULL;
-    size_t n = addr ? cs_decode(addr + pos, (size_t)(lim - pos), cs_kind(cs ? cs_name_of(cs) : "UTF-8"), &out) : 0;
+    size_t n = (addr && span > 0) ? cs_decode(addr + pos, (size_t)span, cs_kind(cs ? cs_name_of(cs) : "UTF-8"), &out) : 0;
     jobj *cb = make("java/nio/CharBuffer");
     set_obj(cb, "str", "Ljava/lang/String;", STR(out ? out : ""));
     set_int(cb, "pos", 0); set_int(cb, "lim", (int)n); set_int(cb, "cap", (int)n);
@@ -5405,7 +5481,9 @@ static void CB_charAt(tl_jcall *c)
 {
     jobj *s = tl_jni_get_field(c->self, "str", "Ljava/lang/String;").l;
     const char *p = s ? S(s) : "";
-    c->ret = vc((uint16_t)utf8_dec(p, utf8_byteof(p, c->args[0].i)));
+    int i = c->args[0].i;
+    if (i < 0 || i >= utf8_nchars(p, (int)strlen(p))) { tl_jni_throw("java/lang/IndexOutOfBoundsException", ""); return; }
+    c->ret = vc((uint16_t)utf8_dec(p, utf8_byteof(p, i)));
 }
 static void CB_remaining(tl_jcall *c) { c->ret = vi(get_int(c->self, "lim") - get_int(c->self, "pos")); }
 static void CB_subSequence(tl_jcall *c) { CB_toString(c); }
@@ -5451,9 +5529,22 @@ static void String_init_cs_range(tl_jcall *c)
     free(out);
 }
 static void BB_position(tl_jcall *c)    { c->ret = vi(bb_pos(c->self)); }
-static void BB_setPos(tl_jcall *c)      { set_int(c->self, "pos", c->args[0].i); c->ret = vl(tl_jni_ref(c->self)); }
+static void BB_setPos(tl_jcall *c)
+{
+    int p = c->args[0].i;
+    if (p < 0 || p > bb_lim(c->self)) { tl_jni_throw("java/lang/IllegalArgumentException", "position out of range"); return; }
+    set_int(c->self, "pos", p); c->ret = vl(tl_jni_ref(c->self));
+}
 static void BB_limit(tl_jcall *c)       { c->ret = vi(bb_lim(c->self)); }
-static void BB_setLimit(tl_jcall *c)    { set_int(c->self, "lim", c->args[0].i); c->ret = vl(tl_jni_ref(c->self)); }
+static void BB_setLimit(tl_jcall *c)
+{
+    int64_t cap = get_lng(c->self, "cap"), l = c->args[0].i;
+    if (l < 0 || l > cap) { tl_jni_throw("java/lang/IllegalArgumentException", "limit out of range"); return; }
+    set_int(c->self, "lim", (int)l);
+    if (bb_pos(c->self) > l) set_int(c->self, "pos", (int)l);
+    if (get_int(c->self, "mark") > l) set_int(c->self, "mark", -1);
+    c->ret = vl(tl_jni_ref(c->self));
+}
 static void BB_capacity(tl_jcall *c)    { c->ret = vi((int)get_lng(c->self, "cap")); }
 static void BB_remaining(tl_jcall *c)   { c->ret = vi(bb_lim(c->self) - bb_pos(c->self)); }
 static void BB_hasRemaining(tl_jcall *c){ c->ret = vz(bb_pos(c->self) < bb_lim(c->self)); }
@@ -5484,7 +5575,8 @@ static void BO_nativeOrder(tl_jcall *c)
 static void BO_toString(tl_jcall *c)    { c->ret = tl_jni_get_field(c->self, "name", "Ljava/lang/String;"); }
 static void BB_slice(tl_jcall *c)
 {
-    int pos = bb_pos(c->self), rem = bb_lim(c->self) - pos;
+    int pos = bb_pos(c->self), rem = bb_span(c->self) - pos;
+    if (rem < 0) rem = 0;
     jobj *b = make("java/nio/ByteBuffer");
     set_long(b, "addr", (int64_t)(uintptr_t)(bb_addr(c->self) + pos));
     set_long(b, "cap", rem); set_int(b, "pos", 0); set_int(b, "lim", rem); set_int(b, "mark", -1);
@@ -5503,7 +5595,8 @@ static void BB_duplicate(tl_jcall *c)
 static void BB_asReadOnly(tl_jcall *c)  { BB_duplicate(c); }
 static void BB_compact(tl_jcall *c)
 {
-    int pos = bb_pos(c->self), rem = bb_lim(c->self) - pos;
+    int pos = bb_pos(c->self), rem = bb_span(c->self) - pos;
+    if (rem < 0) rem = 0;
     memmove(bb_addr(c->self), bb_addr(c->self) + pos, (size_t)rem);
     set_int(c->self, "pos", rem); set_int(c->self, "lim", (int)get_lng(c->self, "cap"));
     c->ret = vl(tl_jni_ref(c->self));
@@ -5524,7 +5617,8 @@ static void BB_toString(tl_jcall *c)
  * Views carry their own pos/lim measured in elements. */
 static jobj *new_view(const char *clsname, jobj *parent, int esz)
 {
-    int pos = bb_pos(parent), rem = bb_lim(parent) - pos;
+    int pos = bb_pos(parent), rem = bb_span(parent) - pos;
+    if (rem < 0) rem = 0;
     jobj *v = make(clsname);
     set_long(v, "addr", (int64_t)(uintptr_t)(bb_addr(parent) + pos));
     set_long(v, "cap", rem / esz);
@@ -5546,169 +5640,242 @@ static int vb_pos(jobj *v) { return get_int(v, "pos"); }
 static int vb_lim(jobj *v) { int l = get_int(v, "lim"); return l ? l : (int)get_lng(v, "cap"); }
 static int vb_esz(jobj *v) { int e = get_int(v, "esz"); return e ? e : 4; }
 static uint8_t *vb_base(jobj *v) { return (uint8_t *)(uintptr_t)get_lng(v, "addr"); }
+/* Element span a view may index: min(limit, capacity), never negative. */
+static int vb_span(jobj *v)
+{
+    int64_t cap = get_lng(v, "cap"), lim = vb_lim(v);
+    if (lim < cap) cap = lim;
+    return cap < 0 ? 0 : cap > INT32_MAX ? INT32_MAX : (int)cap;
+}
+/* Room for n elements at the current position: relative ops throw
+ * under/overflow, absolute ops throw IndexOutOfBounds -- Java's contract. */
+static bool vb_need(tl_jcall *c, int n, bool for_write)
+{
+    int p = vb_pos(c->self);
+    if (p < 0 || p > vb_span(c->self) - n) {
+        tl_jni_throw(for_write ? "java/nio/BufferOverflowException" : "java/nio/BufferUnderflowException", "");
+        return false;
+    }
+    return true;
+}
+static bool vb_at(tl_jcall *c, int idx)
+{
+    if (idx < 0 || idx >= vb_span(c->self)) { tl_jni_throw("java/lang/IndexOutOfBoundsException", ""); return false; }
+    return true;
+}
+static void *vb_addr(tl_jcall *c, int idx) { return vb_base(c->self) + (int64_t)idx * vb_esz(c->self); }
+/* Elements of the view's size that fit inside the destination array's byte capacity. */
+static int vb_arr_n(jobj *a, int esz) { return (int)(arr_bytes(a) / (size_t)esz); }
 
 static void VB_get_float(tl_jcall *c)
 {
+    if (!vb_need(c, 1, false)) return;
     int p = vb_pos(c->self); set_int(c->self, "pos", p + 1);
-    uint32_t u; memcpy(&u, vb_base(c->self) + p * vb_esz(c->self), 4); float f; memcpy(&f, &u, 4);
+    uint32_t u; memcpy(&u, vb_addr(c, p), 4); float f; memcpy(&f, &u, 4);
     c->ret = vf(f);
 }
 static void VB_get_floatAt(tl_jcall *c)
 {
-    uint32_t u; memcpy(&u, vb_base(c->self) + c->args[0].i * vb_esz(c->self), 4); float f; memcpy(&f, &u, 4);
+    if (!vb_at(c, c->args[0].i)) return;
+    uint32_t u; memcpy(&u, vb_addr(c, c->args[0].i), 4); float f; memcpy(&f, &u, 4);
     c->ret = vf(f);
 }
 static void VB_put_float(tl_jcall *c)
 {
+    if (!vb_need(c, 1, true)) return;
     int p = vb_pos(c->self); set_int(c->self, "pos", p + 1);
-    float f = c->args[0].f; memcpy(vb_base(c->self) + p * vb_esz(c->self), &f, 4);
+    float f = c->args[0].f; memcpy(vb_addr(c, p), &f, 4);
     c->ret = vl(tl_jni_ref(c->self));
 }
 static void VB_put_floatAt(tl_jcall *c)
 {
-    float f = c->args[1].f; memcpy(vb_base(c->self) + c->args[0].i * vb_esz(c->self), &f, 4);
+    if (!vb_at(c, c->args[0].i)) return;
+    float f = c->args[1].f; memcpy(vb_addr(c, c->args[0].i), &f, 4);
     c->ret = vl(tl_jni_ref(c->self));
 }
 static void VB_get_floatArr(tl_jcall *c)
 {
     jobj *a = c->args[0].l;
-    if (!a) return;
-    int p = vb_pos(c->self), n = (int)a->arr.len;
-    for (int i = 0; i < n; i++) memcpy((char *)a->arr.data + i * 4, vb_base(c->self) + (p + i) * vb_esz(c->self), 4);
+    if (!a) { tl_jni_throw("java/lang/NullPointerException", ""); return; }
+    if (a->kind != TL_K_PRIM_ARRAY) { tl_jni_throw("java/lang/IllegalArgumentException", "not a primitive array"); return; }
+    int p = vb_pos(c->self), n = vb_arr_n(a, 4);
+    if (!vb_need(c, n, false)) return;
+    for (int i = 0; i < n; i++) memcpy((char *)a->arr.data + i * 4, vb_addr(c, p + i), 4);
     set_int(c->self, "pos", p + n);
     c->ret = vl(tl_jni_ref(c->self));
 }
 static void VB_put_floatArr(tl_jcall *c)
 {
     jobj *a = c->args[0].l;
-    if (!a) { c->ret = vl(tl_jni_ref(c->self)); return; }
-    int p = vb_pos(c->self), n = (int)a->arr.len;
-    for (int i = 0; i < n; i++) memcpy(vb_base(c->self) + (p + i) * vb_esz(c->self), (char *)a->arr.data + i * 4, 4);
+    if (!a) { tl_jni_throw("java/lang/NullPointerException", ""); return; }
+    if (a->kind != TL_K_PRIM_ARRAY) { tl_jni_throw("java/lang/IllegalArgumentException", "not a primitive array"); return; }
+    int p = vb_pos(c->self), n = vb_arr_n(a, 4);
+    if (!vb_need(c, n, true)) return;
+    for (int i = 0; i < n; i++) memcpy(vb_addr(c, p + i), (char *)a->arr.data + i * 4, 4);
     set_int(c->self, "pos", p + n);
     c->ret = vl(tl_jni_ref(c->self));
 }
 static void VB_get_int(tl_jcall *c)
 {
+    if (!vb_need(c, 1, false)) return;
     int p = vb_pos(c->self); set_int(c->self, "pos", p + 1);
-    int32_t v; memcpy(&v, vb_base(c->self) + p * vb_esz(c->self), 4); c->ret = vi(v);
+    int32_t v; memcpy(&v, vb_addr(c, p), 4); c->ret = vi(v);
 }
 static void VB_get_intAt(tl_jcall *c)
 {
-    int32_t v; memcpy(&v, vb_base(c->self) + c->args[0].i * vb_esz(c->self), 4); c->ret = vi(v);
+    if (!vb_at(c, c->args[0].i)) return;
+    int32_t v; memcpy(&v, vb_addr(c, c->args[0].i), 4); c->ret = vi(v);
 }
 static void VB_put_int(tl_jcall *c)
 {
+    if (!vb_need(c, 1, true)) return;
     int p = vb_pos(c->self); set_int(c->self, "pos", p + 1);
-    int32_t v = c->args[0].i; memcpy(vb_base(c->self) + p * vb_esz(c->self), &v, 4);
+    int32_t v = c->args[0].i; memcpy(vb_addr(c, p), &v, 4);
     c->ret = vl(tl_jni_ref(c->self));
 }
 static void VB_put_intAt(tl_jcall *c)
 {
-    int32_t v = c->args[1].i; memcpy(vb_base(c->self) + c->args[0].i * vb_esz(c->self), &v, 4);
+    if (!vb_at(c, c->args[0].i)) return;
+    int32_t v = c->args[1].i; memcpy(vb_addr(c, c->args[0].i), &v, 4);
     c->ret = vl(tl_jni_ref(c->self));
 }
 static void VB_get_intArr(tl_jcall *c)
 {
     jobj *a = c->args[0].l;
-    if (!a) return;
-    int p = vb_pos(c->self), n = (int)a->arr.len;
-    for (int i = 0; i < n; i++) memcpy((char *)a->arr.data + i * 4, vb_base(c->self) + (p + i) * vb_esz(c->self), 4);
+    if (!a) { tl_jni_throw("java/lang/NullPointerException", ""); return; }
+    if (a->kind != TL_K_PRIM_ARRAY) { tl_jni_throw("java/lang/IllegalArgumentException", "not a primitive array"); return; }
+    int p = vb_pos(c->self), n = vb_arr_n(a, 4);
+    if (!vb_need(c, n, false)) return;
+    for (int i = 0; i < n; i++) memcpy((char *)a->arr.data + i * 4, vb_addr(c, p + i), 4);
     set_int(c->self, "pos", p + n);
     c->ret = vl(tl_jni_ref(c->self));
 }
 static void VB_put_intArr(tl_jcall *c)
 {
     jobj *a = c->args[0].l;
-    if (!a) { c->ret = vl(tl_jni_ref(c->self)); return; }
-    int p = vb_pos(c->self), n = (int)a->arr.len;
-    for (int i = 0; i < n; i++) memcpy(vb_base(c->self) + (p + i) * vb_esz(c->self), (char *)a->arr.data + i * 4, 4);
+    if (!a) { tl_jni_throw("java/lang/NullPointerException", ""); return; }
+    if (a->kind != TL_K_PRIM_ARRAY) { tl_jni_throw("java/lang/IllegalArgumentException", "not a primitive array"); return; }
+    int p = vb_pos(c->self), n = vb_arr_n(a, 4);
+    if (!vb_need(c, n, true)) return;
+    for (int i = 0; i < n; i++) memcpy(vb_addr(c, p + i), (char *)a->arr.data + i * 4, 4);
     set_int(c->self, "pos", p + n);
     c->ret = vl(tl_jni_ref(c->self));
 }
 static void VB_get_short(tl_jcall *c)
 {
+    if (!vb_need(c, 1, false)) return;
     int p = vb_pos(c->self); set_int(c->self, "pos", p + 1);
-    int16_t v; memcpy(&v, vb_base(c->self) + p * 2, 2); c->ret = vs(v);
+    int16_t v; memcpy(&v, vb_addr(c, p), 2); c->ret = vs(v);
 }
 static void VB_get_shortAt(tl_jcall *c)
 {
-    int16_t v; memcpy(&v, vb_base(c->self) + c->args[0].i * 2, 2); c->ret = vs(v);
+    if (!vb_at(c, c->args[0].i)) return;
+    int16_t v; memcpy(&v, vb_addr(c, c->args[0].i), 2); c->ret = vs(v);
 }
 static void VB_put_short(tl_jcall *c)
 {
+    if (!vb_need(c, 1, true)) return;
     int p = vb_pos(c->self); set_int(c->self, "pos", p + 1);
-    int16_t v = (int16_t)c->args[0].s; memcpy(vb_base(c->self) + p * 2, &v, 2);
+    int16_t v = (int16_t)c->args[0].s; memcpy(vb_addr(c, p), &v, 2);
     c->ret = vl(tl_jni_ref(c->self));
 }
 static void VB_put_shortAt(tl_jcall *c)
 {
-    int16_t v = (int16_t)c->args[1].s; memcpy(vb_base(c->self) + c->args[0].i * 2, &v, 2);
+    if (!vb_at(c, c->args[0].i)) return;
+    int16_t v = (int16_t)c->args[1].s; memcpy(vb_addr(c, c->args[0].i), &v, 2);
     c->ret = vl(tl_jni_ref(c->self));
 }
 static void VB_get_long(tl_jcall *c)
 {
+    if (!vb_need(c, 1, false)) return;
     int p = vb_pos(c->self); set_int(c->self, "pos", p + 1);
-    int64_t v; memcpy(&v, vb_base(c->self) + p * 8, 8); c->ret = vj(v);
+    int64_t v; memcpy(&v, vb_addr(c, p), 8); c->ret = vj(v);
 }
 static void VB_get_longAt(tl_jcall *c)
 {
-    int64_t v; memcpy(&v, vb_base(c->self) + c->args[0].i * 8, 8); c->ret = vj(v);
+    if (!vb_at(c, c->args[0].i)) return;
+    int64_t v; memcpy(&v, vb_addr(c, c->args[0].i), 8); c->ret = vj(v);
 }
 static void VB_put_long(tl_jcall *c)
 {
+    if (!vb_need(c, 1, true)) return;
     int p = vb_pos(c->self); set_int(c->self, "pos", p + 1);
-    int64_t v = c->args[0].j; memcpy(vb_base(c->self) + p * 8, &v, 8);
+    int64_t v = c->args[0].j; memcpy(vb_addr(c, p), &v, 8);
     c->ret = vl(tl_jni_ref(c->self));
 }
 static void VB_put_longAt(tl_jcall *c)
 {
-    int64_t v = c->args[1].j; memcpy(vb_base(c->self) + c->args[0].i * 8, &v, 8);
+    if (!vb_at(c, c->args[0].i)) return;
+    int64_t v = c->args[1].j; memcpy(vb_addr(c, c->args[0].i), &v, 8);
     c->ret = vl(tl_jni_ref(c->self));
 }
 static void VB_get_double(tl_jcall *c)
 {
+    if (!vb_need(c, 1, false)) return;
     int p = vb_pos(c->self); set_int(c->self, "pos", p + 1);
-    double v; memcpy(&v, vb_base(c->self) + p * 8, 8); c->ret = vd(v);
+    double v; memcpy(&v, vb_addr(c, p), 8); c->ret = vd(v);
 }
 static void VB_get_doubleAt(tl_jcall *c)
 {
-    double v; memcpy(&v, vb_base(c->self) + c->args[0].i * 8, 8); c->ret = vd(v);
+    if (!vb_at(c, c->args[0].i)) return;
+    double v; memcpy(&v, vb_addr(c, c->args[0].i), 8); c->ret = vd(v);
 }
 static void VB_put_double(tl_jcall *c)
 {
+    if (!vb_need(c, 1, true)) return;
     int p = vb_pos(c->self); set_int(c->self, "pos", p + 1);
-    double v = c->args[0].d; memcpy(vb_base(c->self) + p * 8, &v, 8);
+    double v = c->args[0].d; memcpy(vb_addr(c, p), &v, 8);
     c->ret = vl(tl_jni_ref(c->self));
 }
 static void VB_put_doubleAt(tl_jcall *c)
 {
-    double v = c->args[1].d; memcpy(vb_base(c->self) + c->args[0].i * 8, &v, 8);
+    if (!vb_at(c, c->args[0].i)) return;
+    double v = c->args[1].d; memcpy(vb_addr(c, c->args[0].i), &v, 8);
     c->ret = vl(tl_jni_ref(c->self));
 }
 static void VB_get_char(tl_jcall *c)
 {
+    if (!vb_need(c, 1, false)) return;
     int p = vb_pos(c->self); set_int(c->self, "pos", p + 1);
-    uint16_t v; memcpy(&v, vb_base(c->self) + p * 2, 2); c->ret = vc(v);
+    uint16_t v; memcpy(&v, vb_addr(c, p), 2); c->ret = vc(v);
 }
 static void VB_get_charAt(tl_jcall *c)
 {
-    uint16_t v; memcpy(&v, vb_base(c->self) + c->args[0].i * 2, 2); c->ret = vc(v);
+    if (!vb_at(c, c->args[0].i)) return;
+    uint16_t v; memcpy(&v, vb_addr(c, c->args[0].i), 2); c->ret = vc(v);
 }
 static void VB_put_char(tl_jcall *c)
 {
+    if (!vb_need(c, 1, true)) return;
     int p = vb_pos(c->self); set_int(c->self, "pos", p + 1);
-    uint16_t v = c->args[0].c; memcpy(vb_base(c->self) + p * 2, &v, 2);
+    uint16_t v = c->args[0].c; memcpy(vb_addr(c, p), &v, 2);
     c->ret = vl(tl_jni_ref(c->self));
 }
 static void VB_put_charAt(tl_jcall *c)
 {
-    uint16_t v = c->args[1].c; memcpy(vb_base(c->self) + c->args[0].i * 2, &v, 2);
+    if (!vb_at(c, c->args[0].i)) return;
+    uint16_t v = c->args[1].c; memcpy(vb_addr(c, c->args[0].i), &v, 2);
     c->ret = vl(tl_jni_ref(c->self));
 }
 static void VB_position(tl_jcall *c)    { c->ret = vi(vb_pos(c->self)); }
-static void VB_setPos(tl_jcall *c)      { set_int(c->self, "pos", c->args[0].i); c->ret = vl(tl_jni_ref(c->self)); }
+static void VB_setPos(tl_jcall *c)
+{
+    int p = c->args[0].i, lim = vb_lim(c->self);
+    if (p < 0 || p > lim) { tl_jni_throw("java/lang/IllegalArgumentException", "position out of range"); return; }
+    set_int(c->self, "pos", p);
+    if (get_int(c->self, "mark") > p) set_int(c->self, "mark", -1);
+    c->ret = vl(tl_jni_ref(c->self));
+}
 static void VB_limit(tl_jcall *c)       { c->ret = vi(vb_lim(c->self)); }
-static void VB_setLimit(tl_jcall *c)    { set_int(c->self, "lim", c->args[0].i); c->ret = vl(tl_jni_ref(c->self)); }
+static void VB_setLimit(tl_jcall *c)
+{
+    int l = c->args[0].i, cap = (int)get_lng(c->self, "cap");
+    if (l < 0 || l > cap) { tl_jni_throw("java/lang/IllegalArgumentException", "limit out of range"); return; }
+    set_int(c->self, "lim", l);
+    if (vb_pos(c->self) > l) set_int(c->self, "pos", l);
+    if (get_int(c->self, "mark") > l) set_int(c->self, "mark", -1);
+    c->ret = vl(tl_jni_ref(c->self));
+}
 static void VB_capacity(tl_jcall *c)    { c->ret = vi((int)get_lng(c->self, "cap")); }
 static void VB_remaining(tl_jcall *c)   { c->ret = vi(vb_lim(c->self) - vb_pos(c->self)); }
 static void VB_hasRemaining(tl_jcall *c){ c->ret = vz(vb_pos(c->self) < vb_lim(c->self)); }
@@ -5716,7 +5883,13 @@ static void VB_clear(tl_jcall *c)       { set_int(c->self, "pos", 0); set_int(c-
 static void VB_flip(tl_jcall *c)        { set_int(c->self, "lim", vb_pos(c->self)); set_int(c->self, "pos", 0); set_int(c->self, "mark", -1); c->ret = vl(tl_jni_ref(c->self)); }
 static void VB_rewind(tl_jcall *c)      { set_int(c->self, "pos", 0); set_int(c->self, "mark", -1); c->ret = vl(tl_jni_ref(c->self)); }
 static void VB_mark(tl_jcall *c)        { set_int(c->self, "mark", vb_pos(c->self)); c->ret = vl(tl_jni_ref(c->self)); }
-static void VB_reset(tl_jcall *c)       { int m = get_int(c->self, "mark"); if (m >= 0) set_int(c->self, "pos", m); c->ret = vl(tl_jni_ref(c->self)); }
+static void VB_reset(tl_jcall *c)
+{
+    int m = get_int(c->self, "mark");
+    if (m < 0) { tl_jni_throw("java/nio/InvalidMarkException", ""); return; }
+    if (m > vb_lim(c->self)) m = vb_lim(c->self);
+    set_int(c->self, "pos", m); c->ret = vl(tl_jni_ref(c->self));
+}
 static void VB_isDirect(tl_jcall *c)    { c->ret = tl_jni_get_field(c->self, "direct", "Z"); }
 static void VB_isReadOnly(tl_jcall *c)  { c->ret = vz(false); }
 static void VB_hasArray(tl_jcall *c)    { c->ret = vz(tl_jni_get_field(c->self, "array", "[F").l != NULL || tl_jni_get_field(c->self, "array", "[I").l != NULL); }
@@ -5733,6 +5906,7 @@ static void VB_duplicate(tl_jcall *c)
 static void VB_slice(tl_jcall *c)
 {
     int esz = vb_esz(c->self), pos = vb_pos(c->self), rem = vb_lim(c->self) - pos;
+    if (rem < 0) rem = 0;
     jobj *v = make(tl_jni_class_name(c->self));
     set_long(v, "addr", (int64_t)(uintptr_t)(vb_base(c->self) + (int64_t)pos * esz));
     set_long(v, "cap", rem); set_int(v, "pos", 0); set_int(v, "lim", rem); set_int(v, "mark", -1);
@@ -5743,13 +5917,19 @@ static void VB_slice(tl_jcall *c)
 static void VB_compact(tl_jcall *c)
 {
     int esz = vb_esz(c->self), pos = vb_pos(c->self), rem = vb_lim(c->self) - pos;
+    if (rem < 0) rem = 0;
     memmove(vb_base(c->self), vb_base(c->self) + (int64_t)pos * esz, (size_t)rem * esz);
     set_int(c->self, "pos", rem); set_int(c->self, "lim", (int)get_lng(c->self, "cap"));
     c->ret = vl(tl_jni_ref(c->self));
 }
 static jobj *alloc_view(const char *clsname, int n, int esz)
 {
+    if (n < 0 || (esz > 0 && (size_t)n > SIZE_MAX / (size_t)esz)) {
+        tl_jni_throw("java/lang/IllegalArgumentException", "negative capacity");
+        return NULL;
+    }
     void *p = calloc(1, (size_t)n * esz);
+    if (!p && n > 0) { tl_jni_throw("java/lang/OutOfMemoryError", "view alloc"); return NULL; }
     jobj *v = make(clsname);
     set_long(v, "addr", (int64_t)(uintptr_t)p);
     set_long(v, "cap", n); set_int(v, "pos", 0); set_int(v, "lim", n); set_int(v, "mark", -1);
@@ -5764,54 +5944,25 @@ static void SB_allocate(tl_jcall *c)  { c->ret = vl(alloc_view("java/nio/ShortBu
 static void LB_allocate(tl_jcall *c)  { c->ret = vl(alloc_view("java/nio/LongBuffer", c->args[0].i, 8)); }
 static void DB_allocate(tl_jcall *c)  { c->ret = vl(alloc_view("java/nio/DoubleBuffer", c->args[0].i, 8)); }
 static void CB_allocate(tl_jcall *c)  { c->ret = vl(alloc_view("java/nio/CharBuffer", c->args[0].i, 2)); }
-static void FB_wrap(tl_jcall *c)
+/* wrap a primitive array into a fresh view; any primitive kind is accepted and
+ * reinterpreted by byte size (Java callers pass the matching type anyway). */
+static void wrap_view(tl_jcall *c, const char *clsname, int esz)
 {
     jobj *a = c->args[0].l;
     if (!a) { c->ret = vl(NULL); return; }
-    jobj *v = alloc_view("java/nio/FloatBuffer", (int)a->arr.len, 4);
-    memcpy(vb_base(v), a->arr.data, a->arr.len * 4);
+    if (a->kind != TL_K_PRIM_ARRAY) { tl_jni_throw("java/lang/IllegalArgumentException", "not a primitive array"); return; }
+    int n = (int)(arr_bytes(a) / (size_t)esz);
+    jobj *v = alloc_view(clsname, n, esz);
+    if (!v) return;
+    memcpy(vb_base(v), a->arr.data, (size_t)n * esz);
     c->ret = vl(v);
 }
-static void IB_wrap(tl_jcall *c)
-{
-    jobj *a = c->args[0].l;
-    if (!a) { c->ret = vl(NULL); return; }
-    jobj *v = alloc_view("java/nio/IntBuffer", (int)a->arr.len, 4);
-    memcpy(vb_base(v), a->arr.data, a->arr.len * 4);
-    c->ret = vl(v);
-}
-static void SB_wrap(tl_jcall *c)
-{
-    jobj *a = c->args[0].l;
-    if (!a) { c->ret = vl(NULL); return; }
-    jobj *v = alloc_view("java/nio/ShortBuffer", (int)a->arr.len, 2);
-    memcpy(vb_base(v), a->arr.data, a->arr.len * 2);
-    c->ret = vl(v);
-}
-static void LB_wrap(tl_jcall *c)
-{
-    jobj *a = c->args[0].l;
-    if (!a) { c->ret = vl(NULL); return; }
-    jobj *v = alloc_view("java/nio/LongBuffer", (int)a->arr.len, 8);
-    memcpy(vb_base(v), a->arr.data, a->arr.len * 8);
-    c->ret = vl(v);
-}
-static void DB_wrap(tl_jcall *c)
-{
-    jobj *a = c->args[0].l;
-    if (!a) { c->ret = vl(NULL); return; }
-    jobj *v = alloc_view("java/nio/DoubleBuffer", (int)a->arr.len, 8);
-    memcpy(vb_base(v), a->arr.data, a->arr.len * 8);
-    c->ret = vl(v);
-}
-static void CB_wrap(tl_jcall *c)
-{
-    jobj *a = c->args[0].l;
-    if (!a) { c->ret = vl(NULL); return; }
-    jobj *v = alloc_view("java/nio/CharBuffer", (int)a->arr.len, 2);
-    memcpy(vb_base(v), a->arr.data, a->arr.len * 2);
-    c->ret = vl(v);
-}
+static void FB_wrap(tl_jcall *c) { wrap_view(c, "java/nio/FloatBuffer", 4); }
+static void IB_wrap(tl_jcall *c) { wrap_view(c, "java/nio/IntBuffer", 4); }
+static void SB_wrap(tl_jcall *c) { wrap_view(c, "java/nio/ShortBuffer", 2); }
+static void LB_wrap(tl_jcall *c) { wrap_view(c, "java/nio/LongBuffer", 8); }
+static void DB_wrap(tl_jcall *c) { wrap_view(c, "java/nio/DoubleBuffer", 8); }
+static void CB_wrap(tl_jcall *c) { wrap_view(c, "java/nio/CharBuffer", 2); }
 static void VB_toString(tl_jcall *c)
 {
     char b[128]; snprintf(b, sizeof(b), "%s[pos=%d,lim=%d,cap=%lld]",
@@ -6330,6 +6481,7 @@ static void ZF_getInputStream(tl_jcall *c)
     }
     jobj *s = make("java/io/ByteArrayInputStream");
     jobj *arr = tl_jni_new_prim_array('B', (uint32_t)n);
+    if (!arr) { if (owned) free((void *)d); tl_jni_throw("java/lang/OutOfMemoryError", "zip entry too large"); return; }
     memcpy(arr->arr.data, d, n);
     if (owned) free((void *)d);
     jvalue a = { .l = arr };
@@ -6426,8 +6578,10 @@ static void ZIS_read_range(tl_jcall *c)
     jobj *arr = c->args[0].l;
     int off = c->args[1].i, len = c->args[2].i;
     if (!st || st->cur < 0 || !arr || !zis_load(st) || st->pos >= st->n) { c->ret = vi(-1); return; }
+    if (arr->kind != TL_K_PRIM_ARRAY) { tl_jni_throw("java/lang/IllegalArgumentException", "not a primitive array"); return; }
     int n = (int)(st->n - st->pos); if (n > len) n = len;
-    if (off < 0 || (size_t)(off + n) > arr->arr.len) n = (int)arr->arr.len - off;
+    if (off < 0) { c->ret = vi(-1); tl_jni_throw("java/lang/IndexOutOfBoundsException", "off < 0"); return; }
+    if ((size_t)off + (size_t)n > arr_bytes(arr)) n = (int)arr_bytes(arr) - off;
     if (n <= 0) { c->ret = vi(-1); return; }
     memcpy((uint8_t *)arr->arr.data + off, st->data + st->pos, (size_t)n);
     st->pos += n;
@@ -6464,15 +6618,16 @@ static void CRC_update_arr(tl_jcall *c)
 {
     jobj *a = c->args[0].l;
     uLong v = (uLong)get_lng(c->self, "crc_v");
-    set_long(c->self, "crc_v", (int64_t)crc32(v, a ? a->arr.data : NULL, a ? (uInt)a->arr.len : 0));
+    if (a && a->kind == TL_K_PRIM_ARRAY)
+        v = crc32(v, a->arr.data, (uInt)arr_bytes(a));
+    set_long(c->self, "crc_v", (int64_t)v);
 }
 static void CRC_update_range(tl_jcall *c)
 {
-    jobj *a = c->args[0].l;
-    int off = c->args[1].i, len = c->args[2].i;
+    int len = c->args[2].i;
+    void *w = arr_win(c, c->args[0].l, c->args[1].i, len);
     uLong v = (uLong)get_lng(c->self, "crc_v");
-    if (a && off >= 0 && len > 0 && (size_t)(off + len) <= a->arr.len)
-        v = crc32(v, (const Bytef *)a->arr.data + off, (uInt)len);
+    if (w && len > 0) v = crc32(v, w, (uInt)len);
     set_long(c->self, "crc_v", (int64_t)v);
 }
 static void CRC_getValue(tl_jcall *c) { c->ret = vj(get_lng(c->self, "crc_v") & 0xffffffffLL); }
@@ -6486,12 +6641,11 @@ static void ADL_update0(tl_jcall *c)
 }
 static void ADL_update_range(tl_jcall *c)
 {
-    jobj *a = c->args[0].l;
     int off = c->args[1].i, len = c->args[2].i;
     uLong v = (uLong)get_lng(c->self, "adl_v");
     if (!v) v = 1;
-    if (a && off >= 0 && len > 0 && (size_t)(off + len) <= a->arr.len)
-        v = adler32(v, (const Bytef *)a->arr.data + off, (uInt)len);
+    void *w = arr_win(c, c->args[0].l, off, len);
+    if (w && len > 0) v = adler32(v, w, (uInt)len);
     set_long(c->self, "adl_v", (int64_t)v);
 }
 static void ADL_getValue(tl_jcall *c) { long v = get_lng(c->self, "adl_v"); c->ret = vj((v ? v : 1) & 0xffffffffLL); }
@@ -6525,7 +6679,10 @@ static void CKIS_read_range(tl_jcall *c)
     jobj *in = tl_jni_get_field(c->self, "in", "Ljava/io/InputStream;").l;
     if (!in) { c->ret = vi(-1); return; }
     int r = tl_jni_call(in, "read", "([BII)I", (jvalue *)c->args).i;
-    if (r > 0 && c->args[0].l) ck_feed(c->self, (uint8_t *)((jobj *)c->args[0].l)->arr.data + c->args[1].i, r);
+    jobj *a = c->args[0].l;
+    if (r > 0 && a && a->kind == TL_K_PRIM_ARRAY &&
+        c->args[1].i >= 0 && (size_t)c->args[1].i + (size_t)r <= arr_bytes(a))
+        ck_feed(c->self, (uint8_t *)a->arr.data + c->args[1].i, r);
     c->ret = vi(r);
 }
 static void CKIS_skip(tl_jcall *c)
@@ -6557,7 +6714,11 @@ static void CKOS_write_range(tl_jcall *c)
     jobj *o = tl_jni_get_field(c->self, "out", "Ljava/io/OutputStream;").l;
     if (!o) return;
     tl_jni_call(o, "write", "([BII)V", (jvalue *)c->args);
-    if (c->args[0].l) ck_feed(c->self, (uint8_t *)((jobj *)c->args[0].l)->arr.data + c->args[1].i, c->args[2].i);
+    jobj *a = c->args[0].l;
+    int off = c->args[1].i, n = c->args[2].i;
+    if (a && a->kind == TL_K_PRIM_ARRAY && off >= 0 && n > 0 &&
+        (size_t)off + (size_t)n <= arr_bytes(a))
+        ck_feed(c->self, (uint8_t *)a->arr.data + off, n);
 }
 static void CKOS_close(tl_jcall *c)
 {
@@ -6633,10 +6794,11 @@ static void ZOS_putNextEntry(tl_jcall *c)
 static void ZOS_write_range(tl_jcall *c)
 {
     zos *s = c->self->native;
-    jobj *a = c->args[0].l;
     int off = c->args[1].i, len = c->args[2].i;
-    if (!s || !s->open_e || !a) return;
-    const uint8_t *d = (const uint8_t *)a->arr.data + off;
+    if (!s || !s->open_e) return;
+    if (len <= 0) return;
+    const uint8_t *d = arr_win(c, c->args[0].l, off, len);
+    if (!d) return;
     s->crc = (uint32_t)crc32(s->crc, d, (uInt)len);
     s->entries->usize += len;
     if (s->method == 0) { zos_w(c, s, d, (size_t)len); s->entries->csize += len; return; }
@@ -6661,6 +6823,7 @@ static void ZOS_write0(tl_jcall *c)
     zos *s = c->self->native;
     if (!s) return;
     jobj *arr = tl_jni_new_prim_array('B', 1);
+    if (!arr) return;
     ((uint8_t *)arr->arr.data)[0] = b;
     jvalue a[3] = { { .l = arr }, { .i = 0 }, { .i = 1 } };
     tl_jcall t = { .self = c->self, .args = a };
